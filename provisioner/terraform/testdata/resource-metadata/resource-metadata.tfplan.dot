@@ -1,0 +1,9 @@
+digraph G {
+  rankdir = "RL";
+  node [shape = rect, fontname = "sans-serif"];
+  "coder_agent.main" [label="coder_agent.main"];
+  "coder_metadata.about_info" [label="coder_metadata.about_info"];
+  "null_resource.about" [label="null_resource.about"];
+  "coder_metadata.about_info" -> "null_resource.about";
+  "null_resource.about" -> "coder_agent.main";
+}
