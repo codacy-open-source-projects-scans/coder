@@ -695,7 +695,7 @@ CREATE TABLE replicas (
 
 CREATE TABLE site_configs (
     key character varying(256) NOT NULL,
-    value character varying(8192) NOT NULL
+    value text NOT NULL
 );
 
 CREATE TABLE tailnet_agents (
@@ -1623,6 +1623,10 @@ CREATE INDEX idx_tailnet_agents_coordinator ON tailnet_agents USING btree (coord
 CREATE INDEX idx_tailnet_clients_coordinator ON tailnet_clients USING btree (coordinator_id);
 
 CREATE INDEX idx_tailnet_peers_coordinator ON tailnet_peers USING btree (coordinator_id);
+
+CREATE INDEX idx_tailnet_tunnels_dst_id ON tailnet_tunnels USING hash (dst_id);
+
+CREATE INDEX idx_tailnet_tunnels_src_id ON tailnet_tunnels USING hash (src_id);
 
 CREATE UNIQUE INDEX idx_users_email ON users USING btree (email) WHERE (deleted = false);
 

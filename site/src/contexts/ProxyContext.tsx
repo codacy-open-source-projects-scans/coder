@@ -7,8 +7,9 @@ import {
   useEffect,
   useState,
 } from "react";
-import { useQuery } from "react-query";
+import { type UseQueryOptions, useQuery } from "react-query";
 import { getWorkspaceProxies, getWorkspaceProxyRegions } from "api/api";
+import { cachedQuery } from "api/queries/util";
 import type { Region, WorkspaceProxy } from "api/typesGenerated";
 import { useAuthenticated } from "contexts/auth/RequireAuth";
 import { type ProxyLatencyReport, useProxyLatency } from "./useProxyLatency";
@@ -41,7 +42,7 @@ export interface ProxyContextValue {
   // WorkspaceProxy[] is returned if the user is an admin. WorkspaceProxy extends Region with
   //  more information about the proxy and the status. More information includes the error message if
   //  the proxy is unhealthy.
-  proxies?: Region[] | WorkspaceProxy[];
+  proxies?: readonly Region[] | readonly WorkspaceProxy[];
   // isFetched is true when the 'proxies' api call is complete.
   isFetched: boolean;
   isLoading: boolean;
@@ -117,7 +118,7 @@ export const ProxyProvider: FC<PropsWithChildren> = ({ children }) => {
   });
 
   const { permissions } = useAuthenticated();
-  const query = async (): Promise<Region[]> => {
+  const query = async (): Promise<readonly Region[]> => {
     const endpoint = permissions.editWorkspaceProxies
       ? getWorkspaceProxies
       : getWorkspaceProxyRegions;
@@ -131,11 +132,10 @@ export const ProxyProvider: FC<PropsWithChildren> = ({ children }) => {
     isLoading: proxiesLoading,
     isFetched: proxiesFetched,
   } = useQuery({
+    ...cachedQuery(initialData),
     queryKey,
     queryFn: query,
-    staleTime: initialData ? Infinity : undefined,
-    initialData,
-  });
+  } as UseQueryOptions<readonly Region[]>);
 
   // Every time we get a new proxiesResponse, update the latency check
   // to each workspace proxy.
@@ -218,7 +218,7 @@ export const useProxy = (): ProxyContextValue => {
  *                  If not, `primary` is always the best default.
  */
 export const getPreferredProxy = (
-  proxies: Region[],
+  proxies: readonly Region[],
   selectedProxy?: Region,
   latencies?: Record<string, ProxyLatencyReport>,
   autoSelectBasedOnLatency = true,
@@ -245,7 +245,7 @@ export const getPreferredProxy = (
 };
 
 const selectByLatency = (
-  proxies: Region[],
+  proxies: readonly Region[],
   latencies?: Record<string, ProxyLatencyReport>,
 ): Region | undefined => {
   if (!latencies) {

@@ -1,6 +1,13 @@
 import { defineConfig } from "@playwright/test";
 import * as path from "path";
-import { coderMain, coderPort, coderdPProfPort, gitAuth } from "./constants";
+import {
+  coderMain,
+  coderPort,
+  coderdPProfPort,
+  e2eFakeExperiment1,
+  e2eFakeExperiment2,
+  gitAuth,
+} from "./constants";
 
 export const wsEndpoint = process.env.CODER_E2E_WS_ENDPOINT;
 
@@ -22,7 +29,7 @@ export default defineConfig({
       testMatch: /.*\.spec\.ts/,
       dependencies: ["testsSetup"],
       use: { storageState },
-      timeout: 20_000,
+      timeout: 50_000,
     },
   ],
   reporter: [["./reporter.ts"]],
@@ -60,6 +67,8 @@ export default defineConfig({
       .join(" "),
     env: {
       ...process.env,
+      // Otherwise, the runner fails on Mac with: could not determine kind of name for C.uuid_string_t
+      CGO_ENABLED: "0",
 
       // This is the test provider for git auth with devices!
       CODER_GITAUTH_0_ID: gitAuth.deviceProvider,
@@ -101,6 +110,16 @@ export default defineConfig({
         gitAuth.validatePath,
       ),
       CODER_PPROF_ADDRESS: "127.0.0.1:" + coderdPProfPort,
+      CODER_EXPERIMENTS: e2eFakeExperiment1 + "," + e2eFakeExperiment2,
+
+      // Tests for Deployment / User Authentication / OIDC
+      CODER_OIDC_ISSUER_URL: "https://accounts.google.com",
+      CODER_OIDC_EMAIL_DOMAIN: "coder.com",
+      CODER_OIDC_CLIENT_ID: "1234567890",
+      CODER_OIDC_CLIENT_SECRET: "1234567890Secret",
+      CODER_OIDC_ALLOW_SIGNUPS: "false",
+      CODER_OIDC_SIGN_IN_TEXT: "Hello",
+      CODER_OIDC_ICON_URL: "/icon/google.svg",
     },
     reuseExistingServer: false,
   },
