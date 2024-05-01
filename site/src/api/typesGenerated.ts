@@ -124,6 +124,7 @@ export interface AuthMethod {
 
 // From codersdk/users.go
 export interface AuthMethods {
+  readonly terms_of_service_url?: string;
   readonly password: AuthMethod;
   readonly github: AuthMethod;
   readonly oidc: OIDCAuthMethod;
@@ -164,6 +165,7 @@ export interface BuildInfoResponse {
   readonly workspace_proxy: boolean;
   readonly agent_api_version: string;
   readonly upgrade_message: string;
+  readonly deployment_id: string;
 }
 
 // From codersdk/insights.go
@@ -445,6 +447,7 @@ export interface DeploymentValues {
   readonly allow_workspace_renames?: boolean;
   readonly healthcheck?: HealthcheckConfig;
   readonly cli_upgrade_message?: string;
+  readonly terms_of_service_url?: string;
   readonly config?: string;
   readonly write_config?: boolean;
   readonly address?: string;
