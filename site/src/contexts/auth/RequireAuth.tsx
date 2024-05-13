@@ -1,6 +1,6 @@
 import { type FC, useEffect } from "react";
 import { Outlet, Navigate, useLocation } from "react-router-dom";
-import { axiosInstance } from "api/api";
+import { API } from "api/api";
 import { isApiError } from "api/errors";
 import { Loader } from "components/Loader/Loader";
 import { ProxyProvider } from "contexts/ProxyContext";
@@ -9,19 +9,16 @@ import { embedRedirect } from "utils/redirect";
 import { type AuthContextValue, useAuthContext } from "./AuthProvider";
 
 export const RequireAuth: FC = () => {
+  const location = useLocation();
   const { signOut, isSigningOut, isSignedOut, isSignedIn, isLoading } =
     useAuthContext();
-  const location = useLocation();
-  const isHomePage = location.pathname === "/";
-  const navigateTo = isHomePage
-    ? "/login"
-    : embedRedirect(`${location.pathname}${location.search}`);
 
   useEffect(() => {
     if (isLoading || isSigningOut || !isSignedIn) {
       return;
     }
 
+    const axiosInstance = API.getAxiosInstance();
     const interceptorHandle = axiosInstance.interceptors.response.use(
       (okResponse) => okResponse,
       (error: unknown) => {
@@ -48,6 +45,11 @@ export const RequireAuth: FC = () => {
   }
 
   if (isSignedOut) {
+    const isHomePage = location.pathname === "/";
+    const navigateTo = isHomePage
+      ? "/login"
+      : embedRedirect(`${location.pathname}${location.search}`);
+
     return (
       <Navigate to={navigateTo} state={{ isRedirect: !isHomePage }} replace />
     );
@@ -64,7 +66,15 @@ export const RequireAuth: FC = () => {
   );
 };
 
-export const useAuthenticated = () => {
+// We can do some TS magic here but I would rather to be explicit on what
+// values are not undefined when authenticated
+type NonNullableAuth = AuthContextValue & {
+  user: Exclude<AuthContextValue["user"], undefined>;
+  permissions: Exclude<AuthContextValue["permissions"], undefined>;
+  organizationId: Exclude<AuthContextValue["organizationId"], undefined>;
+};
+
+export const useAuthenticated = (): NonNullableAuth => {
   const auth = useAuthContext();
 
   if (!auth.user) {
@@ -75,11 +85,5 @@ export const useAuthenticated = () => {
     throw new Error("Permissions are not available.");
   }
 
-  // We can do some TS magic here but I would rather to be explicit on what
-  // values are not undefined when authenticated
-  return auth as AuthContextValue & {
-    user: Exclude<AuthContextValue["user"], undefined>;
-    permissions: Exclude<AuthContextValue["permissions"], undefined>;
-    organizationId: Exclude<AuthContextValue["organizationId"], undefined>;
-  };
+  return auth as NonNullableAuth;
 };
