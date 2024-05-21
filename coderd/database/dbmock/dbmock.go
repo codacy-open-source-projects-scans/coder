@@ -173,6 +173,21 @@ func (mr *MockStoreMockRecorder) CleanTailnetTunnels(arg0 any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CleanTailnetTunnels", reflect.TypeOf((*MockStore)(nil).CleanTailnetTunnels), arg0)
 }
 
+// CustomRolesByName mocks base method.
+func (m *MockStore) CustomRolesByName(arg0 context.Context, arg1 []string) ([]database.CustomRole, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "CustomRolesByName", arg0, arg1)
+	ret0, _ := ret[0].([]database.CustomRole)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// CustomRolesByName indicates an expected call of CustomRolesByName.
+func (mr *MockStoreMockRecorder) CustomRolesByName(arg0, arg1 any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CustomRolesByName", reflect.TypeOf((*MockStore)(nil).CustomRolesByName), arg0, arg1)
+}
+
 // DeleteAPIKeyByID mocks base method.
 func (m *MockStore) DeleteAPIKeyByID(arg0 context.Context, arg1 string) error {
 	m.ctrl.T.Helper()
@@ -2070,6 +2085,21 @@ func (mr *MockStoreMockRecorder) GetTemplateVersionVariables(arg0, arg1 any) *go
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetTemplateVersionVariables", reflect.TypeOf((*MockStore)(nil).GetTemplateVersionVariables), arg0, arg1)
 }
 
+// GetTemplateVersionWorkspaceTags mocks base method.
+func (m *MockStore) GetTemplateVersionWorkspaceTags(arg0 context.Context, arg1 uuid.UUID) ([]database.TemplateVersionWorkspaceTag, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetTemplateVersionWorkspaceTags", arg0, arg1)
+	ret0, _ := ret[0].([]database.TemplateVersionWorkspaceTag)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetTemplateVersionWorkspaceTags indicates an expected call of GetTemplateVersionWorkspaceTags.
+func (mr *MockStoreMockRecorder) GetTemplateVersionWorkspaceTags(arg0, arg1 any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetTemplateVersionWorkspaceTags", reflect.TypeOf((*MockStore)(nil).GetTemplateVersionWorkspaceTags), arg0, arg1)
+}
+
 // GetTemplateVersionsByIDs mocks base method.
 func (m *MockStore) GetTemplateVersionsByIDs(arg0 context.Context, arg1 []uuid.UUID) ([]database.TemplateVersion, error) {
 	m.ctrl.T.Helper()
@@ -3338,6 +3368,21 @@ func (mr *MockStoreMockRecorder) InsertTemplateVersionVariable(arg0, arg1 any) *
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "InsertTemplateVersionVariable", reflect.TypeOf((*MockStore)(nil).InsertTemplateVersionVariable), arg0, arg1)
 }
 
+// InsertTemplateVersionWorkspaceTag mocks base method.
+func (m *MockStore) InsertTemplateVersionWorkspaceTag(arg0 context.Context, arg1 database.InsertTemplateVersionWorkspaceTagParams) (database.TemplateVersionWorkspaceTag, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "InsertTemplateVersionWorkspaceTag", arg0, arg1)
+	ret0, _ := ret[0].(database.TemplateVersionWorkspaceTag)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// InsertTemplateVersionWorkspaceTag indicates an expected call of InsertTemplateVersionWorkspaceTag.
+func (mr *MockStoreMockRecorder) InsertTemplateVersionWorkspaceTag(arg0, arg1 any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "InsertTemplateVersionWorkspaceTag", reflect.TypeOf((*MockStore)(nil).InsertTemplateVersionWorkspaceTag), arg0, arg1)
+}
+
 // InsertUser mocks base method.
 func (m *MockStore) InsertUser(arg0 context.Context, arg1 database.InsertUserParams) (database.User, error) {
 	m.ctrl.T.Helper()
@@ -4505,6 +4550,21 @@ func (m *MockStore) UpsertApplicationName(arg0 context.Context, arg1 string) err
 func (mr *MockStoreMockRecorder) UpsertApplicationName(arg0, arg1 any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpsertApplicationName", reflect.TypeOf((*MockStore)(nil).UpsertApplicationName), arg0, arg1)
+}
+
+// UpsertCustomRole mocks base method.
+func (m *MockStore) UpsertCustomRole(arg0 context.Context, arg1 database.UpsertCustomRoleParams) (database.CustomRole, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "UpsertCustomRole", arg0, arg1)
+	ret0, _ := ret[0].(database.CustomRole)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// UpsertCustomRole indicates an expected call of UpsertCustomRole.
+func (mr *MockStoreMockRecorder) UpsertCustomRole(arg0, arg1 any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpsertCustomRole", reflect.TypeOf((*MockStore)(nil).UpsertCustomRole), arg0, arg1)
 }
 
 // UpsertDefaultProxy mocks base method.

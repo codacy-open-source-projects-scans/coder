@@ -104,7 +104,7 @@ require (
 	github.com/coder/flog v1.1.0
 	github.com/coder/pretty v0.0.0-20230908205945-e89ba86370e0
 	github.com/coder/retry v1.5.1
-	github.com/coder/terraform-provider-coder v0.21.0
+	github.com/coder/terraform-provider-coder v0.22.0
 	github.com/coder/wgtunnel v0.1.13-0.20231127054351-578bfff9b92a
 	github.com/coreos/go-oidc/v3 v3.10.0
 	github.com/coreos/go-systemd v0.0.0-20191104093116-d3cd4ed1dbcf
@@ -115,7 +115,7 @@ require (
 	github.com/fatih/color v1.16.0
 	github.com/fatih/structs v1.1.0
 	github.com/fatih/structtag v1.2.0
-	github.com/fergusstrange/embedded-postgres v1.26.0
+	github.com/fergusstrange/embedded-postgres v1.27.0
 	github.com/fullsailor/pkcs7 v0.0.0-20190404230743-d7302db945fa
 	github.com/gen2brain/beeep v0.0.0-20220402123239-6a3042f4b71a
 	github.com/gliderlabs/ssh v0.3.4

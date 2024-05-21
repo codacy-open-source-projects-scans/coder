@@ -14,12 +14,14 @@ import (
 
 	"github.com/coder/coder/v2/coderd/database"
 	"github.com/coder/coder/v2/coderd/rbac"
+	"github.com/coder/coder/v2/coderd/rbac/policy"
 )
 
 var (
 	// Force these imports, for some reason the autogen does not include them.
 	_ uuid.UUID
-	_ rbac.Action
+	_ policy.Action
+	_ rbac.Objecter
 )
 
 const wrapname = "dbmetrics.metricsStore"
@@ -140,6 +142,13 @@ func (m metricsStore) CleanTailnetTunnels(ctx context.Context) error {
 	r0 := m.s.CleanTailnetTunnels(ctx)
 	m.queryLatencies.WithLabelValues("CleanTailnetTunnels").Observe(time.Since(start).Seconds())
 	return r0
+}
+
+func (m metricsStore) CustomRolesByName(ctx context.Context, lookupRoles []string) ([]database.CustomRole, error) {
+	start := time.Now()
+	r0, r1 := m.s.CustomRolesByName(ctx, lookupRoles)
+	m.queryLatencies.WithLabelValues("CustomRolesByName").Observe(time.Since(start).Seconds())
+	return r0, r1
 }
 
 func (m metricsStore) DeleteAPIKeyByID(ctx context.Context, id string) error {
@@ -1003,6 +1012,13 @@ func (m metricsStore) GetTemplateVersionVariables(ctx context.Context, templateV
 	return variables, err
 }
 
+func (m metricsStore) GetTemplateVersionWorkspaceTags(ctx context.Context, templateVersionID uuid.UUID) ([]database.TemplateVersionWorkspaceTag, error) {
+	start := time.Now()
+	r0, r1 := m.s.GetTemplateVersionWorkspaceTags(ctx, templateVersionID)
+	m.queryLatencies.WithLabelValues("GetTemplateVersionWorkspaceTags").Observe(time.Since(start).Seconds())
+	return r0, r1
+}
+
 func (m metricsStore) GetTemplateVersionsByIDs(ctx context.Context, ids []uuid.UUID) ([]database.TemplateVersion, error) {
 	start := time.Now()
 	versions, err := m.s.GetTemplateVersionsByIDs(ctx, ids)
@@ -1591,6 +1607,13 @@ func (m metricsStore) InsertTemplateVersionVariable(ctx context.Context, arg dat
 	return variable, err
 }
 
+func (m metricsStore) InsertTemplateVersionWorkspaceTag(ctx context.Context, arg database.InsertTemplateVersionWorkspaceTagParams) (database.TemplateVersionWorkspaceTag, error) {
+	start := time.Now()
+	r0, r1 := m.s.InsertTemplateVersionWorkspaceTag(ctx, arg)
+	m.queryLatencies.WithLabelValues("InsertTemplateVersionWorkspaceTag").Observe(time.Since(start).Seconds())
+	return r0, r1
+}
+
 func (m metricsStore) InsertUser(ctx context.Context, arg database.InsertUserParams) (database.User, error) {
 	start := time.Now()
 	user, err := m.s.InsertUser(ctx, arg)
@@ -2149,6 +2172,13 @@ func (m metricsStore) UpsertApplicationName(ctx context.Context, value string) e
 	r0 := m.s.UpsertApplicationName(ctx, value)
 	m.queryLatencies.WithLabelValues("UpsertApplicationName").Observe(time.Since(start).Seconds())
 	return r0
+}
+
+func (m metricsStore) UpsertCustomRole(ctx context.Context, arg database.UpsertCustomRoleParams) (database.CustomRole, error) {
+	start := time.Now()
+	r0, r1 := m.s.UpsertCustomRole(ctx, arg)
+	m.queryLatencies.WithLabelValues("UpsertCustomRole").Observe(time.Since(start).Seconds())
+	return r0, r1
 }
 
 func (m metricsStore) UpsertDefaultProxy(ctx context.Context, arg database.UpsertDefaultProxyParams) error {
