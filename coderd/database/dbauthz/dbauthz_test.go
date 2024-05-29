@@ -624,7 +624,7 @@ func (s *MethodTestSuite) TestOrganization() {
 	s.Run("InsertOrganization", s.Subtest(func(db database.Store, check *expects) {
 		check.Args(database.InsertOrganizationParams{
 			ID:   uuid.New(),
-			Name: "random",
+			Name: "new-org",
 		}).Asserts(rbac.ResourceOrganization, policy.ActionCreate)
 	}))
 	s.Run("InsertOrganizationMember", s.Subtest(func(db database.Store, check *expects) {
@@ -638,6 +638,23 @@ func (s *MethodTestSuite) TestOrganization() {
 		}).Asserts(
 			rbac.ResourceAssignRole.InOrg(o.ID), policy.ActionAssign,
 			rbac.ResourceOrganizationMember.InOrg(o.ID).WithID(u.ID), policy.ActionCreate)
+	}))
+	s.Run("UpdateOrganization", s.Subtest(func(db database.Store, check *expects) {
+		o := dbgen.Organization(s.T(), db, database.Organization{
+			Name: "something-unique",
+		})
+		check.Args(database.UpdateOrganizationParams{
+			ID:   o.ID,
+			Name: "something-different",
+		}).Asserts(o, policy.ActionUpdate)
+	}))
+	s.Run("DeleteOrganization", s.Subtest(func(db database.Store, check *expects) {
+		o := dbgen.Organization(s.T(), db, database.Organization{
+			Name: "doomed",
+		})
+		check.Args(
+			o.ID,
+		).Asserts(o, policy.ActionDelete)
 	}))
 	s.Run("UpdateMemberRoles", s.Subtest(func(db database.Store, check *expects) {
 		o := dbgen.Organization(s.T(), db, database.Organization{})
@@ -1177,8 +1194,8 @@ func (s *MethodTestSuite) TestUser() {
 		b := dbgen.User(s.T(), db, database.User{})
 		check.Args().Asserts(rbac.ResourceSystem, policy.ActionRead).Returns(slice.New(a.ID, b.ID))
 	}))
-	s.Run("CustomRolesByName", s.Subtest(func(db database.Store, check *expects) {
-		check.Args([]string{}).Asserts(rbac.ResourceAssignRole, policy.ActionRead).Returns([]database.CustomRole{})
+	s.Run("CustomRoles", s.Subtest(func(db database.Store, check *expects) {
+		check.Args(database.CustomRolesParams{}).Asserts(rbac.ResourceAssignRole, policy.ActionRead).Returns([]database.CustomRole{})
 	}))
 	s.Run("Blank/UpsertCustomRole", s.Subtest(func(db database.Store, check *expects) {
 		// Blank is no perms in the role

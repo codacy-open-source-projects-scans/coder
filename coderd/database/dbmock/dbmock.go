@@ -173,19 +173,19 @@ func (mr *MockStoreMockRecorder) CleanTailnetTunnels(arg0 any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CleanTailnetTunnels", reflect.TypeOf((*MockStore)(nil).CleanTailnetTunnels), arg0)
 }
 
-// CustomRolesByName mocks base method.
-func (m *MockStore) CustomRolesByName(arg0 context.Context, arg1 []string) ([]database.CustomRole, error) {
+// CustomRoles mocks base method.
+func (m *MockStore) CustomRoles(arg0 context.Context, arg1 database.CustomRolesParams) ([]database.CustomRole, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "CustomRolesByName", arg0, arg1)
+	ret := m.ctrl.Call(m, "CustomRoles", arg0, arg1)
 	ret0, _ := ret[0].([]database.CustomRole)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
-// CustomRolesByName indicates an expected call of CustomRolesByName.
-func (mr *MockStoreMockRecorder) CustomRolesByName(arg0, arg1 any) *gomock.Call {
+// CustomRoles indicates an expected call of CustomRoles.
+func (mr *MockStoreMockRecorder) CustomRoles(arg0, arg1 any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CustomRolesByName", reflect.TypeOf((*MockStore)(nil).CustomRolesByName), arg0, arg1)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CustomRoles", reflect.TypeOf((*MockStore)(nil).CustomRoles), arg0, arg1)
 }
 
 // DeleteAPIKeyByID mocks base method.
@@ -453,6 +453,20 @@ func (m *MockStore) DeleteOldWorkspaceAgentStats(arg0 context.Context) error {
 func (mr *MockStoreMockRecorder) DeleteOldWorkspaceAgentStats(arg0 any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteOldWorkspaceAgentStats", reflect.TypeOf((*MockStore)(nil).DeleteOldWorkspaceAgentStats), arg0)
+}
+
+// DeleteOrganization mocks base method.
+func (m *MockStore) DeleteOrganization(arg0 context.Context, arg1 uuid.UUID) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "DeleteOrganization", arg0, arg1)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// DeleteOrganization indicates an expected call of DeleteOrganization.
+func (mr *MockStoreMockRecorder) DeleteOrganization(arg0, arg1 any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteOrganization", reflect.TypeOf((*MockStore)(nil).DeleteOrganization), arg0, arg1)
 }
 
 // DeleteReplicasUpdatedBefore mocks base method.
@@ -3879,6 +3893,21 @@ func (m *MockStore) UpdateOAuth2ProviderAppSecretByID(arg0 context.Context, arg1
 func (mr *MockStoreMockRecorder) UpdateOAuth2ProviderAppSecretByID(arg0, arg1 any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateOAuth2ProviderAppSecretByID", reflect.TypeOf((*MockStore)(nil).UpdateOAuth2ProviderAppSecretByID), arg0, arg1)
+}
+
+// UpdateOrganization mocks base method.
+func (m *MockStore) UpdateOrganization(arg0 context.Context, arg1 database.UpdateOrganizationParams) (database.Organization, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "UpdateOrganization", arg0, arg1)
+	ret0, _ := ret[0].(database.Organization)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// UpdateOrganization indicates an expected call of UpdateOrganization.
+func (mr *MockStoreMockRecorder) UpdateOrganization(arg0, arg1 any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateOrganization", reflect.TypeOf((*MockStore)(nil).UpdateOrganization), arg0, arg1)
 }
 
 // UpdateProvisionerDaemonLastSeenAt mocks base method.

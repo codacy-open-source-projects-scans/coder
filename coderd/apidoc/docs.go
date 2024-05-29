@@ -1987,6 +1987,82 @@ const docTemplate = `{
                         }
                     }
                 }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Organizations"
+                ],
+                "summary": "Delete organization",
+                "operationId": "delete-organization",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Organization ID or name",
+                        "name": "organization",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.Response"
+                        }
+                    }
+                }
+            },
+            "patch": {
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Organizations"
+                ],
+                "summary": "Update organization",
+                "operationId": "update-organization",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Organization ID or name",
+                        "name": "organization",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Patch organization request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.UpdateOrganizationRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.Organization"
+                        }
+                    }
+                }
             }
         },
         "/organizations/{organization}/groups": {
@@ -8335,11 +8411,41 @@ const docTemplate = `{
                 "assignable": {
                     "type": "boolean"
                 },
+                "built_in": {
+                    "description": "BuiltIn roles are immutable",
+                    "type": "boolean"
+                },
                 "display_name": {
                     "type": "string"
                 },
                 "name": {
                     "type": "string"
+                },
+                "organization_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "organization_permissions": {
+                    "description": "map[\u003corg_id\u003e] -\u003e Permissions",
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/definitions/codersdk.Permission"
+                        }
+                    }
+                },
+                "site_permissions": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.Permission"
+                    }
+                },
+                "user_permissions": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.Permission"
+                    }
                 }
             }
         },
@@ -11139,6 +11245,10 @@ const docTemplate = `{
                 "name": {
                     "type": "string"
                 },
+                "organization_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
                 "organization_permissions": {
                     "description": "map[\u003corg_id\u003e] -\u003e Permissions",
                     "type": "object",
@@ -12069,6 +12179,17 @@ const docTemplate = `{
                 },
                 "version": {
                     "description": "Version is the semantic version for the latest release of Coder.",
+                    "type": "string"
+                }
+            }
+        },
+        "codersdk.UpdateOrganizationRequest": {
+            "type": "object",
+            "required": [
+                "name"
+            ],
+            "properties": {
+                "name": {
                     "type": "string"
                 }
             }
@@ -14376,7 +14497,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "host": {
-                    "description": "host or host:port",
+                    "description": "host or host:port (see Hostname and Port methods)",
                     "type": "string"
                 },
                 "omitHost": {

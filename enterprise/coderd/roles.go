@@ -3,6 +3,8 @@ package coderd
 import (
 	"net/http"
 
+	"github.com/google/uuid"
+
 	"github.com/coder/coder/v2/coderd/database"
 	"github.com/coder/coder/v2/coderd/database/db2sdk"
 	"github.com/coder/coder/v2/coderd/httpapi"
@@ -24,6 +26,14 @@ func (api *API) patchRole(rw http.ResponseWriter, r *http.Request) {
 
 	var req codersdk.Role
 	if !httpapi.Read(ctx, rw, r, &req) {
+		return
+	}
+
+	if err := httpapi.NameValid(req.Name); err != nil {
+		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
+			Message: "Invalid role name",
+			Detail:  err.Error(),
+		})
 		return
 	}
 
@@ -51,6 +61,7 @@ func (api *API) patchRole(rw http.ResponseWriter, r *http.Request) {
 	inserted, err := api.Database.UpsertCustomRole(ctx, database.UpsertCustomRoleParams{
 		Name:            args.Name,
 		DisplayName:     args.DisplayName,
+		OrganizationID:  uuid.NullUUID{},
 		SitePermissions: args.SitePermissions,
 		OrgPermissions:  args.OrgPermissions,
 		UserPermissions: args.UserPermissions,
