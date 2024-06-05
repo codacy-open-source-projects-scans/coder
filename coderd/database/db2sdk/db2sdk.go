@@ -18,7 +18,6 @@ import (
 	"github.com/coder/coder/v2/coderd/database"
 	"github.com/coder/coder/v2/coderd/parameter"
 	"github.com/coder/coder/v2/coderd/rbac"
-	"github.com/coder/coder/v2/coderd/rbac/policy"
 	"github.com/coder/coder/v2/coderd/workspaceapps/appurl"
 	"github.com/coder/coder/v2/codersdk"
 	"github.com/coder/coder/v2/provisionersdk/proto"
@@ -526,22 +525,40 @@ func ProvisionerDaemon(dbDaemon database.ProvisionerDaemon) codersdk.Provisioner
 	return result
 }
 
-func Role(role rbac.Role) codersdk.Role {
+func RBACRole(role rbac.Role) codersdk.Role {
 	roleName, orgIDStr, err := rbac.RoleSplit(role.Name)
 	if err != nil {
 		roleName = role.Name
 	}
+	orgPerms := role.Org[orgIDStr]
+
 	return codersdk.Role{
 		Name:                    roleName,
 		OrganizationID:          orgIDStr,
 		DisplayName:             role.DisplayName,
-		SitePermissions:         List(role.Site, Permission),
-		OrganizationPermissions: Map(role.Org, ListLazy(Permission)),
-		UserPermissions:         List(role.User, Permission),
+		SitePermissions:         List(role.Site, RBACPermission),
+		OrganizationPermissions: List(orgPerms, RBACPermission),
+		UserPermissions:         List(role.User, RBACPermission),
 	}
 }
 
-func Permission(permission rbac.Permission) codersdk.Permission {
+func Role(role database.CustomRole) codersdk.Role {
+	orgID := ""
+	if role.OrganizationID.UUID != uuid.Nil {
+		orgID = role.OrganizationID.UUID.String()
+	}
+
+	return codersdk.Role{
+		Name:                    role.Name,
+		OrganizationID:          orgID,
+		DisplayName:             role.DisplayName,
+		SitePermissions:         List(role.SitePermissions, Permission),
+		OrganizationPermissions: List(role.OrgPermissions, Permission),
+		UserPermissions:         List(role.UserPermissions, Permission),
+	}
+}
+
+func Permission(permission database.CustomRolePermission) codersdk.Permission {
 	return codersdk.Permission{
 		Negate:       permission.Negate,
 		ResourceType: codersdk.RBACResource(permission.ResourceType),
@@ -549,20 +566,10 @@ func Permission(permission rbac.Permission) codersdk.Permission {
 	}
 }
 
-func RoleToRBAC(role codersdk.Role) rbac.Role {
-	return rbac.Role{
-		Name:        rbac.RoleName(role.Name, role.OrganizationID),
-		DisplayName: role.DisplayName,
-		Site:        List(role.SitePermissions, PermissionToRBAC),
-		Org:         Map(role.OrganizationPermissions, ListLazy(PermissionToRBAC)),
-		User:        List(role.UserPermissions, PermissionToRBAC),
-	}
-}
-
-func PermissionToRBAC(permission codersdk.Permission) rbac.Permission {
-	return rbac.Permission{
+func RBACPermission(permission rbac.Permission) codersdk.Permission {
+	return codersdk.Permission{
 		Negate:       permission.Negate,
-		ResourceType: string(permission.ResourceType),
-		Action:       policy.Action(permission.Action),
+		ResourceType: codersdk.RBACResource(permission.ResourceType),
+		Action:       codersdk.RBACAction(permission.Action),
 	}
 }

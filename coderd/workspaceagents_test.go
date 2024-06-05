@@ -921,6 +921,48 @@ func TestWorkspaceAgentAppHealth(t *testing.T) {
 	require.EqualValues(t, codersdk.WorkspaceAppHealthUnhealthy, manifest.Apps[1].Health)
 }
 
+func TestWorkspaceAgentPostLogSource(t *testing.T) {
+	t.Parallel()
+
+	t.Run("OK", func(t *testing.T) {
+		t.Parallel()
+		client, db := coderdtest.NewWithDatabase(t, nil)
+		user := coderdtest.CreateFirstUser(t, client)
+		ctx := testutil.Context(t, testutil.WaitShort)
+
+		r := dbfake.WorkspaceBuild(t, db, database.Workspace{
+			OrganizationID: user.OrganizationID,
+			OwnerID:        user.UserID,
+		}).WithAgent().Do()
+
+		agentClient := agentsdk.New(client.URL)
+		agentClient.SetSessionToken(r.AgentToken)
+
+		req := agentsdk.PostLogSourceRequest{
+			ID:          uuid.New(),
+			DisplayName: "colin logs",
+			Icon:        "/emojis/1f42e.png",
+		}
+
+		res, err := agentClient.PostLogSource(ctx, req)
+		require.NoError(t, err)
+		assert.Equal(t, req.ID, res.ID)
+		assert.Equal(t, req.DisplayName, res.DisplayName)
+		assert.Equal(t, req.Icon, res.Icon)
+		assert.NotZero(t, res.WorkspaceAgentID)
+		assert.NotZero(t, res.CreatedAt)
+
+		// should be idempotent
+		res, err = agentClient.PostLogSource(ctx, req)
+		require.NoError(t, err)
+		assert.Equal(t, req.ID, res.ID)
+		assert.Equal(t, req.DisplayName, res.DisplayName)
+		assert.Equal(t, req.Icon, res.Icon)
+		assert.NotZero(t, res.WorkspaceAgentID)
+		assert.NotZero(t, res.CreatedAt)
+	})
+}
+
 // TestWorkspaceAgentReportStats tests the legacy (agent API v1) report stats endpoint.
 func TestWorkspaceAgentReportStats(t *testing.T) {
 	t.Parallel()
@@ -939,32 +981,6 @@ func TestWorkspaceAgentReportStats(t *testing.T) {
 		agentClient.SetSessionToken(r.AgentToken)
 
 		_, err := agentClient.PostStats(context.Background(), &agentsdk.Stats{
-			ConnectionsByProto: map[string]int64{"TCP": 1},
-			// Set connection count to 1 but all session counts to zero to
-			// assert we aren't updating last_used_at for a connections that may
-			// be spawned passively by the dashboard.
-			ConnectionCount:             1,
-			RxPackets:                   1,
-			RxBytes:                     1,
-			TxPackets:                   1,
-			TxBytes:                     1,
-			SessionCountVSCode:          0,
-			SessionCountJetBrains:       0,
-			SessionCountReconnectingPTY: 0,
-			SessionCountSSH:             0,
-			ConnectionMedianLatencyMS:   10,
-		})
-		require.NoError(t, err)
-
-		newWorkspace, err := client.Workspace(context.Background(), r.Workspace.ID)
-		require.NoError(t, err)
-
-		assert.True(t,
-			newWorkspace.LastUsedAt.Equal(r.Workspace.LastUsedAt),
-			"%s and %s should not differ", newWorkspace.LastUsedAt, r.Workspace.LastUsedAt,
-		)
-
-		_, err = agentClient.PostStats(context.Background(), &agentsdk.Stats{
 			ConnectionsByProto:          map[string]int64{"TCP": 1},
 			ConnectionCount:             1,
 			RxPackets:                   1,
@@ -979,7 +995,7 @@ func TestWorkspaceAgentReportStats(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		newWorkspace, err = client.Workspace(context.Background(), r.Workspace.ID)
+		newWorkspace, err := client.Workspace(context.Background(), r.Workspace.ID)
 		require.NoError(t, err)
 
 		assert.True(t,

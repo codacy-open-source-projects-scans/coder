@@ -34,9 +34,7 @@ import (
 	"github.com/coder/coder/v2/coderd/externalauth"
 	"github.com/coder/coder/v2/coderd/httpapi"
 	"github.com/coder/coder/v2/coderd/httpmw"
-	"github.com/coder/coder/v2/coderd/prometheusmetrics"
 	"github.com/coder/coder/v2/coderd/rbac/policy"
-	"github.com/coder/coder/v2/coderd/schedule"
 	"github.com/coder/coder/v2/codersdk"
 	"github.com/coder/coder/v2/codersdk/agentsdk"
 	"github.com/coder/coder/v2/codersdk/workspacesdk"
@@ -1086,6 +1084,56 @@ func (api *API) workspaceAgentClientCoordinate(rw http.ResponseWriter, r *http.R
 	}
 }
 
+// @Summary Post workspace agent log source
+// @ID post-workspace-agent-log-source
+// @Security CoderSessionToken
+// @Accept json
+// @Produce json
+// @Tags Agents
+// @Param request body agentsdk.PostLogSourceRequest true "Log source request"
+// @Success 200 {object} codersdk.WorkspaceAgentLogSource
+// @Router /workspaceagents/me/log-source [post]
+func (api *API) workspaceAgentPostLogSource(rw http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	var req agentsdk.PostLogSourceRequest
+	if !httpapi.Read(ctx, rw, r, &req) {
+		return
+	}
+
+	workspaceAgent := httpmw.WorkspaceAgent(r)
+
+	sources, err := api.Database.InsertWorkspaceAgentLogSources(ctx, database.InsertWorkspaceAgentLogSourcesParams{
+		WorkspaceAgentID: workspaceAgent.ID,
+		CreatedAt:        dbtime.Now(),
+		ID:               []uuid.UUID{req.ID},
+		DisplayName:      []string{req.DisplayName},
+		Icon:             []string{req.Icon},
+	})
+	if err != nil {
+		if database.IsUniqueViolation(err, "workspace_agent_log_sources_pkey") {
+			httpapi.Write(ctx, rw, http.StatusCreated, codersdk.WorkspaceAgentLogSource{
+				WorkspaceAgentID: workspaceAgent.ID,
+				CreatedAt:        dbtime.Now(),
+				ID:               req.ID,
+				DisplayName:      req.DisplayName,
+				Icon:             req.Icon,
+			})
+			return
+		}
+		httpapi.InternalServerError(rw, err)
+		return
+	}
+
+	if len(sources) != 1 {
+		httpapi.InternalServerError(rw, xerrors.Errorf("database should've returned 1 row, got %d", len(sources)))
+		return
+	}
+
+	apiSource := convertLogSources(sources)[0]
+
+	httpapi.Write(ctx, rw, http.StatusCreated, apiSource)
+}
+
 // convertProvisionedApps converts applications that are in the middle of provisioning process.
 // It means that they may not have an agent or workspace assigned (dry-run job).
 func convertProvisionedApps(dbApps []database.WorkspaceApp) []codersdk.WorkspaceApp {
@@ -1167,35 +1215,6 @@ func (api *API) workspaceAgentReportStats(rw http.ResponseWriter, r *http.Reques
 		slog.F("payload", req),
 	)
 
-	if req.ConnectionCount > 0 {
-		var nextAutostart time.Time
-		if workspace.AutostartSchedule.String != "" {
-			templateSchedule, err := (*(api.TemplateScheduleStore.Load())).Get(ctx, api.Database, workspace.TemplateID)
-			// If the template schedule fails to load, just default to bumping without the next transition and log it.
-			if err != nil {
-				// There's nothing we can do if the query was canceled, the
-				// client most likely went away so we just return an internal
-				// server error.
-				if database.IsQueryCanceledError(err) {
-					httpapi.InternalServerError(rw, err)
-					return
-				}
-				api.Logger.Error(ctx, "failed to load template schedule bumping activity, defaulting to bumping by 60min",
-					slog.F("workspace_id", workspace.ID),
-					slog.F("template_id", workspace.TemplateID),
-					slog.Error(err),
-				)
-			} else {
-				next, allowed := schedule.NextAutostart(time.Now(), workspace.AutostartSchedule.String, templateSchedule)
-				if allowed {
-					nextAutostart = next
-				}
-			}
-		}
-		agentapi.ActivityBumpWorkspace(ctx, api.Logger.Named("activity_bump"), api.Database, workspace.ID, nextAutostart)
-	}
-
-	now := dbtime.Now()
 	protoStats := &agentproto.Stats{
 		ConnectionsByProto:          req.ConnectionsByProto,
 		ConnectionCount:             req.ConnectionCount,
@@ -1232,46 +1251,14 @@ func (api *API) workspaceAgentReportStats(rw http.ResponseWriter, r *http.Reques
 			}
 		}
 	}
-
-	var errGroup errgroup.Group
-	errGroup.Go(func() error {
-		err := api.statsBatcher.Add(time.Now(), workspaceAgent.ID, workspace.TemplateID, workspace.OwnerID, workspace.ID, protoStats)
-		if err != nil {
-			api.Logger.Error(ctx, "failed to add stats to batcher", slog.Error(err))
-			return xerrors.Errorf("can't insert workspace agent stat: %w", err)
-		}
-		return nil
-	})
-	if req.SessionCount() > 0 {
-		errGroup.Go(func() error {
-			// nolint:gocritic // (#13146) Will be moved soon as part of refactor.
-			err := api.Database.UpdateWorkspaceLastUsedAt(ctx, database.UpdateWorkspaceLastUsedAtParams{
-				ID:         workspace.ID,
-				LastUsedAt: now,
-			})
-			if err != nil {
-				return xerrors.Errorf("can't update workspace LastUsedAt: %w", err)
-			}
-			return nil
-		})
-	}
-	if api.Options.UpdateAgentMetrics != nil {
-		errGroup.Go(func() error {
-			user, err := api.Database.GetUserByID(ctx, workspace.OwnerID)
-			if err != nil {
-				return xerrors.Errorf("can't get user: %w", err)
-			}
-
-			api.Options.UpdateAgentMetrics(ctx, prometheusmetrics.AgentMetricLabels{
-				Username:      user.Username,
-				WorkspaceName: workspace.Name,
-				AgentName:     workspaceAgent.Name,
-				TemplateName:  row.TemplateName,
-			}, protoStats.Metrics)
-			return nil
-		})
-	}
-	err = errGroup.Wait()
+	err = api.statsReporter.ReportAgentStats(
+		ctx,
+		dbtime.Now(),
+		workspace,
+		workspaceAgent,
+		row.TemplateName,
+		protoStats,
+	)
 	if err != nil {
 		httpapi.InternalServerError(rw, err)
 		return
@@ -1975,25 +1962,25 @@ func (api *API) workspaceAgentsExternalAuth(rw http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	externalAuthLink, valid, err := externalAuthConfig.RefreshToken(ctx, api.Database, externalAuthLink)
-	if err != nil {
+	refreshedLink, err := externalAuthConfig.RefreshToken(ctx, api.Database, externalAuthLink)
+	if err != nil && !externalauth.IsInvalidTokenError(err) {
 		handleRetrying(http.StatusInternalServerError, codersdk.Response{
 			Message: "Failed to refresh external auth token.",
 			Detail:  err.Error(),
 		})
 		return
 	}
-	if !valid {
+	if err != nil {
 		// Set the previous token so the retry logic will skip validating the
 		// same token again. This should only be set if the token is invalid and there
 		// was no error. If it is invalid because of an error, then we should recheck.
-		previousToken = &externalAuthLink
+		previousToken = &refreshedLink
 		handleRetrying(http.StatusOK, agentsdk.ExternalAuthResponse{
 			URL: redirectURL.String(),
 		})
 		return
 	}
-	resp, err := createExternalAuthResponse(externalAuthConfig.Type, externalAuthLink.OAuthAccessToken, externalAuthLink.OAuthExtra)
+	resp, err := createExternalAuthResponse(externalAuthConfig.Type, refreshedLink.OAuthAccessToken, refreshedLink.OAuthExtra)
 	if err != nil {
 		handleRetrying(http.StatusInternalServerError, codersdk.Response{
 			Message: "Failed to create external auth response.",

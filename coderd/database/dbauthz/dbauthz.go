@@ -600,12 +600,27 @@ func (q *querier) canAssignRoles(ctx context.Context, orgID *uuid.UUID, added, r
 	customRoles := make([]string, 0)
 	// Validate that the roles being assigned are valid.
 	for _, r := range grantedRoles {
-		_, isOrgRole := rbac.IsOrgRole(r)
+		roleOrgIDStr, isOrgRole := rbac.IsOrgRole(r)
 		if shouldBeOrgRoles && !isOrgRole {
 			return xerrors.Errorf("Must only update org roles")
 		}
 		if !shouldBeOrgRoles && isOrgRole {
 			return xerrors.Errorf("Must only update site wide roles")
+		}
+
+		if shouldBeOrgRoles {
+			roleOrgID, err := uuid.Parse(roleOrgIDStr)
+			if err != nil {
+				return xerrors.Errorf("role %q has invalid uuid for org: %w", r, err)
+			}
+
+			if orgID == nil {
+				return xerrors.Errorf("should never happen, orgID is nil, but trying to assign an organization role")
+			}
+
+			if roleOrgID != *orgID {
+				return xerrors.Errorf("attempted to assign role from a different org, role %q to %q", r, orgID.String())
+			}
 		}
 
 		// All roles should be valid roles
@@ -1127,6 +1142,11 @@ func (q *querier) GetAllTailnetTunnels(ctx context.Context) ([]database.TailnetT
 	return q.db.GetAllTailnetTunnels(ctx)
 }
 
+func (q *querier) GetAnnouncementBanners(ctx context.Context) (string, error) {
+	// No authz checks
+	return q.db.GetAnnouncementBanners(ctx)
+}
+
 func (q *querier) GetAppSecurityKey(ctx context.Context) (string, error) {
 	// No authz checks
 	return q.db.GetAppSecurityKey(ctx)
@@ -1342,11 +1362,6 @@ func (q *querier) GetLicenses(ctx context.Context) ([]database.License, error) {
 func (q *querier) GetLogoURL(ctx context.Context) (string, error) {
 	// No authz checks
 	return q.db.GetLogoURL(ctx)
-}
-
-func (q *querier) GetNotificationBanners(ctx context.Context) (string, error) {
-	// No authz checks
-	return q.db.GetNotificationBanners(ctx)
 }
 
 func (q *querier) GetOAuth2ProviderAppByID(ctx context.Context, id uuid.UUID) (database.OAuth2ProviderApp, error) {
@@ -3390,6 +3405,13 @@ func (q *querier) UpdateWorkspacesDormantDeletingAtByTemplateID(ctx context.Cont
 	return fetchAndExec(q.log, q.auth, policy.ActionUpdate, fetch, q.db.UpdateWorkspacesDormantDeletingAtByTemplateID)(ctx, arg)
 }
 
+func (q *querier) UpsertAnnouncementBanners(ctx context.Context, value string) error {
+	if err := q.authorizeContext(ctx, policy.ActionUpdate, rbac.ResourceDeploymentConfig); err != nil {
+		return err
+	}
+	return q.db.UpsertAnnouncementBanners(ctx, value)
+}
+
 func (q *querier) UpsertAppSecurityKey(ctx context.Context, data string) error {
 	// No authz checks as this is done during startup
 	return q.db.UpsertAppSecurityKey(ctx, data)
@@ -3419,13 +3441,20 @@ func (q *querier) UpsertCustomRole(ctx context.Context, arg database.UpsertCusto
 		return database.CustomRole{}, err
 	}
 
-	// There is quite a bit of validation we should do here. First, let's make sure the json data is correct.
+	if arg.OrganizationID.UUID == uuid.Nil && len(arg.OrgPermissions) > 0 {
+		return database.CustomRole{}, xerrors.Errorf("organization permissions require specifying an organization id")
+	}
+
+	// There is quite a bit of validation we should do here.
+	// The rbac.Role has a 'Valid()' function on it that will do a lot
+	// of checks.
 	rbacRole, err := rolestore.ConvertDBRole(database.CustomRole{
 		Name:            arg.Name,
 		DisplayName:     arg.DisplayName,
 		SitePermissions: arg.SitePermissions,
 		OrgPermissions:  arg.OrgPermissions,
 		UserPermissions: arg.UserPermissions,
+		OrganizationID:  arg.OrganizationID,
 	})
 	if err != nil {
 		return database.CustomRole{}, xerrors.Errorf("invalid args: %w", err)
@@ -3521,13 +3550,6 @@ func (q *querier) UpsertLogoURL(ctx context.Context, value string) error {
 		return err
 	}
 	return q.db.UpsertLogoURL(ctx, value)
-}
-
-func (q *querier) UpsertNotificationBanners(ctx context.Context, value string) error {
-	if err := q.authorizeContext(ctx, policy.ActionUpdate, rbac.ResourceDeploymentConfig); err != nil {
-		return err
-	}
-	return q.db.UpsertNotificationBanners(ctx, value)
 }
 
 func (q *querier) UpsertOAuthSigningKey(ctx context.Context, value string) error {

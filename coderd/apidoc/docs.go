@@ -1158,6 +1158,15 @@ const docTemplate = `{
                 ],
                 "summary": "Get deployment DAUs",
                 "operationId": "get-deployment-daus",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Time-zone offset (e.g. -2)",
+                        "name": "tz_offset",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
                 "responses": {
                     "200": {
                         "description": "OK",
@@ -1185,18 +1194,41 @@ const docTemplate = `{
                 "operationId": "get-insights-about-templates",
                 "parameters": [
                     {
-                        "type": "integer",
+                        "type": "string",
+                        "format": "date-time",
                         "description": "Start time",
-                        "name": "before",
+                        "name": "start_time",
                         "in": "query",
                         "required": true
                     },
                     {
-                        "type": "integer",
+                        "type": "string",
+                        "format": "date-time",
                         "description": "End time",
-                        "name": "after",
+                        "name": "end_time",
                         "in": "query",
                         "required": true
+                    },
+                    {
+                        "enum": [
+                            "week",
+                            "day"
+                        ],
+                        "type": "string",
+                        "description": "Interval",
+                        "name": "interval",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "collectionFormat": "csv",
+                        "description": "Template IDs",
+                        "name": "template_ids",
+                        "in": "query"
                     }
                 ],
                 "responses": {
@@ -1226,18 +1258,30 @@ const docTemplate = `{
                 "operationId": "get-insights-about-user-activity",
                 "parameters": [
                     {
-                        "type": "integer",
+                        "type": "string",
+                        "format": "date-time",
                         "description": "Start time",
-                        "name": "before",
+                        "name": "start_time",
                         "in": "query",
                         "required": true
                     },
                     {
-                        "type": "integer",
+                        "type": "string",
+                        "format": "date-time",
                         "description": "End time",
-                        "name": "after",
+                        "name": "end_time",
                         "in": "query",
                         "required": true
+                    },
+                    {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "collectionFormat": "csv",
+                        "description": "Template IDs",
+                        "name": "template_ids",
+                        "in": "query"
                     }
                 ],
                 "responses": {
@@ -1267,18 +1311,30 @@ const docTemplate = `{
                 "operationId": "get-insights-about-user-latency",
                 "parameters": [
                     {
-                        "type": "integer",
+                        "type": "string",
+                        "format": "date-time",
                         "description": "Start time",
-                        "name": "before",
+                        "name": "start_time",
                         "in": "query",
                         "required": true
                     },
                     {
-                        "type": "integer",
+                        "type": "string",
+                        "format": "date-time",
                         "description": "End time",
-                        "name": "after",
+                        "name": "end_time",
                         "in": "query",
                         "required": true
+                    },
+                    {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "collectionFormat": "csv",
+                        "description": "Template IDs",
+                        "name": "template_ids",
+                        "in": "query"
                     }
                 ],
                 "responses": {
@@ -2221,6 +2277,42 @@ const docTemplate = `{
                             "type": "array",
                             "items": {
                                 "$ref": "#/definitions/codersdk.AssignableRoles"
+                            }
+                        }
+                    }
+                }
+            },
+            "patch": {
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Members"
+                ],
+                "summary": "Upsert a custom organization role",
+                "operationId": "upsert-a-custom-organization-role",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Organization ID",
+                        "name": "organization",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/codersdk.Role"
                             }
                         }
                     }
@@ -4362,32 +4454,6 @@ const docTemplate = `{
                         }
                     }
                 }
-            },
-            "patch": {
-                "security": [
-                    {
-                        "CoderSessionToken": []
-                    }
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "Members"
-                ],
-                "summary": "Upsert a custom site-wide role",
-                "operationId": "upsert-a-custom-site-wide-role",
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "array",
-                            "items": {
-                                "$ref": "#/definitions/codersdk.Role"
-                            }
-                        }
-                    }
-                }
             }
         },
         "/users/{user}": {
@@ -5800,6 +5866,45 @@ const docTemplate = `{
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/agentsdk.GitSSHKey"
+                        }
+                    }
+                }
+            }
+        },
+        "/workspaceagents/me/log-source": {
+            "post": {
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Agents"
+                ],
+                "summary": "Post workspace agent log source",
+                "operationId": "post-workspace-agent-log-source",
+                "parameters": [
+                    {
+                        "description": "Log source request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/agentsdk.PostLogSourceRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.WorkspaceAgentLogSource"
                         }
                     }
                 }
@@ -8046,6 +8151,21 @@ const docTemplate = `{
                 }
             }
         },
+        "agentsdk.PostLogSourceRequest": {
+            "type": "object",
+            "properties": {
+                "display_name": {
+                    "type": "string"
+                },
+                "icon": {
+                    "type": "string"
+                },
+                "id": {
+                    "description": "ID is a unique identifier for the log source.\nIt is scoped to a workspace agent, and can be statically\ndefined inside code to prevent duplicate sources from being\ncreated for the same agent.",
+                    "type": "string"
+                }
+            }
+        },
         "agentsdk.PostMetadataRequest": {
             "type": "object",
             "properties": {
@@ -8368,20 +8488,20 @@ const docTemplate = `{
         "codersdk.AppearanceConfig": {
             "type": "object",
             "properties": {
+                "announcement_banners": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.BannerConfig"
+                    }
+                },
                 "application_name": {
                     "type": "string"
                 },
                 "logo_url": {
                     "type": "string"
                 },
-                "notification_banners": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/codersdk.BannerConfig"
-                    }
-                },
                 "service_banner": {
-                    "description": "Deprecated: ServiceBanner has been replaced by NotificationBanners.",
+                    "description": "Deprecated: ServiceBanner has been replaced by AnnouncementBanners.",
                     "allOf": [
                         {
                             "$ref": "#/definitions/codersdk.BannerConfig"
@@ -8426,13 +8546,10 @@ const docTemplate = `{
                     "format": "uuid"
                 },
                 "organization_permissions": {
-                    "description": "map[\u003corg_id\u003e] -\u003e Permissions",
-                    "type": "object",
-                    "additionalProperties": {
-                        "type": "array",
-                        "items": {
-                            "$ref": "#/definitions/codersdk.Permission"
-                        }
+                    "description": "OrganizationPermissions are specific for the organization in the field 'OrganizationID' above.",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.Permission"
                     }
                 },
                 "site_permissions": {
@@ -11250,13 +11367,10 @@ const docTemplate = `{
                     "format": "uuid"
                 },
                 "organization_permissions": {
-                    "description": "map[\u003corg_id\u003e] -\u003e Permissions",
-                    "type": "object",
-                    "additionalProperties": {
-                        "type": "array",
-                        "items": {
-                            "$ref": "#/definitions/codersdk.Permission"
-                        }
+                    "description": "OrganizationPermissions are specific for the organization in the field 'OrganizationID' above.",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.Permission"
                     }
                 },
                 "site_permissions": {
@@ -12144,20 +12258,20 @@ const docTemplate = `{
         "codersdk.UpdateAppearanceConfig": {
             "type": "object",
             "properties": {
+                "announcement_banners": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.BannerConfig"
+                    }
+                },
                 "application_name": {
                     "type": "string"
                 },
                 "logo_url": {
                     "type": "string"
                 },
-                "notification_banners": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/codersdk.BannerConfig"
-                    }
-                },
                 "service_banner": {
-                    "description": "Deprecated: ServiceBanner has been replaced by NotificationBanners.",
+                    "description": "Deprecated: ServiceBanner has been replaced by AnnouncementBanners.",
                     "allOf": [
                         {
                             "$ref": "#/definitions/codersdk.BannerConfig"

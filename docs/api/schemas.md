@@ -403,6 +403,24 @@
 | `changed_at` | string                                                               | false    |              |             |
 | `state`      | [codersdk.WorkspaceAgentLifecycle](#codersdkworkspaceagentlifecycle) | false    |              |             |
 
+## agentsdk.PostLogSourceRequest
+
+```json
+{
+  "display_name": "string",
+  "icon": "string",
+  "id": "string"
+}
+```
+
+### Properties
+
+| Name           | Type   | Required | Restrictions | Description                                                                                                                                                                                    |
+| -------------- | ------ | -------- | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `display_name` | string | false    |              |                                                                                                                                                                                                |
+| `icon`         | string | false    |              |                                                                                                                                                                                                |
+| `id`           | string | false    |              | ID is a unique identifier for the log source. It is scoped to a workspace agent, and can be statically defined inside code to prevent duplicate sources from being created for the same agent. |
+
 ## agentsdk.PostMetadataRequest
 
 ```json
@@ -749,15 +767,15 @@
 
 ```json
 {
-  "application_name": "string",
-  "logo_url": "string",
-  "notification_banners": [
+  "announcement_banners": [
     {
       "background_color": "string",
       "enabled": true,
       "message": "string"
     }
   ],
+  "application_name": "string",
+  "logo_url": "string",
   "service_banner": {
     "background_color": "string",
     "enabled": true,
@@ -777,10 +795,10 @@
 
 | Name                   | Type                                                    | Required | Restrictions | Description                                                         |
 | ---------------------- | ------------------------------------------------------- | -------- | ------------ | ------------------------------------------------------------------- |
+| `announcement_banners` | array of [codersdk.BannerConfig](#codersdkbannerconfig) | false    |              |                                                                     |
 | `application_name`     | string                                                  | false    |              |                                                                     |
 | `logo_url`             | string                                                  | false    |              |                                                                     |
-| `notification_banners` | array of [codersdk.BannerConfig](#codersdkbannerconfig) | false    |              |                                                                     |
-| `service_banner`       | [codersdk.BannerConfig](#codersdkbannerconfig)          | false    |              | Deprecated: ServiceBanner has been replaced by NotificationBanners. |
+| `service_banner`       | [codersdk.BannerConfig](#codersdkbannerconfig)          | false    |              | Deprecated: ServiceBanner has been replaced by AnnouncementBanners. |
 | `support_links`        | array of [codersdk.LinkConfig](#codersdklinkconfig)     | false    |              |                                                                     |
 
 ## codersdk.ArchiveTemplateVersionsRequest
@@ -806,22 +824,13 @@
   "display_name": "string",
   "name": "string",
   "organization_id": "7c60d51f-b44e-4682-87d6-449835ea4de6",
-  "organization_permissions": {
-    "property1": [
-      {
-        "action": "application_connect",
-        "negate": true,
-        "resource_type": "*"
-      }
-    ],
-    "property2": [
-      {
-        "action": "application_connect",
-        "negate": true,
-        "resource_type": "*"
-      }
-    ]
-  },
+  "organization_permissions": [
+    {
+      "action": "application_connect",
+      "negate": true,
+      "resource_type": "*"
+    }
+  ],
   "site_permissions": [
     {
       "action": "application_connect",
@@ -841,17 +850,16 @@
 
 ### Properties
 
-| Name                       | Type                                                | Required | Restrictions | Description                  |
-| -------------------------- | --------------------------------------------------- | -------- | ------------ | ---------------------------- |
-| `assignable`               | boolean                                             | false    |              |                              |
-| `built_in`                 | boolean                                             | false    |              | Built in roles are immutable |
-| `display_name`             | string                                              | false    |              |                              |
-| `name`                     | string                                              | false    |              |                              |
-| `organization_id`          | string                                              | false    |              |                              |
-| `organization_permissions` | object                                              | false    |              | map[<org_id>] -> Permissions |
-| » `[any property]`         | array of [codersdk.Permission](#codersdkpermission) | false    |              |                              |
-| `site_permissions`         | array of [codersdk.Permission](#codersdkpermission) | false    |              |                              |
-| `user_permissions`         | array of [codersdk.Permission](#codersdkpermission) | false    |              |                              |
+| Name                       | Type                                                | Required | Restrictions | Description                                                                                     |
+| -------------------------- | --------------------------------------------------- | -------- | ------------ | ----------------------------------------------------------------------------------------------- |
+| `assignable`               | boolean                                             | false    |              |                                                                                                 |
+| `built_in`                 | boolean                                             | false    |              | Built in roles are immutable                                                                    |
+| `display_name`             | string                                              | false    |              |                                                                                                 |
+| `name`                     | string                                              | false    |              |                                                                                                 |
+| `organization_id`          | string                                              | false    |              |                                                                                                 |
+| `organization_permissions` | array of [codersdk.Permission](#codersdkpermission) | false    |              | Organization permissions are specific for the organization in the field 'OrganizationID' above. |
+| `site_permissions`         | array of [codersdk.Permission](#codersdkpermission) | false    |              |                                                                                                 |
+| `user_permissions`         | array of [codersdk.Permission](#codersdkpermission) | false    |              |                                                                                                 |
 
 ## codersdk.AuditAction
 
@@ -4330,22 +4338,13 @@ CreateWorkspaceRequest provides options for creating a new workspace. Only one o
   "display_name": "string",
   "name": "string",
   "organization_id": "7c60d51f-b44e-4682-87d6-449835ea4de6",
-  "organization_permissions": {
-    "property1": [
-      {
-        "action": "application_connect",
-        "negate": true,
-        "resource_type": "*"
-      }
-    ],
-    "property2": [
-      {
-        "action": "application_connect",
-        "negate": true,
-        "resource_type": "*"
-      }
-    ]
-  },
+  "organization_permissions": [
+    {
+      "action": "application_connect",
+      "negate": true,
+      "resource_type": "*"
+    }
+  ],
   "site_permissions": [
     {
       "action": "application_connect",
@@ -4365,15 +4364,14 @@ CreateWorkspaceRequest provides options for creating a new workspace. Only one o
 
 ### Properties
 
-| Name                       | Type                                                | Required | Restrictions | Description                  |
-| -------------------------- | --------------------------------------------------- | -------- | ------------ | ---------------------------- |
-| `display_name`             | string                                              | false    |              |                              |
-| `name`                     | string                                              | false    |              |                              |
-| `organization_id`          | string                                              | false    |              |                              |
-| `organization_permissions` | object                                              | false    |              | map[<org_id>] -> Permissions |
-| » `[any property]`         | array of [codersdk.Permission](#codersdkpermission) | false    |              |                              |
-| `site_permissions`         | array of [codersdk.Permission](#codersdkpermission) | false    |              |                              |
-| `user_permissions`         | array of [codersdk.Permission](#codersdkpermission) | false    |              |                              |
+| Name                       | Type                                                | Required | Restrictions | Description                                                                                     |
+| -------------------------- | --------------------------------------------------- | -------- | ------------ | ----------------------------------------------------------------------------------------------- |
+| `display_name`             | string                                              | false    |              |                                                                                                 |
+| `name`                     | string                                              | false    |              |                                                                                                 |
+| `organization_id`          | string                                              | false    |              |                                                                                                 |
+| `organization_permissions` | array of [codersdk.Permission](#codersdkpermission) | false    |              | Organization permissions are specific for the organization in the field 'OrganizationID' above. |
+| `site_permissions`         | array of [codersdk.Permission](#codersdkpermission) | false    |              |                                                                                                 |
+| `user_permissions`         | array of [codersdk.Permission](#codersdkpermission) | false    |              |                                                                                                 |
 
 ## codersdk.SSHConfig
 
@@ -5321,15 +5319,15 @@ CreateWorkspaceRequest provides options for creating a new workspace. Only one o
 
 ```json
 {
-  "application_name": "string",
-  "logo_url": "string",
-  "notification_banners": [
+  "announcement_banners": [
     {
       "background_color": "string",
       "enabled": true,
       "message": "string"
     }
   ],
+  "application_name": "string",
+  "logo_url": "string",
   "service_banner": {
     "background_color": "string",
     "enabled": true,
@@ -5342,10 +5340,10 @@ CreateWorkspaceRequest provides options for creating a new workspace. Only one o
 
 | Name                   | Type                                                    | Required | Restrictions | Description                                                         |
 | ---------------------- | ------------------------------------------------------- | -------- | ------------ | ------------------------------------------------------------------- |
+| `announcement_banners` | array of [codersdk.BannerConfig](#codersdkbannerconfig) | false    |              |                                                                     |
 | `application_name`     | string                                                  | false    |              |                                                                     |
 | `logo_url`             | string                                                  | false    |              |                                                                     |
-| `notification_banners` | array of [codersdk.BannerConfig](#codersdkbannerconfig) | false    |              |                                                                     |
-| `service_banner`       | [codersdk.BannerConfig](#codersdkbannerconfig)          | false    |              | Deprecated: ServiceBanner has been replaced by NotificationBanners. |
+| `service_banner`       | [codersdk.BannerConfig](#codersdkbannerconfig)          | false    |              | Deprecated: ServiceBanner has been replaced by AnnouncementBanners. |
 
 ## codersdk.UpdateCheckResponse
 
