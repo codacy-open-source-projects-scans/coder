@@ -1020,7 +1020,7 @@ AuthorizationObject can represent a "set" of objects, such as: all workspaces in
 | ----------------- | ------- | -------- | ------------ | ----------- |
 | `avatar_url`      | string  | false    |              |             |
 | `display_name`    | string  | false    |              |             |
-| `name`            | string  | false    |              |             |
+| `name`            | string  | true     |              |             |
 | `quota_allowance` | integer | false    |              |             |
 
 ## codersdk.CreateOrganizationRequest
@@ -1029,6 +1029,7 @@ AuthorizationObject can represent a "set" of objects, such as: all workspaces in
 {
   "description": "string",
   "display_name": "string",
+  "icon": "string",
   "name": "string"
 }
 ```
@@ -1039,6 +1040,7 @@ AuthorizationObject can represent a "set" of objects, such as: all workspaces in
 | -------------- | ------ | -------- | ------------ | ---------------------------------------------------------------------- |
 | `description`  | string | false    |              |                                                                        |
 | `display_name` | string | false    |              | Display name will default to the same value as `Name` if not provided. |
+| `icon`         | string | false    |              |                                                                        |
 | `name`         | string | true     |              |                                                                        |
 
 ## codersdk.CreateTemplateRequest
@@ -1644,7 +1646,6 @@ CreateWorkspaceRequest provides options for creating a new workspace. Only one o
           "device_flow": true,
           "display_icon": "string",
           "display_name": "string",
-          "extra_token_keys": ["string"],
           "id": "string",
           "no_refresh": true,
           "regex": "string",
@@ -2018,7 +2019,6 @@ CreateWorkspaceRequest provides options for creating a new workspace. Only one o
         "device_flow": true,
         "display_icon": "string",
         "display_name": "string",
-        "extra_token_keys": ["string"],
         "id": "string",
         "no_refresh": true,
         "regex": "string",
@@ -2360,6 +2360,7 @@ CreateWorkspaceRequest provides options for creating a new workspace. Only one o
 | `auto-fill-parameters` |
 | `multi-organization`   |
 | `custom-roles`         |
+| `workspace-usage`      |
 
 ## codersdk.ExternalAuth
 
@@ -2438,7 +2439,6 @@ CreateWorkspaceRequest provides options for creating a new workspace. Only one o
   "device_flow": true,
   "display_icon": "string",
   "display_name": "string",
-  "extra_token_keys": ["string"],
   "id": "string",
   "no_refresh": true,
   "regex": "string",
@@ -2461,7 +2461,6 @@ CreateWorkspaceRequest provides options for creating a new workspace. Only one o
 | `device_flow`                                                                                                                                            | boolean         | false    |              |                                                                                                           |
 | `display_icon`                                                                                                                                           | string          | false    |              | Display icon is a URL to an icon to display in the UI.                                                    |
 | `display_name`                                                                                                                                           | string          | false    |              | Display name is shown in the UI to identify the auth config.                                              |
-| `extra_token_keys`                                                                                                                                       | array of string | false    |              |                                                                                                           |
 | `id`                                                                                                                                                     | string          | false    |              | ID is a unique identifier for the auth config. It defaults to `type` when not provided.                   |
 | `no_refresh`                                                                                                                                             | boolean         | false    |              |                                                                                                           |
 | `regex`                                                                                                                                                  | string          | false    |              | Regex allows API requesters to match an auth config by a string (e.g. coder.com) instead of by it's type. |
@@ -3214,6 +3213,7 @@ CreateWorkspaceRequest provides options for creating a new workspace. Only one o
   "created_at": "2019-08-24T14:15:22Z",
   "description": "string",
   "display_name": "string",
+  "icon": "string",
   "id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
   "is_default": true,
   "name": "string",
@@ -3227,10 +3227,11 @@ CreateWorkspaceRequest provides options for creating a new workspace. Only one o
 | -------------- | ------- | -------- | ------------ | ----------- |
 | `created_at`   | string  | true     |              |             |
 | `description`  | string  | false    |              |             |
-| `display_name` | string  | true     |              |             |
+| `display_name` | string  | false    |              |             |
+| `icon`         | string  | false    |              |             |
 | `id`           | string  | true     |              |             |
 | `is_default`   | boolean | true     |              |             |
-| `name`         | string  | true     |              |             |
+| `name`         | string  | false    |              |             |
 | `updated_at`   | string  | true     |              |             |
 
 ## codersdk.OrganizationMember
@@ -3260,6 +3261,36 @@ CreateWorkspaceRequest provides options for creating a new workspace. Only one o
 | `roles`           | array of [codersdk.SlimRole](#codersdkslimrole) | false    |              |             |
 | `updated_at`      | string                                          | false    |              |             |
 | `user_id`         | string                                          | false    |              |             |
+
+## codersdk.OrganizationMemberWithName
+
+```json
+{
+  "created_at": "2019-08-24T14:15:22Z",
+  "organization_id": "7c60d51f-b44e-4682-87d6-449835ea4de6",
+  "roles": [
+    {
+      "display_name": "string",
+      "name": "string",
+      "organization_id": "string"
+    }
+  ],
+  "updated_at": "2019-08-24T14:15:22Z",
+  "user_id": "a169451c-8525-4352-b8ca-070dd449a1a5",
+  "username": "string"
+}
+```
+
+### Properties
+
+| Name              | Type                                            | Required | Restrictions | Description |
+| ----------------- | ----------------------------------------------- | -------- | ------------ | ----------- |
+| `created_at`      | string                                          | false    |              |             |
+| `organization_id` | string                                          | false    |              |             |
+| `roles`           | array of [codersdk.SlimRole](#codersdkslimrole) | false    |              |             |
+| `updated_at`      | string                                          | false    |              |             |
+| `user_id`         | string                                          | false    |              |             |
+| `username`        | string                                          | false    |              |             |
 
 ## codersdk.PatchGroupRequest
 
@@ -3358,6 +3389,22 @@ CreateWorkspaceRequest provides options for creating a new workspace. Only one o
 | `callback_url` | string | true     |              |             |
 | `icon`         | string | false    |              |             |
 | `name`         | string | true     |              |             |
+
+## codersdk.PostWorkspaceUsageRequest
+
+```json
+{
+  "agent_id": "2b1e3b65-2c04-4fa2-a2d7-467901e98978",
+  "app_name": "vscode"
+}
+```
+
+### Properties
+
+| Name       | Type                                           | Required | Restrictions | Description |
+| ---------- | ---------------------------------------------- | -------- | ------------ | ----------- |
+| `agent_id` | string                                         | false    |              |             |
+| `app_name` | [codersdk.UsageAppName](#codersdkusageappname) | false    |              |             |
 
 ## codersdk.PprofConfig
 
@@ -5000,6 +5047,7 @@ CreateWorkspaceRequest provides options for creating a new workspace. Only one o
 {
   "description": "string",
   "display_name": "string",
+  "icon": "string",
   "name": "string"
 }
 ```
@@ -5010,6 +5058,7 @@ CreateWorkspaceRequest provides options for creating a new workspace. Only one o
 | -------------- | ------ | -------- | ------------ | ----------- |
 | `description`  | string | false    |              |             |
 | `display_name` | string | false    |              |             |
+| `icon`         | string | false    |              |             |
 | `name`         | string | false    |              |             |
 
 ## codersdk.UpdateRoles
@@ -5226,6 +5275,23 @@ If the schedule is empty, the user will be updated to use the default schedule.|
 | `share_level` | `owner`         |
 | `share_level` | `authenticated` |
 | `share_level` | `public`        |
+
+## codersdk.UsageAppName
+
+```json
+"vscode"
+```
+
+### Properties
+
+#### Enumerated Values
+
+| Value              |
+| ------------------ |
+| `vscode`           |
+| `jetbrains`        |
+| `reconnecting-pty` |
+| `ssh`              |
 
 ## codersdk.User
 
@@ -8476,7 +8542,6 @@ _None_
       "device_flow": true,
       "display_icon": "string",
       "display_name": "string",
-      "extra_token_keys": ["string"],
       "id": "string",
       "no_refresh": true,
       "regex": "string",

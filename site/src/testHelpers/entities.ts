@@ -16,6 +16,7 @@ export const MockOrganization: TypesGen.Organization = {
   name: "test-organization",
   display_name: "Test Organization",
   description: "",
+  icon: "",
   created_at: "",
   updated_at: "",
   is_default: true,
@@ -1174,10 +1175,6 @@ export const MockOutdatedRunningWorkspaceRequireActiveVersion: TypesGen.Workspac
     id: "test-outdated-workspace-require-active-version",
     outdated: true,
     template_require_active_version: true,
-    latest_build: {
-      ...MockWorkspaceBuild,
-      status: "running",
-    },
   };
 
 export const MockOutdatedRunningWorkspaceAlwaysUpdate: TypesGen.Workspace = {

@@ -2,12 +2,13 @@ package clock
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"slices"
 	"sync"
 	"testing"
 	"time"
+
+	"golang.org/x/xerrors"
 )
 
 // Mock is the testing implementation of Clock.  It tracks a time that monotonically increases
@@ -51,9 +52,6 @@ func (m *Mock) TickerFunc(ctx context.Context, d time.Duration, f func() error, 
 }
 
 func (m *Mock) NewTimer(d time.Duration, tags ...string) *Timer {
-	if d < 0 {
-		panic("duration must be positive or zero")
-	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	c := newCall(clockFunctionNewTimer, tags, withDuration(d))
@@ -66,14 +64,17 @@ func (m *Mock) NewTimer(d time.Duration, tags ...string) *Timer {
 		nxt:  m.cur.Add(d),
 		mock: m,
 	}
+	if d <= 0 {
+		// zero or negative duration timer means we should immediately fire
+		// it, rather than add it.
+		go t.fire(t.mock.cur)
+		return t
+	}
 	m.addTimerLocked(t)
 	return t
 }
 
 func (m *Mock) AfterFunc(d time.Duration, f func(), tags ...string) *Timer {
-	if d < 0 {
-		panic("duration must be positive or zero")
-	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	c := newCall(clockFunctionAfterFunc, tags, withDuration(d))
@@ -83,6 +84,12 @@ func (m *Mock) AfterFunc(d time.Duration, f func(), tags ...string) *Timer {
 		nxt:  m.cur.Add(d),
 		fn:   f,
 		mock: m,
+	}
+	if d <= 0 {
+		// zero or negative duration timer means we should immediately fire
+		// it, rather than add it.
+		go t.fire(t.mock.cur)
+		return t
 	}
 	m.addTimerLocked(t)
 	return t
@@ -571,7 +578,7 @@ func (t *Trap) Close() {
 	close(t.done)
 }
 
-var ErrTrapClosed = errors.New("trap closed")
+var ErrTrapClosed = xerrors.New("trap closed")
 
 func (t *Trap) Wait(ctx context.Context) (*Call, error) {
 	select {
