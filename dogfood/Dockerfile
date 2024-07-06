@@ -90,7 +90,8 @@ SHELL ["/bin/bash", "-c"]
 # the default mirror with teraswitch.
 RUN apt-get update && apt-get install --yes ca-certificates
 
-COPY --chown=root:root files /
+COPY files /
+RUN chown -R 0:0 /etc/sudoers.d # workaround for coder/envbuilder#70
 
 # Install packages from apt repositories
 ARG DEBIAN_FRONTEND="noninteractive"

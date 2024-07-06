@@ -1093,6 +1093,7 @@ export interface Template {
   readonly created_at: string;
   readonly updated_at: string;
   readonly organization_id: string;
+  readonly organization_name: string;
   readonly name: string;
   readonly display_name: string;
   readonly provisioner: ProvisionerType;
@@ -1162,6 +1163,11 @@ export interface TemplateExample {
   readonly icon: string;
   readonly tags: readonly string[];
   readonly markdown: string;
+}
+
+// From codersdk/organizations.go
+export interface TemplateFilter {
+  readonly OrganizationID: string;
 }
 
 // From codersdk/templates.go
@@ -1573,6 +1579,7 @@ export interface Workspace {
   readonly owner_name: string;
   readonly owner_avatar_url: string;
   readonly organization_id: string;
+  readonly organization_name: string;
   readonly template_id: string;
   readonly template_name: string;
   readonly template_display_name: string;

@@ -8,9 +8,6 @@ go 1.22.4
 // See: https://github.com/kylecarbs/chroma/commit/9e036e0631f38ef60de5ee8eec7a42e9cb7da423
 replace github.com/alecthomas/chroma/v2 => github.com/kylecarbs/chroma/v2 v2.0.0-20240401211003-9e036e0631f3
 
-// Required until https://github.com/go-playground/validator/pull/1246 is merged.
-replace github.com/go-playground/validator/v10 => github.com/kylecarbs/validator/v10 v10.0.0-20240401214733-cebbc77c0ece
-
 // Required until https://github.com/hashicorp/terraform-config-inspect/pull/74 is merged.
 replace github.com/hashicorp/terraform-config-inspect => github.com/kylecarbs/terraform-config-inspect v0.0.0-20211215004401-bbc517866b88
 
@@ -42,7 +39,7 @@ replace github.com/dlclark/regexp2 => github.com/dlclark/regexp2 v1.7.0
 
 // There are a few minor changes we make to Tailscale that we're slowly upstreaming. Compare here:
 // https://github.com/tailscale/tailscale/compare/main...coder:tailscale:main
-replace tailscale.com => github.com/coder/tailscale v1.1.1-0.20240530071520-1ac63d3a4ee3
+replace tailscale.com => github.com/coder/tailscale v1.1.1-0.20240702054557-aa558fbe5374
 
 // This is replaced to include
 // 1. a fix for a data race: c.f. https://github.com/tailscale/wireguard-go/pull/25
@@ -87,6 +84,7 @@ require (
 	github.com/cli/safeexec v1.0.1
 	github.com/coder/flog v1.1.0
 	github.com/coder/pretty v0.0.0-20230908205945-e89ba86370e0
+	github.com/coder/quartz v0.1.0
 	github.com/coder/retry v1.5.1
 	github.com/coder/terraform-provider-coder v0.23.0
 	github.com/coder/wgtunnel v0.1.13-0.20240522110300-ade90dfb2da0
@@ -110,7 +108,7 @@ require (
 	github.com/go-jose/go-jose/v3 v3.0.3
 	github.com/go-logr/logr v1.4.1
 	github.com/go-ping/ping v1.1.0
-	github.com/go-playground/validator/v10 v10.19.0
+	github.com/go-playground/validator/v10 v10.22.0
 	github.com/gofrs/flock v0.8.1
 	github.com/gohugoio/hugo v0.126.1
 	github.com/golang-jwt/jwt/v4 v4.5.0

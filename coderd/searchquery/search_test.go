@@ -1,16 +1,19 @@
 package searchquery_test
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/coder/coder/v2/coderd/database"
+	"github.com/coder/coder/v2/coderd/database/dbmem"
 	"github.com/coder/coder/v2/coderd/searchquery"
 	"github.com/coder/coder/v2/codersdk"
 )
@@ -315,7 +318,10 @@ func TestSearchAudit(t *testing.T) {
 		c := c
 		t.Run(c.Name, func(t *testing.T) {
 			t.Parallel()
-			values, errs := searchquery.AuditLogs(c.Query)
+			// Do not use a real database, this is only used for an
+			// organization lookup.
+			db := dbmem.New()
+			values, errs := searchquery.AuditLogs(context.Background(), db, c.Query)
 			if c.ExpectedErrorContains != "" {
 				require.True(t, len(errs) > 0, "expect some errors")
 				var s strings.Builder
@@ -444,6 +450,48 @@ func TestSearchUsers(t *testing.T) {
 				require.Contains(t, s.String(), c.ExpectedErrorContains)
 			} else {
 				require.Len(t, errs, 0, "expected no error")
+				require.Equal(t, c.Expected, values, "expected values")
+			}
+		})
+	}
+}
+
+func TestSearchTemplates(t *testing.T) {
+	t.Parallel()
+	testCases := []struct {
+		Name                  string
+		Query                 string
+		Expected              database.GetTemplatesWithFilterParams
+		ExpectedErrorContains string
+	}{
+		{
+			Name:     "Empty",
+			Query:    "",
+			Expected: database.GetTemplatesWithFilterParams{},
+		},
+	}
+
+	for _, c := range testCases {
+		c := c
+		t.Run(c.Name, func(t *testing.T) {
+			t.Parallel()
+			// Do not use a real database, this is only used for an
+			// organization lookup.
+			db := dbmem.New()
+			values, errs := searchquery.Templates(context.Background(), db, c.Query)
+			if c.ExpectedErrorContains != "" {
+				require.True(t, len(errs) > 0, "expect some errors")
+				var s strings.Builder
+				for _, err := range errs {
+					_, _ = s.WriteString(fmt.Sprintf("%s: %s\n", err.Field, err.Detail))
+				}
+				require.Contains(t, s.String(), c.ExpectedErrorContains)
+			} else {
+				require.Len(t, errs, 0, "expected no error")
+				if c.Expected.IDs == nil {
+					// Nil and length 0 are the same
+					c.Expected.IDs = []uuid.UUID{}
+				}
 				require.Equal(t, c.Expected, values, "expected values")
 			}
 		})
