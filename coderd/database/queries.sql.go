@@ -3292,7 +3292,8 @@ const acquireNotificationMessages = `-- name: AcquireNotificationMessages :many
 WITH acquired AS (
     UPDATE
         notification_messages
-            SET updated_at = NOW(),
+            SET queued_seconds = GREATEST(0, EXTRACT(EPOCH FROM (NOW() - updated_at)))::FLOAT,
+                updated_at = NOW(),
                 status = 'leased'::notification_message_status,
                 status_reason = 'Leased by notifier ' || $1::uuid,
                 leased_until = NOW() + CONCAT($2::int, ' seconds')::interval
@@ -3328,14 +3329,16 @@ WITH acquired AS (
                              FOR UPDATE OF nm
                                  SKIP LOCKED
                          LIMIT $4)
-            RETURNING id, notification_template_id, user_id, method, status, status_reason, created_by, payload, attempt_count, targets, created_at, updated_at, leased_until, next_retry_after)
+            RETURNING id, notification_template_id, user_id, method, status, status_reason, created_by, payload, attempt_count, targets, created_at, updated_at, leased_until, next_retry_after, queued_seconds)
 SELECT
     -- message
     nm.id,
     nm.payload,
     nm.method,
-    nm.created_by,
+    nm.attempt_count::int AS attempt_count,
+    nm.queued_seconds::float AS queued_seconds,
     -- template
+    nt.id AS template_id,
     nt.title_template,
     nt.body_template
 FROM acquired nm
@@ -3353,7 +3356,9 @@ type AcquireNotificationMessagesRow struct {
 	ID            uuid.UUID          `db:"id" json:"id"`
 	Payload       json.RawMessage    `db:"payload" json:"payload"`
 	Method        NotificationMethod `db:"method" json:"method"`
-	CreatedBy     string             `db:"created_by" json:"created_by"`
+	AttemptCount  int32              `db:"attempt_count" json:"attempt_count"`
+	QueuedSeconds float64            `db:"queued_seconds" json:"queued_seconds"`
+	TemplateID    uuid.UUID          `db:"template_id" json:"template_id"`
 	TitleTemplate string             `db:"title_template" json:"title_template"`
 	BodyTemplate  string             `db:"body_template" json:"body_template"`
 }
@@ -3386,7 +3391,9 @@ func (q *sqlQuerier) AcquireNotificationMessages(ctx context.Context, arg Acquir
 			&i.ID,
 			&i.Payload,
 			&i.Method,
-			&i.CreatedBy,
+			&i.AttemptCount,
+			&i.QueuedSeconds,
+			&i.TemplateID,
 			&i.TitleTemplate,
 			&i.BodyTemplate,
 		); err != nil {
@@ -3405,7 +3412,8 @@ func (q *sqlQuerier) AcquireNotificationMessages(ctx context.Context, arg Acquir
 
 const bulkMarkNotificationMessagesFailed = `-- name: BulkMarkNotificationMessagesFailed :execrows
 UPDATE notification_messages
-SET updated_at       = subquery.failed_at,
+SET queued_seconds   = 0,
+    updated_at       = subquery.failed_at,
     attempt_count    = attempt_count + 1,
     status           = CASE
                            WHEN attempt_count + 1 < $1::int THEN subquery.status
@@ -3448,13 +3456,14 @@ func (q *sqlQuerier) BulkMarkNotificationMessagesFailed(ctx context.Context, arg
 
 const bulkMarkNotificationMessagesSent = `-- name: BulkMarkNotificationMessagesSent :execrows
 UPDATE notification_messages
-SET updated_at       = new_values.sent_at,
+SET queued_seconds   = 0,
+    updated_at       = new_values.sent_at,
     attempt_count    = attempt_count + 1,
     status           = 'sent'::notification_message_status,
     status_reason    = NULL,
     leased_until     = NULL,
     next_retry_after = NULL
-FROM (SELECT UNNEST($1::uuid[])        AS id,
+FROM (SELECT UNNEST($1::uuid[])             AS id,
              UNNEST($2::timestamptz[]) AS sent_at)
          AS new_values
 WHERE notification_messages.id = new_values.id
@@ -3488,7 +3497,7 @@ func (q *sqlQuerier) DeleteOldNotificationMessages(ctx context.Context) error {
 	return err
 }
 
-const enqueueNotificationMessage = `-- name: EnqueueNotificationMessage :one
+const enqueueNotificationMessage = `-- name: EnqueueNotificationMessage :exec
 INSERT INTO notification_messages (id, notification_template_id, user_id, method, payload, targets, created_by)
 VALUES ($1,
         $2,
@@ -3497,7 +3506,6 @@ VALUES ($1,
         $5::jsonb,
         $6,
         $7)
-RETURNING id, notification_template_id, user_id, method, status, status_reason, created_by, payload, attempt_count, targets, created_at, updated_at, leased_until, next_retry_after
 `
 
 type EnqueueNotificationMessageParams struct {
@@ -3510,8 +3518,8 @@ type EnqueueNotificationMessageParams struct {
 	CreatedBy              string             `db:"created_by" json:"created_by"`
 }
 
-func (q *sqlQuerier) EnqueueNotificationMessage(ctx context.Context, arg EnqueueNotificationMessageParams) (NotificationMessage, error) {
-	row := q.db.QueryRowContext(ctx, enqueueNotificationMessage,
+func (q *sqlQuerier) EnqueueNotificationMessage(ctx context.Context, arg EnqueueNotificationMessageParams) error {
+	_, err := q.db.ExecContext(ctx, enqueueNotificationMessage,
 		arg.ID,
 		arg.NotificationTemplateID,
 		arg.UserID,
@@ -3520,24 +3528,7 @@ func (q *sqlQuerier) EnqueueNotificationMessage(ctx context.Context, arg Enqueue
 		pq.Array(arg.Targets),
 		arg.CreatedBy,
 	)
-	var i NotificationMessage
-	err := row.Scan(
-		&i.ID,
-		&i.NotificationTemplateID,
-		&i.UserID,
-		&i.Method,
-		&i.Status,
-		&i.StatusReason,
-		&i.CreatedBy,
-		&i.Payload,
-		&i.AttemptCount,
-		pq.Array(&i.Targets),
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.LeasedUntil,
-		&i.NextRetryAfter,
-	)
-	return i, err
+	return err
 }
 
 const fetchNewMessageMetadata = `-- name: FetchNewMessageMetadata :one
@@ -3577,6 +3568,54 @@ func (q *sqlQuerier) FetchNewMessageMetadata(ctx context.Context, arg FetchNewMe
 		&i.UserName,
 	)
 	return i, err
+}
+
+const getNotificationMessagesByStatus = `-- name: GetNotificationMessagesByStatus :many
+SELECT id, notification_template_id, user_id, method, status, status_reason, created_by, payload, attempt_count, targets, created_at, updated_at, leased_until, next_retry_after, queued_seconds FROM notification_messages WHERE status = $1 LIMIT $2::int
+`
+
+type GetNotificationMessagesByStatusParams struct {
+	Status NotificationMessageStatus `db:"status" json:"status"`
+	Limit  int32                     `db:"limit" json:"limit"`
+}
+
+func (q *sqlQuerier) GetNotificationMessagesByStatus(ctx context.Context, arg GetNotificationMessagesByStatusParams) ([]NotificationMessage, error) {
+	rows, err := q.db.QueryContext(ctx, getNotificationMessagesByStatus, arg.Status, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []NotificationMessage
+	for rows.Next() {
+		var i NotificationMessage
+		if err := rows.Scan(
+			&i.ID,
+			&i.NotificationTemplateID,
+			&i.UserID,
+			&i.Method,
+			&i.Status,
+			&i.StatusReason,
+			&i.CreatedBy,
+			&i.Payload,
+			&i.AttemptCount,
+			pq.Array(&i.Targets),
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.LeasedUntil,
+			&i.NextRetryAfter,
+			&i.QueuedSeconds,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const deleteOAuth2ProviderAppByID = `-- name: DeleteOAuth2ProviderAppByID :exec
@@ -4244,7 +4283,7 @@ func (q *sqlQuerier) InsertOrganizationMember(ctx context.Context, arg InsertOrg
 const organizationMembers = `-- name: OrganizationMembers :many
 SELECT
 	organization_members.user_id, organization_members.organization_id, organization_members.created_at, organization_members.updated_at, organization_members.roles,
-	users.username
+	users.username, users.avatar_url, users.name, users.rbac_roles as "global_roles"
 FROM
 	organization_members
 		INNER JOIN
@@ -4272,6 +4311,9 @@ type OrganizationMembersParams struct {
 type OrganizationMembersRow struct {
 	OrganizationMember OrganizationMember `db:"organization_member" json:"organization_member"`
 	Username           string             `db:"username" json:"username"`
+	AvatarURL          string             `db:"avatar_url" json:"avatar_url"`
+	Name               string             `db:"name" json:"name"`
+	GlobalRoles        pq.StringArray     `db:"global_roles" json:"global_roles"`
 }
 
 // Arguments are optional with uuid.Nil to ignore.
@@ -4294,6 +4336,9 @@ func (q *sqlQuerier) OrganizationMembers(ctx context.Context, arg OrganizationMe
 			&i.OrganizationMember.UpdatedAt,
 			pq.Array(&i.OrganizationMember.Roles),
 			&i.Username,
+			&i.AvatarURL,
+			&i.Name,
+			&i.GlobalRoles,
 		); err != nil {
 			return nil, err
 		}
@@ -5416,6 +5461,147 @@ func (q *sqlQuerier) UpdateProvisionerJobWithCompleteByID(ctx context.Context, a
 	return err
 }
 
+const deleteProvisionerKey = `-- name: DeleteProvisionerKey :exec
+DELETE FROM
+    provisioner_keys
+WHERE
+    id = $1
+`
+
+func (q *sqlQuerier) DeleteProvisionerKey(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.ExecContext(ctx, deleteProvisionerKey, id)
+	return err
+}
+
+const getProvisionerKeyByID = `-- name: GetProvisionerKeyByID :one
+SELECT
+    id, created_at, organization_id, name, hashed_secret
+FROM
+    provisioner_keys
+WHERE
+    id = $1
+`
+
+func (q *sqlQuerier) GetProvisionerKeyByID(ctx context.Context, id uuid.UUID) (ProvisionerKey, error) {
+	row := q.db.QueryRowContext(ctx, getProvisionerKeyByID, id)
+	var i ProvisionerKey
+	err := row.Scan(
+		&i.ID,
+		&i.CreatedAt,
+		&i.OrganizationID,
+		&i.Name,
+		&i.HashedSecret,
+	)
+	return i, err
+}
+
+const getProvisionerKeyByName = `-- name: GetProvisionerKeyByName :one
+SELECT
+    id, created_at, organization_id, name, hashed_secret
+FROM
+    provisioner_keys
+WHERE
+    organization_id = $1
+AND 
+    lower(name) = lower($2)
+`
+
+type GetProvisionerKeyByNameParams struct {
+	OrganizationID uuid.UUID `db:"organization_id" json:"organization_id"`
+	Name           string    `db:"name" json:"name"`
+}
+
+func (q *sqlQuerier) GetProvisionerKeyByName(ctx context.Context, arg GetProvisionerKeyByNameParams) (ProvisionerKey, error) {
+	row := q.db.QueryRowContext(ctx, getProvisionerKeyByName, arg.OrganizationID, arg.Name)
+	var i ProvisionerKey
+	err := row.Scan(
+		&i.ID,
+		&i.CreatedAt,
+		&i.OrganizationID,
+		&i.Name,
+		&i.HashedSecret,
+	)
+	return i, err
+}
+
+const insertProvisionerKey = `-- name: InsertProvisionerKey :one
+INSERT INTO
+	provisioner_keys (
+		id,
+        created_at,
+        organization_id,
+		name,
+		hashed_secret
+	)
+VALUES
+	($1, $2, $3, lower($5), $4) RETURNING id, created_at, organization_id, name, hashed_secret
+`
+
+type InsertProvisionerKeyParams struct {
+	ID             uuid.UUID `db:"id" json:"id"`
+	CreatedAt      time.Time `db:"created_at" json:"created_at"`
+	OrganizationID uuid.UUID `db:"organization_id" json:"organization_id"`
+	HashedSecret   []byte    `db:"hashed_secret" json:"hashed_secret"`
+	Name           string    `db:"name" json:"name"`
+}
+
+func (q *sqlQuerier) InsertProvisionerKey(ctx context.Context, arg InsertProvisionerKeyParams) (ProvisionerKey, error) {
+	row := q.db.QueryRowContext(ctx, insertProvisionerKey,
+		arg.ID,
+		arg.CreatedAt,
+		arg.OrganizationID,
+		arg.HashedSecret,
+		arg.Name,
+	)
+	var i ProvisionerKey
+	err := row.Scan(
+		&i.ID,
+		&i.CreatedAt,
+		&i.OrganizationID,
+		&i.Name,
+		&i.HashedSecret,
+	)
+	return i, err
+}
+
+const listProvisionerKeysByOrganization = `-- name: ListProvisionerKeysByOrganization :many
+SELECT
+    id, created_at, organization_id, name, hashed_secret
+FROM
+    provisioner_keys
+WHERE
+    organization_id = $1
+`
+
+func (q *sqlQuerier) ListProvisionerKeysByOrganization(ctx context.Context, organizationID uuid.UUID) ([]ProvisionerKey, error) {
+	rows, err := q.db.QueryContext(ctx, listProvisionerKeysByOrganization, organizationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ProvisionerKey
+	for rows.Next() {
+		var i ProvisionerKey
+		if err := rows.Scan(
+			&i.ID,
+			&i.CreatedAt,
+			&i.OrganizationID,
+			&i.Name,
+			&i.HashedSecret,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getWorkspaceProxies = `-- name: GetWorkspaceProxies :many
 SELECT
 	id, name, display_name, icon, url, wildcard_hostname, created_at, updated_at, deleted, token_hashed_secret, region_id, derp_enabled, derp_only, version
@@ -6272,6 +6458,18 @@ func (q *sqlQuerier) GetLogoURL(ctx context.Context) (string, error) {
 	return value, err
 }
 
+const getNotificationsSettings = `-- name: GetNotificationsSettings :one
+SELECT
+	COALESCE((SELECT value FROM site_configs WHERE key = 'notifications_settings'), '{}') :: text AS notifications_settings
+`
+
+func (q *sqlQuerier) GetNotificationsSettings(ctx context.Context) (string, error) {
+	row := q.db.QueryRowContext(ctx, getNotificationsSettings)
+	var notifications_settings string
+	err := row.Scan(&notifications_settings)
+	return notifications_settings, err
+}
+
 const getOAuthSigningKey = `-- name: GetOAuthSigningKey :one
 SELECT value FROM site_configs WHERE key = 'oauth_signing_key'
 `
@@ -6381,6 +6579,16 @@ ON CONFLICT (key) DO UPDATE SET value = $1 WHERE site_configs.key = 'logo_url'
 
 func (q *sqlQuerier) UpsertLogoURL(ctx context.Context, value string) error {
 	_, err := q.db.ExecContext(ctx, upsertLogoURL, value)
+	return err
+}
+
+const upsertNotificationsSettings = `-- name: UpsertNotificationsSettings :exec
+INSERT INTO site_configs (key, value) VALUES ('notifications_settings', $1)
+ON CONFLICT (key) DO UPDATE SET value = $1 WHERE site_configs.key = 'notifications_settings'
+`
+
+func (q *sqlQuerier) UpsertNotificationsSettings(ctx context.Context, value string) error {
+	_, err := q.db.ExecContext(ctx, upsertNotificationsSettings, value)
 	return err
 }
 
@@ -7178,7 +7386,7 @@ func (q *sqlQuerier) GetTemplateAverageBuildTime(ctx context.Context, arg GetTem
 
 const getTemplateByID = `-- name: GetTemplateByID :one
 SELECT
-	id, created_at, updated_at, organization_id, deleted, name, provisioner, active_version_id, description, default_ttl, created_by, icon, user_acl, group_acl, display_name, allow_user_cancel_workspace_jobs, allow_user_autostart, allow_user_autostop, failure_ttl, time_til_dormant, time_til_dormant_autodelete, autostop_requirement_days_of_week, autostop_requirement_weeks, autostart_block_days_of_week, require_active_version, deprecated, activity_bump, max_port_sharing_level, created_by_avatar_url, created_by_username, organization_name
+	id, created_at, updated_at, organization_id, deleted, name, provisioner, active_version_id, description, default_ttl, created_by, icon, user_acl, group_acl, display_name, allow_user_cancel_workspace_jobs, allow_user_autostart, allow_user_autostop, failure_ttl, time_til_dormant, time_til_dormant_autodelete, autostop_requirement_days_of_week, autostop_requirement_weeks, autostart_block_days_of_week, require_active_version, deprecated, activity_bump, max_port_sharing_level, created_by_avatar_url, created_by_username, organization_name, organization_display_name, organization_icon
 FROM
 	template_with_names
 WHERE
@@ -7222,13 +7430,15 @@ func (q *sqlQuerier) GetTemplateByID(ctx context.Context, id uuid.UUID) (Templat
 		&i.CreatedByAvatarURL,
 		&i.CreatedByUsername,
 		&i.OrganizationName,
+		&i.OrganizationDisplayName,
+		&i.OrganizationIcon,
 	)
 	return i, err
 }
 
 const getTemplateByOrganizationAndName = `-- name: GetTemplateByOrganizationAndName :one
 SELECT
-	id, created_at, updated_at, organization_id, deleted, name, provisioner, active_version_id, description, default_ttl, created_by, icon, user_acl, group_acl, display_name, allow_user_cancel_workspace_jobs, allow_user_autostart, allow_user_autostop, failure_ttl, time_til_dormant, time_til_dormant_autodelete, autostop_requirement_days_of_week, autostop_requirement_weeks, autostart_block_days_of_week, require_active_version, deprecated, activity_bump, max_port_sharing_level, created_by_avatar_url, created_by_username, organization_name
+	id, created_at, updated_at, organization_id, deleted, name, provisioner, active_version_id, description, default_ttl, created_by, icon, user_acl, group_acl, display_name, allow_user_cancel_workspace_jobs, allow_user_autostart, allow_user_autostop, failure_ttl, time_til_dormant, time_til_dormant_autodelete, autostop_requirement_days_of_week, autostop_requirement_weeks, autostart_block_days_of_week, require_active_version, deprecated, activity_bump, max_port_sharing_level, created_by_avatar_url, created_by_username, organization_name, organization_display_name, organization_icon
 FROM
 	template_with_names AS templates
 WHERE
@@ -7280,12 +7490,14 @@ func (q *sqlQuerier) GetTemplateByOrganizationAndName(ctx context.Context, arg G
 		&i.CreatedByAvatarURL,
 		&i.CreatedByUsername,
 		&i.OrganizationName,
+		&i.OrganizationDisplayName,
+		&i.OrganizationIcon,
 	)
 	return i, err
 }
 
 const getTemplates = `-- name: GetTemplates :many
-SELECT id, created_at, updated_at, organization_id, deleted, name, provisioner, active_version_id, description, default_ttl, created_by, icon, user_acl, group_acl, display_name, allow_user_cancel_workspace_jobs, allow_user_autostart, allow_user_autostop, failure_ttl, time_til_dormant, time_til_dormant_autodelete, autostop_requirement_days_of_week, autostop_requirement_weeks, autostart_block_days_of_week, require_active_version, deprecated, activity_bump, max_port_sharing_level, created_by_avatar_url, created_by_username, organization_name FROM template_with_names AS templates
+SELECT id, created_at, updated_at, organization_id, deleted, name, provisioner, active_version_id, description, default_ttl, created_by, icon, user_acl, group_acl, display_name, allow_user_cancel_workspace_jobs, allow_user_autostart, allow_user_autostop, failure_ttl, time_til_dormant, time_til_dormant_autodelete, autostop_requirement_days_of_week, autostop_requirement_weeks, autostart_block_days_of_week, require_active_version, deprecated, activity_bump, max_port_sharing_level, created_by_avatar_url, created_by_username, organization_name, organization_display_name, organization_icon FROM template_with_names AS templates
 ORDER BY (name, id) ASC
 `
 
@@ -7330,6 +7542,8 @@ func (q *sqlQuerier) GetTemplates(ctx context.Context) ([]Template, error) {
 			&i.CreatedByAvatarURL,
 			&i.CreatedByUsername,
 			&i.OrganizationName,
+			&i.OrganizationDisplayName,
+			&i.OrganizationIcon,
 		); err != nil {
 			return nil, err
 		}
@@ -7346,7 +7560,7 @@ func (q *sqlQuerier) GetTemplates(ctx context.Context) ([]Template, error) {
 
 const getTemplatesWithFilter = `-- name: GetTemplatesWithFilter :many
 SELECT
-	id, created_at, updated_at, organization_id, deleted, name, provisioner, active_version_id, description, default_ttl, created_by, icon, user_acl, group_acl, display_name, allow_user_cancel_workspace_jobs, allow_user_autostart, allow_user_autostop, failure_ttl, time_til_dormant, time_til_dormant_autodelete, autostop_requirement_days_of_week, autostop_requirement_weeks, autostart_block_days_of_week, require_active_version, deprecated, activity_bump, max_port_sharing_level, created_by_avatar_url, created_by_username, organization_name
+	id, created_at, updated_at, organization_id, deleted, name, provisioner, active_version_id, description, default_ttl, created_by, icon, user_acl, group_acl, display_name, allow_user_cancel_workspace_jobs, allow_user_autostart, allow_user_autostop, failure_ttl, time_til_dormant, time_til_dormant_autodelete, autostop_requirement_days_of_week, autostop_requirement_weeks, autostart_block_days_of_week, require_active_version, deprecated, activity_bump, max_port_sharing_level, created_by_avatar_url, created_by_username, organization_name, organization_display_name, organization_icon
 FROM
 	template_with_names AS templates
 WHERE
@@ -7441,6 +7655,8 @@ func (q *sqlQuerier) GetTemplatesWithFilter(ctx context.Context, arg GetTemplate
 			&i.CreatedByAvatarURL,
 			&i.CreatedByUsername,
 			&i.OrganizationName,
+			&i.OrganizationDisplayName,
+			&i.OrganizationIcon,
 		); err != nil {
 			return nil, err
 		}

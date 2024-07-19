@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"golang.org/x/xerrors"
 
 	"cdr.dev/slog"
+
 	"github.com/coder/coder/v2/coderd/database/db2sdk"
 	"github.com/coder/coder/v2/coderd/rbac/policy"
 	"github.com/coder/coder/v2/codersdk"
@@ -1799,6 +1801,58 @@ func (s *MethodTestSuite) TestWorkspacePortSharing() {
 	}))
 }
 
+func (s *MethodTestSuite) TestProvisionerKeys() {
+	s.Run("InsertProvisionerKey", s.Subtest(func(db database.Store, check *expects) {
+		org := dbgen.Organization(s.T(), db, database.Organization{})
+		pk := database.ProvisionerKey{
+			ID:             uuid.New(),
+			CreatedAt:      time.Now(),
+			OrganizationID: org.ID,
+			Name:           strings.ToLower(coderdtest.RandomName(s.T())),
+			HashedSecret:   []byte(coderdtest.RandomName(s.T())),
+		}
+		//nolint:gosimple // casting is not a simplification
+		check.Args(database.InsertProvisionerKeyParams{
+			ID:             pk.ID,
+			CreatedAt:      pk.CreatedAt,
+			OrganizationID: pk.OrganizationID,
+			Name:           pk.Name,
+			HashedSecret:   pk.HashedSecret,
+		}).Asserts(pk, policy.ActionCreate).Returns(pk)
+	}))
+	s.Run("GetProvisionerKeyByID", s.Subtest(func(db database.Store, check *expects) {
+		org := dbgen.Organization(s.T(), db, database.Organization{})
+		pk := dbgen.ProvisionerKey(s.T(), db, database.ProvisionerKey{OrganizationID: org.ID})
+		check.Args(pk.ID).Asserts(pk, policy.ActionRead).Returns(pk)
+	}))
+	s.Run("GetProvisionerKeyByName", s.Subtest(func(db database.Store, check *expects) {
+		org := dbgen.Organization(s.T(), db, database.Organization{})
+		pk := dbgen.ProvisionerKey(s.T(), db, database.ProvisionerKey{OrganizationID: org.ID})
+		check.Args(database.GetProvisionerKeyByNameParams{
+			OrganizationID: org.ID,
+			Name:           pk.Name,
+		}).Asserts(pk, policy.ActionRead).Returns(pk)
+	}))
+	s.Run("ListProvisionerKeysByOrganization", s.Subtest(func(db database.Store, check *expects) {
+		org := dbgen.Organization(s.T(), db, database.Organization{})
+		pk := dbgen.ProvisionerKey(s.T(), db, database.ProvisionerKey{OrganizationID: org.ID})
+		pks := []database.ProvisionerKey{
+			{
+				ID:             pk.ID,
+				CreatedAt:      pk.CreatedAt,
+				OrganizationID: pk.OrganizationID,
+				Name:           pk.Name,
+			},
+		}
+		check.Args(org.ID).Asserts(pk, policy.ActionRead).Returns(pks)
+	}))
+	s.Run("DeleteProvisionerKey", s.Subtest(func(db database.Store, check *expects) {
+		org := dbgen.Organization(s.T(), db, database.Organization{})
+		pk := dbgen.ProvisionerKey(s.T(), db, database.ProvisionerKey{OrganizationID: org.ID})
+		check.Args(pk.ID).Asserts(pk, policy.ActionDelete).Returns()
+	}))
+}
+
 func (s *MethodTestSuite) TestExtraMethods() {
 	s.Run("GetProvisionerDaemons", s.Subtest(func(db database.Store, check *expects) {
 		d, err := db.UpsertProvisionerDaemon(context.Background(), database.UpsertProvisionerDaemonParams{
@@ -2349,6 +2403,12 @@ func (s *MethodTestSuite) TestSystemFunctions() {
 	s.Run("UpsertHealthSettings", s.Subtest(func(db database.Store, check *expects) {
 		check.Args("foo").Asserts(rbac.ResourceDeploymentConfig, policy.ActionUpdate)
 	}))
+	s.Run("GetNotificationsSettings", s.Subtest(func(db database.Store, check *expects) {
+		check.Args().Asserts()
+	}))
+	s.Run("UpsertNotificationsSettings", s.Subtest(func(db database.Store, check *expects) {
+		check.Args("foo").Asserts(rbac.ResourceDeploymentConfig, policy.ActionUpdate)
+	}))
 	s.Run("GetDeploymentWorkspaceAgentStats", s.Subtest(func(db database.Store, check *expects) {
 		check.Args(time.Time{}).Asserts()
 	}))
@@ -2486,12 +2546,21 @@ func (s *MethodTestSuite) TestSystemFunctions() {
 	s.Run("EnqueueNotificationMessage", s.Subtest(func(db database.Store, check *expects) {
 		// TODO: update this test once we have a specific role for notifications
 		check.Args(database.EnqueueNotificationMessageParams{
-			Method: database.NotificationMethodWebhook,
+			Method:  database.NotificationMethodWebhook,
+			Payload: []byte("{}"),
 		}).Asserts(rbac.ResourceSystem, policy.ActionCreate)
 	}))
 	s.Run("FetchNewMessageMetadata", s.Subtest(func(db database.Store, check *expects) {
 		// TODO: update this test once we have a specific role for notifications
-		check.Args(database.FetchNewMessageMetadataParams{}).Asserts(rbac.ResourceSystem, policy.ActionRead)
+		u := dbgen.User(s.T(), db, database.User{})
+		check.Args(database.FetchNewMessageMetadataParams{UserID: u.ID}).Asserts(rbac.ResourceSystem, policy.ActionRead)
+	}))
+	s.Run("GetNotificationMessagesByStatus", s.Subtest(func(db database.Store, check *expects) {
+		// TODO: update this test once we have a specific role for notifications
+		check.Args(database.GetNotificationMessagesByStatusParams{
+			Status: database.NotificationMessageStatusLeased,
+			Limit:  10,
+		}).Asserts(rbac.ResourceSystem, policy.ActionRead)
 	}))
 }
 

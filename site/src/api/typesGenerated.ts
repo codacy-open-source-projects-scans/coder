@@ -233,6 +233,16 @@ export interface CreateOrganizationRequest {
   readonly icon?: string;
 }
 
+// From codersdk/provisionerdaemons.go
+export interface CreateProvisionerKeyRequest {
+  readonly name: string;
+}
+
+// From codersdk/provisionerdaemons.go
+export interface CreateProvisionerKeyResponse {
+  readonly key: string;
+}
+
 // From codersdk/organizations.go
 export interface CreateTemplateRequest {
   readonly name: string;
@@ -464,6 +474,7 @@ export interface DeploymentValues {
   readonly healthcheck?: HealthcheckConfig;
   readonly cli_upgrade_message?: string;
   readonly terms_of_service_url?: string;
+  readonly notifications?: NotificationsConfig;
   readonly config?: string;
   readonly write_config?: boolean;
   readonly address?: string;
@@ -686,6 +697,38 @@ export interface MinimalUser {
   readonly avatar_url: string;
 }
 
+// From codersdk/deployment.go
+export interface NotificationsConfig {
+  readonly max_send_attempts: number;
+  readonly retry_interval: number;
+  readonly sync_interval: number;
+  readonly sync_buffer_size: number;
+  readonly lease_period: number;
+  readonly lease_count: number;
+  readonly fetch_interval: number;
+  readonly method: string;
+  readonly dispatch_timeout: number;
+  readonly email: NotificationsEmailConfig;
+  readonly webhook: NotificationsWebhookConfig;
+}
+
+// From codersdk/deployment.go
+export interface NotificationsEmailConfig {
+  readonly from: string;
+  readonly smarthost: string;
+  readonly hello: string;
+}
+
+// From codersdk/notifications.go
+export interface NotificationsSettings {
+  readonly notifier_paused: boolean;
+}
+
+// From codersdk/deployment.go
+export interface NotificationsWebhookConfig {
+  readonly endpoint: string;
+}
+
 // From codersdk/oauth2.go
 export interface OAuth2AppEndpoints {
   readonly authorization: string;
@@ -801,8 +844,11 @@ export interface OrganizationMember {
 }
 
 // From codersdk/organizations.go
-export interface OrganizationMemberWithName extends OrganizationMember {
+export interface OrganizationMemberWithUserData extends OrganizationMember {
   readonly username: string;
+  readonly name: string;
+  readonly avatar_url: string;
+  readonly global_roles: readonly SlimRole[];
 }
 
 // From codersdk/pagination.go
@@ -885,6 +931,7 @@ export interface ProvisionerConfig {
 // From codersdk/provisionerdaemons.go
 export interface ProvisionerDaemon {
   readonly id: string;
+  readonly organization_id: string;
   readonly created_at: string;
   readonly last_seen_at?: string;
   readonly name: string;
@@ -921,6 +968,14 @@ export interface ProvisionerJobLog {
   readonly output: string;
 }
 
+// From codersdk/provisionerdaemons.go
+export interface ProvisionerKey {
+  readonly id: string;
+  readonly created_at: string;
+  readonly organization: string;
+  readonly name: string;
+}
+
 // From codersdk/workspaceproxy.go
 export interface ProxyHealthReport {
   readonly errors: readonly string[];
@@ -950,6 +1005,7 @@ export interface ReducedUser extends MinimalUser {
   readonly name: string;
   readonly email: string;
   readonly created_at: string;
+  readonly updated_at: string;
   readonly last_seen_at: string;
   readonly status: UserStatus;
   readonly login_type: LoginType;
@@ -1094,6 +1150,8 @@ export interface Template {
   readonly updated_at: string;
   readonly organization_id: string;
   readonly organization_name: string;
+  readonly organization_display_name: string;
+  readonly organization_icon: string;
   readonly name: string;
   readonly display_name: string;
   readonly provisioner: ProvisionerType;
@@ -1168,6 +1226,7 @@ export interface TemplateExample {
 // From codersdk/organizations.go
 export interface TemplateFilter {
   readonly OrganizationID: string;
+  readonly ExactName: string;
 }
 
 // From codersdk/templates.go
@@ -1968,12 +2027,14 @@ export type Experiment =
   | "custom-roles"
   | "example"
   | "multi-organization"
+  | "notifications"
   | "workspace-usage";
 export const Experiments: Experiment[] = [
   "auto-fill-parameters",
   "custom-roles",
   "example",
   "multi-organization",
+  "notifications",
   "workspace-usage",
 ];
 
@@ -1990,6 +2051,7 @@ export type FeatureName =
   | "external_token_encryption"
   | "high_availability"
   | "multiple_external_auth"
+  | "multiple_organizations"
   | "scim"
   | "template_rbac"
   | "user_limit"
@@ -2008,6 +2070,7 @@ export const FeatureNames: FeatureName[] = [
   "external_token_encryption",
   "high_availability",
   "multiple_external_auth",
+  "multiple_organizations",
   "scim",
   "template_rbac",
   "user_limit",
@@ -2167,6 +2230,7 @@ export type RBACResource =
   | "organization"
   | "organization_member"
   | "provisioner_daemon"
+  | "provisioner_keys"
   | "replicas"
   | "system"
   | "tailnet_coordinator"
@@ -2193,6 +2257,7 @@ export const RBACResources: RBACResource[] = [
   "organization",
   "organization_member",
   "provisioner_daemon",
+  "provisioner_keys",
   "replicas",
   "system",
   "tailnet_coordinator",
@@ -2212,6 +2277,7 @@ export type ResourceType =
   | "group"
   | "health_settings"
   | "license"
+  | "notifications_settings"
   | "oauth2_provider_app"
   | "oauth2_provider_app_secret"
   | "organization"
@@ -2229,6 +2295,7 @@ export const ResourceTypes: ResourceType[] = [
   "group",
   "health_settings",
   "license",
+  "notifications_settings",
   "oauth2_provider_app",
   "oauth2_provider_app_secret",
   "organization",

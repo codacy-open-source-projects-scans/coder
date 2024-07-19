@@ -239,6 +239,7 @@
           "name": "string",
           "status": "active",
           "theme_preference": "string",
+          "updated_at": "2019-08-24T14:15:22Z",
           "username": "string"
         }
       ],
@@ -259,6 +260,7 @@
       "name": "string",
       "status": "active",
       "theme_preference": "string",
+      "updated_at": "2019-08-24T14:15:22Z",
       "username": "string"
     }
   ]
@@ -583,6 +585,7 @@
     ],
     "status": "active",
     "theme_preference": "string",
+    "updated_at": "2019-08-24T14:15:22Z",
     "username": "string"
   },
   "user_agent": "string"
@@ -663,6 +666,7 @@
         ],
         "status": "active",
         "theme_preference": "string",
+        "updated_at": "2019-08-24T14:15:22Z",
         "username": "string"
       },
       "user_agent": "string"
@@ -1046,6 +1050,20 @@ AuthorizationObject can represent a "set" of objects, such as: all workspaces in
 | `display_name` | string | false    |              | Display name will default to the same value as `Name` if not provided. |
 | `icon`         | string | false    |              |                                                                        |
 | `name`         | string | true     |              |                                                                        |
+
+## codersdk.CreateProvisionerKeyResponse
+
+```json
+{
+  "key": "string"
+}
+```
+
+### Properties
+
+| Name  | Type   | Required | Restrictions | Description |
+| ----- | ------ | -------- | ------------ | ----------- |
+| `key` | string | false    |              |             |
 
 ## codersdk.CreateTemplateRequest
 
@@ -1679,6 +1697,40 @@ CreateWorkspaceRequest provides options for creating a new workspace. Only one o
       "stackdriver": "string"
     },
     "metrics_cache_refresh_interval": 0,
+    "notifications": {
+      "dispatch_timeout": 0,
+      "email": {
+        "from": "string",
+        "hello": "string",
+        "smarthost": {
+          "host": "string",
+          "port": "string"
+        }
+      },
+      "fetch_interval": 0,
+      "lease_count": 0,
+      "lease_period": 0,
+      "max_send_attempts": 0,
+      "method": "string",
+      "retry_interval": 0,
+      "sync_buffer_size": 0,
+      "sync_interval": 0,
+      "webhook": {
+        "endpoint": {
+          "forceQuery": true,
+          "fragment": "string",
+          "host": "string",
+          "omitHost": true,
+          "opaque": "string",
+          "path": "string",
+          "rawFragment": "string",
+          "rawPath": "string",
+          "rawQuery": "string",
+          "scheme": "string",
+          "user": {}
+        }
+      }
+    },
     "oauth2": {
       "github": {
         "allow_everyone": true,
@@ -2052,6 +2104,40 @@ CreateWorkspaceRequest provides options for creating a new workspace. Only one o
     "stackdriver": "string"
   },
   "metrics_cache_refresh_interval": 0,
+  "notifications": {
+    "dispatch_timeout": 0,
+    "email": {
+      "from": "string",
+      "hello": "string",
+      "smarthost": {
+        "host": "string",
+        "port": "string"
+      }
+    },
+    "fetch_interval": 0,
+    "lease_count": 0,
+    "lease_period": 0,
+    "max_send_attempts": 0,
+    "method": "string",
+    "retry_interval": 0,
+    "sync_buffer_size": 0,
+    "sync_interval": 0,
+    "webhook": {
+      "endpoint": {
+        "forceQuery": true,
+        "fragment": "string",
+        "host": "string",
+        "omitHost": true,
+        "opaque": "string",
+        "path": "string",
+        "rawFragment": "string",
+        "rawPath": "string",
+        "rawQuery": "string",
+        "scheme": "string",
+        "user": {}
+      }
+    }
+  },
   "oauth2": {
     "github": {
       "allow_everyone": true,
@@ -2246,6 +2332,7 @@ CreateWorkspaceRequest provides options for creating a new workspace. Only one o
 | `job_hang_detector_interval`         | integer                                                                                              | false    |              |                                                                    |
 | `logging`                            | [codersdk.LoggingConfig](#codersdkloggingconfig)                                                     | false    |              |                                                                    |
 | `metrics_cache_refresh_interval`     | integer                                                                                              | false    |              |                                                                    |
+| `notifications`                      | [codersdk.NotificationsConfig](#codersdknotificationsconfig)                                         | false    |              |                                                                    |
 | `oauth2`                             | [codersdk.OAuth2Config](#codersdkoauth2config)                                                       | false    |              |                                                                    |
 | `oidc`                               | [codersdk.OIDCConfig](#codersdkoidcconfig)                                                           | false    |              |                                                                    |
 | `pg_auth`                            | string                                                                                               | false    |              |                                                                    |
@@ -2368,6 +2455,7 @@ CreateWorkspaceRequest provides options for creating a new workspace. Only one o
 | `auto-fill-parameters` |
 | `multi-organization`   |
 | `custom-roles`         |
+| `notifications`        |
 | `workspace-usage`      |
 
 ## codersdk.ExternalAuth
@@ -2604,6 +2692,7 @@ CreateWorkspaceRequest provides options for creating a new workspace. Only one o
       ],
       "status": "active",
       "theme_preference": "string",
+      "updated_at": "2019-08-24T14:15:22Z",
       "username": "string"
     }
   ]
@@ -2655,6 +2744,7 @@ CreateWorkspaceRequest provides options for creating a new workspace. Only one o
       "name": "string",
       "status": "active",
       "theme_preference": "string",
+      "updated_at": "2019-08-24T14:15:22Z",
       "username": "string"
     }
   ],
@@ -2976,6 +3066,122 @@ CreateWorkspaceRequest provides options for creating a new workspace. Only one o
 | `id`         | string | true     |              |             |
 | `username`   | string | true     |              |             |
 
+## codersdk.NotificationsConfig
+
+```json
+{
+  "dispatch_timeout": 0,
+  "email": {
+    "from": "string",
+    "hello": "string",
+    "smarthost": {
+      "host": "string",
+      "port": "string"
+    }
+  },
+  "fetch_interval": 0,
+  "lease_count": 0,
+  "lease_period": 0,
+  "max_send_attempts": 0,
+  "method": "string",
+  "retry_interval": 0,
+  "sync_buffer_size": 0,
+  "sync_interval": 0,
+  "webhook": {
+    "endpoint": {
+      "forceQuery": true,
+      "fragment": "string",
+      "host": "string",
+      "omitHost": true,
+      "opaque": "string",
+      "path": "string",
+      "rawFragment": "string",
+      "rawPath": "string",
+      "rawQuery": "string",
+      "scheme": "string",
+      "user": {}
+    }
+  }
+}
+```
+
+### Properties
+
+| Name                | Type                                                                       | Required | Restrictions | Description                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| ------------------- | -------------------------------------------------------------------------- | -------- | ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `dispatch_timeout`  | integer                                                                    | false    |              | How long to wait while a notification is being sent before giving up.                                                                                                                                                                                                                                                                                                                                                                               |
+| `email`             | [codersdk.NotificationsEmailConfig](#codersdknotificationsemailconfig)     | false    |              | Email settings.                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `fetch_interval`    | integer                                                                    | false    |              | How often to query the database for queued notifications.                                                                                                                                                                                                                                                                                                                                                                                           |
+| `lease_count`       | integer                                                                    | false    |              | How many notifications a notifier should lease per fetch interval.                                                                                                                                                                                                                                                                                                                                                                                  |
+| `lease_period`      | integer                                                                    | false    |              | How long a notifier should lease a message. This is effectively how long a notification is 'owned' by a notifier, and once this period expires it will be available for lease by another notifier. Leasing is important in order for multiple running notifiers to not pick the same messages to deliver concurrently. This lease period will only expire if a notifier shuts down ungracefully; a dispatch of the notification releases the lease. |
+| `max_send_attempts` | integer                                                                    | false    |              | The upper limit of attempts to send a notification.                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `method`            | string                                                                     | false    |              | Which delivery method to use (available options: 'smtp', 'webhook').                                                                                                                                                                                                                                                                                                                                                                                |
+| `retry_interval`    | integer                                                                    | false    |              | The minimum time between retries.                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `sync_buffer_size`  | integer                                                                    | false    |              | The notifications system buffers message updates in memory to ease pressure on the database. This option controls how many updates are kept in memory. The lower this value the lower the change of state inconsistency in a non-graceful shutdown - but it also increases load on the database. It is recommended to keep this option at its default value.                                                                                        |
+| `sync_interval`     | integer                                                                    | false    |              | The notifications system buffers message updates in memory to ease pressure on the database. This option controls how often it synchronizes its state with the database. The shorter this value the lower the change of state inconsistency in a non-graceful shutdown - but it also increases load on the database. It is recommended to keep this option at its default value.                                                                    |
+| `webhook`           | [codersdk.NotificationsWebhookConfig](#codersdknotificationswebhookconfig) | false    |              | Webhook settings.                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+
+## codersdk.NotificationsEmailConfig
+
+```json
+{
+  "from": "string",
+  "hello": "string",
+  "smarthost": {
+    "host": "string",
+    "port": "string"
+  }
+}
+```
+
+### Properties
+
+| Name        | Type                                 | Required | Restrictions | Description                                                           |
+| ----------- | ------------------------------------ | -------- | ------------ | --------------------------------------------------------------------- |
+| `from`      | string                               | false    |              | The sender's address.                                                 |
+| `hello`     | string                               | false    |              | The hostname identifying the SMTP server.                             |
+| `smarthost` | [serpent.HostPort](#serpenthostport) | false    |              | The intermediary SMTP host through which emails are sent (host:port). |
+
+## codersdk.NotificationsSettings
+
+```json
+{
+  "notifier_paused": true
+}
+```
+
+### Properties
+
+| Name              | Type    | Required | Restrictions | Description |
+| ----------------- | ------- | -------- | ------------ | ----------- |
+| `notifier_paused` | boolean | false    |              |             |
+
+## codersdk.NotificationsWebhookConfig
+
+```json
+{
+  "endpoint": {
+    "forceQuery": true,
+    "fragment": "string",
+    "host": "string",
+    "omitHost": true,
+    "opaque": "string",
+    "path": "string",
+    "rawFragment": "string",
+    "rawPath": "string",
+    "rawQuery": "string",
+    "scheme": "string",
+    "user": {}
+  }
+}
+```
+
+### Properties
+
+| Name       | Type                       | Required | Restrictions | Description                                                          |
+| ---------- | -------------------------- | -------- | ------------ | -------------------------------------------------------------------- |
+| `endpoint` | [serpent.URL](#serpenturl) | false    |              | The URL to which the payload will be sent with an HTTP POST request. |
+
 ## codersdk.OAuth2AppEndpoints
 
 ```json
@@ -3270,11 +3476,20 @@ CreateWorkspaceRequest provides options for creating a new workspace. Only one o
 | `updated_at`      | string                                          | false    |              |             |
 | `user_id`         | string                                          | false    |              |             |
 
-## codersdk.OrganizationMemberWithName
+## codersdk.OrganizationMemberWithUserData
 
 ```json
 {
+  "avatar_url": "string",
   "created_at": "2019-08-24T14:15:22Z",
+  "global_roles": [
+    {
+      "display_name": "string",
+      "name": "string",
+      "organization_id": "string"
+    }
+  ],
+  "name": "string",
   "organization_id": "7c60d51f-b44e-4682-87d6-449835ea4de6",
   "roles": [
     {
@@ -3293,7 +3508,10 @@ CreateWorkspaceRequest provides options for creating a new workspace. Only one o
 
 | Name              | Type                                            | Required | Restrictions | Description |
 | ----------------- | ----------------------------------------------- | -------- | ------------ | ----------- |
+| `avatar_url`      | string                                          | false    |              |             |
 | `created_at`      | string                                          | false    |              |             |
+| `global_roles`    | array of [codersdk.SlimRole](#codersdkslimrole) | false    |              |             |
+| `name`            | string                                          | false    |              |             |
 | `organization_id` | string                                          | false    |              |             |
 | `roles`           | array of [codersdk.SlimRole](#codersdkslimrole) | false    |              |             |
 | `updated_at`      | string                                          | false    |              |             |
@@ -3491,6 +3709,7 @@ CreateWorkspaceRequest provides options for creating a new workspace. Only one o
   "id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
   "last_seen_at": "2019-08-24T14:15:22Z",
   "name": "string",
+  "organization_id": "7c60d51f-b44e-4682-87d6-449835ea4de6",
   "provisioners": ["string"],
   "tags": {
     "property1": "string",
@@ -3509,6 +3728,7 @@ CreateWorkspaceRequest provides options for creating a new workspace. Only one o
 | `id`               | string          | false    |              |             |
 | `last_seen_at`     | string          | false    |              |             |
 | `name`             | string          | false    |              |             |
+| `organization_id`  | string          | false    |              |             |
 | `provisioners`     | array of string | false    |              |             |
 | `tags`             | object          | false    |              |             |
 | » `[any property]` | string          | false    |              |             |
@@ -3621,6 +3841,26 @@ CreateWorkspaceRequest provides options for creating a new workspace. Only one o
 | `canceled`  |
 | `failed`    |
 | `unknown`   |
+
+## codersdk.ProvisionerKey
+
+```json
+{
+  "created_at": "2019-08-24T14:15:22Z",
+  "id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
+  "name": "string",
+  "organization": "452c1a86-a0af-475b-b03f-724878b0f387"
+}
+```
+
+### Properties
+
+| Name           | Type   | Required | Restrictions | Description |
+| -------------- | ------ | -------- | ------------ | ----------- |
+| `created_at`   | string | false    |              |             |
+| `id`           | string | false    |              |             |
+| `name`         | string | false    |              |             |
+| `organization` | string | false    |              |             |
 
 ## codersdk.ProvisionerLogLevel
 
@@ -3770,6 +4010,7 @@ CreateWorkspaceRequest provides options for creating a new workspace. Only one o
 | `organization`          |
 | `organization_member`   |
 | `provisioner_daemon`    |
+| `provisioner_keys`      |
 | `replicas`              |
 | `system`                |
 | `tailnet_coordinator`   |
@@ -3808,6 +4049,7 @@ CreateWorkspaceRequest provides options for creating a new workspace. Only one o
   "name": "string",
   "status": "active",
   "theme_preference": "string",
+  "updated_at": "2019-08-24T14:15:22Z",
   "username": "string"
 }
 ```
@@ -3825,6 +4067,7 @@ CreateWorkspaceRequest provides options for creating a new workspace. Only one o
 | `name`             | string                                     | false    |              |             |
 | `status`           | [codersdk.UserStatus](#codersdkuserstatus) | false    |              |             |
 | `theme_preference` | string                                     | false    |              |             |
+| `updated_at`       | string                                     | false    |              |             |
 | `username`         | string                                     | true     |              |             |
 
 #### Enumerated Values
@@ -3985,6 +4228,7 @@ CreateWorkspaceRequest provides options for creating a new workspace. Only one o
 | `license`                    |
 | `convert_login`              |
 | `health_settings`            |
+| `notifications_settings`     |
 | `workspace_proxy`            |
 | `organization`               |
 | `oauth2_provider_app`        |
@@ -4293,6 +4537,8 @@ CreateWorkspaceRequest provides options for creating a new workspace. Only one o
   "id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
   "max_port_share_level": "owner",
   "name": "string",
+  "organization_display_name": "string",
+  "organization_icon": "string",
   "organization_id": "7c60d51f-b44e-4682-87d6-449835ea4de6",
   "organization_name": "string",
   "provisioner": "terraform",
@@ -4329,6 +4575,8 @@ CreateWorkspaceRequest provides options for creating a new workspace. Only one o
 | `id`                               | string                                                                         | false    |              |                                                                                                                                                                                                 |
 | `max_port_share_level`             | [codersdk.WorkspaceAgentPortShareLevel](#codersdkworkspaceagentportsharelevel) | false    |              |                                                                                                                                                                                                 |
 | `name`                             | string                                                                         | false    |              |                                                                                                                                                                                                 |
+| `organization_display_name`        | string                                                                         | false    |              |                                                                                                                                                                                                 |
+| `organization_icon`                | string                                                                         | false    |              |                                                                                                                                                                                                 |
 | `organization_id`                  | string                                                                         | false    |              |                                                                                                                                                                                                 |
 | `organization_name`                | string                                                                         | false    |              |                                                                                                                                                                                                 |
 | `provisioner`                      | string                                                                         | false    |              |                                                                                                                                                                                                 |
@@ -4695,6 +4943,7 @@ CreateWorkspaceRequest provides options for creating a new workspace. Only one o
   ],
   "status": "active",
   "theme_preference": "string",
+  "updated_at": "2019-08-24T14:15:22Z",
   "username": "string"
 }
 ```
@@ -4715,6 +4964,7 @@ CreateWorkspaceRequest provides options for creating a new workspace. Only one o
 | `roles`            | array of [codersdk.SlimRole](#codersdkslimrole) | false    |              |             |
 | `status`           | [codersdk.UserStatus](#codersdkuserstatus)      | false    |              |             |
 | `theme_preference` | string                                          | false    |              |             |
+| `updated_at`       | string                                          | false    |              |             |
 | `username`         | string                                          | true     |              |             |
 
 #### Enumerated Values
@@ -5324,6 +5574,7 @@ If the schedule is empty, the user will be updated to use the default schedule.|
   ],
   "status": "active",
   "theme_preference": "string",
+  "updated_at": "2019-08-24T14:15:22Z",
   "username": "string"
 }
 ```
@@ -5343,6 +5594,7 @@ If the schedule is empty, the user will be updated to use the default schedule.|
 | `roles`            | array of [codersdk.SlimRole](#codersdkslimrole) | false    |              |             |
 | `status`           | [codersdk.UserStatus](#codersdkuserstatus)      | false    |              |             |
 | `theme_preference` | string                                          | false    |              |             |
+| `updated_at`       | string                                          | false    |              |             |
 | `username`         | string                                          | true     |              |             |
 
 #### Enumerated Values
@@ -7969,6 +8221,7 @@ If the schedule is empty, the user will be updated to use the default schedule.|
           "id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
           "last_seen_at": "2019-08-24T14:15:22Z",
           "name": "string",
+          "organization_id": "7c60d51f-b44e-4682-87d6-449835ea4de6",
           "provisioners": ["string"],
           "tags": {
             "property1": "string",
@@ -8087,6 +8340,7 @@ If the schedule is empty, the user will be updated to use the default schedule.|
         "id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
         "last_seen_at": "2019-08-24T14:15:22Z",
         "name": "string",
+        "organization_id": "7c60d51f-b44e-4682-87d6-449835ea4de6",
         "provisioners": ["string"],
         "tags": {
           "property1": "string",
@@ -8140,6 +8394,7 @@ If the schedule is empty, the user will be updated to use the default schedule.|
     "id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
     "last_seen_at": "2019-08-24T14:15:22Z",
     "name": "string",
+    "organization_id": "7c60d51f-b44e-4682-87d6-449835ea4de6",
     "provisioners": ["string"],
     "tags": {
       "property1": "string",

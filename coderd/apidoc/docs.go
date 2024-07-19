@@ -1547,6 +1547,71 @@ const docTemplate = `{
                 }
             }
         },
+        "/notifications/settings": {
+            "get": {
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "General"
+                ],
+                "summary": "Get notifications settings",
+                "operationId": "get-notifications-settings",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.NotificationsSettings"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "General"
+                ],
+                "summary": "Update notifications settings",
+                "operationId": "update-notifications-settings",
+                "parameters": [
+                    {
+                        "description": "Notifications settings request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.NotificationsSettings"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.NotificationsSettings"
+                        }
+                    },
+                    "304": {
+                        "description": "Not Modified"
+                    }
+                }
+            }
+        },
         "/oauth2-provider/apps": {
             "get": {
                 "security": [
@@ -1972,6 +2037,32 @@ const docTemplate = `{
             }
         },
         "/organizations": {
+            "get": {
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Organizations"
+                ],
+                "summary": "Get organizations",
+                "operationId": "get-organizations",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/codersdk.Organization"
+                            }
+                        }
+                    }
+                }
+            },
             "post": {
                 "security": [
                     {
@@ -2275,7 +2366,7 @@ const docTemplate = `{
                         "schema": {
                             "type": "array",
                             "items": {
-                                "$ref": "#/definitions/codersdk.OrganizationMemberWithName"
+                                "$ref": "#/definitions/codersdk.OrganizationMemberWithUserData"
                             }
                         }
                     }
@@ -2402,9 +2493,6 @@ const docTemplate = `{
                         "CoderSessionToken": []
                     }
                 ],
-                "produces": [
-                    "application/json"
-                ],
                 "tags": [
                     "Members"
                 ],
@@ -2427,11 +2515,8 @@ const docTemplate = `{
                     }
                 ],
                 "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/codersdk.OrganizationMember"
-                        }
+                    "204": {
+                        "description": "No Content"
                     }
                 }
             }
@@ -2607,6 +2692,110 @@ const docTemplate = `{
                 "responses": {
                     "101": {
                         "description": "Switching Protocols"
+                    }
+                }
+            }
+        },
+        "/organizations/{organization}/provisionerkeys": {
+            "get": {
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Enterprise"
+                ],
+                "summary": "List provisioner key",
+                "operationId": "list-provisioner-key",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Organization ID",
+                        "name": "organization",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/codersdk.ProvisionerKey"
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Enterprise"
+                ],
+                "summary": "Create provisioner key",
+                "operationId": "create-provisioner-key",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Organization ID",
+                        "name": "organization",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.CreateProvisionerKeyResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/organizations/{organization}/provisionerkeys/{provisionerkey}": {
+            "delete": {
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "tags": [
+                    "Enterprise"
+                ],
+                "summary": "Delete provisioner key",
+                "operationId": "delete-provisioner-key",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Organization ID",
+                        "name": "organization",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Provisioner key name",
+                        "name": "provisionerkey",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
                     }
                 }
             }
@@ -4640,9 +4829,6 @@ const docTemplate = `{
                         "CoderSessionToken": []
                     }
                 ],
-                "produces": [
-                    "application/json"
-                ],
                 "tags": [
                     "Users"
                 ],
@@ -4658,11 +4844,8 @@ const docTemplate = `{
                     }
                 ],
                 "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/codersdk.User"
-                        }
+                    "204": {
+                        "description": "No Content"
                     }
                 }
             }
@@ -8550,6 +8733,14 @@ const docTemplate = `{
                 }
             }
         },
+        "codersdk.CreateProvisionerKeyResponse": {
+            "type": "object",
+            "properties": {
+                "key": {
+                    "type": "string"
+                }
+            }
+        },
         "codersdk.CreateTemplateRequest": {
             "type": "object",
             "required": [
@@ -9200,6 +9391,9 @@ const docTemplate = `{
                 "metrics_cache_refresh_interval": {
                     "type": "integer"
                 },
+                "notifications": {
+                    "$ref": "#/definitions/codersdk.NotificationsConfig"
+                },
                 "oauth2": {
                     "$ref": "#/definitions/codersdk.OAuth2Config"
                 },
@@ -9377,20 +9571,23 @@ const docTemplate = `{
                 "auto-fill-parameters",
                 "multi-organization",
                 "custom-roles",
+                "notifications",
                 "workspace-usage"
             ],
             "x-enum-comments": {
                 "ExperimentAutoFillParameters": "This should not be taken out of experiments until we have redesigned the feature.",
-                "ExperimentCustomRoles": "Allows creating runtime custom roles",
+                "ExperimentCustomRoles": "Allows creating runtime custom roles.",
                 "ExperimentExample": "This isn't used for anything.",
                 "ExperimentMultiOrganization": "Requires organization context for interactions, default org is assumed.",
-                "ExperimentWorkspaceUsage": "Enables the new workspace usage tracking"
+                "ExperimentNotifications": "Sends notifications via SMTP and webhooks following certain events.",
+                "ExperimentWorkspaceUsage": "Enables the new workspace usage tracking."
             },
             "x-enum-varnames": [
                 "ExperimentExample",
                 "ExperimentAutoFillParameters",
                 "ExperimentMultiOrganization",
                 "ExperimentCustomRoles",
+                "ExperimentNotifications",
                 "ExperimentWorkspaceUsage"
             ]
         },
@@ -9925,6 +10122,105 @@ const docTemplate = `{
                 }
             }
         },
+        "codersdk.NotificationsConfig": {
+            "type": "object",
+            "properties": {
+                "dispatch_timeout": {
+                    "description": "How long to wait while a notification is being sent before giving up.",
+                    "type": "integer"
+                },
+                "email": {
+                    "description": "SMTP settings.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/codersdk.NotificationsEmailConfig"
+                        }
+                    ]
+                },
+                "fetch_interval": {
+                    "description": "How often to query the database for queued notifications.",
+                    "type": "integer"
+                },
+                "lease_count": {
+                    "description": "How many notifications a notifier should lease per fetch interval.",
+                    "type": "integer"
+                },
+                "lease_period": {
+                    "description": "How long a notifier should lease a message. This is effectively how long a notification is 'owned'\nby a notifier, and once this period expires it will be available for lease by another notifier. Leasing\nis important in order for multiple running notifiers to not pick the same messages to deliver concurrently.\nThis lease period will only expire if a notifier shuts down ungracefully; a dispatch of the notification\nreleases the lease.",
+                    "type": "integer"
+                },
+                "max_send_attempts": {
+                    "description": "The upper limit of attempts to send a notification.",
+                    "type": "integer"
+                },
+                "method": {
+                    "description": "Which delivery method to use (available options: 'smtp', 'webhook').",
+                    "type": "string"
+                },
+                "retry_interval": {
+                    "description": "The minimum time between retries.",
+                    "type": "integer"
+                },
+                "sync_buffer_size": {
+                    "description": "The notifications system buffers message updates in memory to ease pressure on the database.\nThis option controls how many updates are kept in memory. The lower this value the\nlower the change of state inconsistency in a non-graceful shutdown - but it also increases load on the\ndatabase. It is recommended to keep this option at its default value.",
+                    "type": "integer"
+                },
+                "sync_interval": {
+                    "description": "The notifications system buffers message updates in memory to ease pressure on the database.\nThis option controls how often it synchronizes its state with the database. The shorter this value the\nlower the change of state inconsistency in a non-graceful shutdown - but it also increases load on the\ndatabase. It is recommended to keep this option at its default value.",
+                    "type": "integer"
+                },
+                "webhook": {
+                    "description": "Webhook settings.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/codersdk.NotificationsWebhookConfig"
+                        }
+                    ]
+                }
+            }
+        },
+        "codersdk.NotificationsEmailConfig": {
+            "type": "object",
+            "properties": {
+                "from": {
+                    "description": "The sender's address.",
+                    "type": "string"
+                },
+                "hello": {
+                    "description": "The hostname identifying the SMTP server.",
+                    "type": "string"
+                },
+                "smarthost": {
+                    "description": "The intermediary SMTP host through which emails are sent (host:port).",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/serpent.HostPort"
+                        }
+                    ]
+                }
+            }
+        },
+        "codersdk.NotificationsSettings": {
+            "type": "object",
+            "properties": {
+                "notifier_paused": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "codersdk.NotificationsWebhookConfig": {
+            "type": "object",
+            "properties": {
+                "endpoint": {
+                    "description": "The URL to which the payload will be sent with an HTTP POST request.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/serpent.URL"
+                        }
+                    ]
+                }
+            }
+        },
         "codersdk.OAuth2AppEndpoints": {
             "type": "object",
             "properties": {
@@ -10224,12 +10520,24 @@ const docTemplate = `{
                 }
             }
         },
-        "codersdk.OrganizationMemberWithName": {
+        "codersdk.OrganizationMemberWithUserData": {
             "type": "object",
             "properties": {
+                "avatar_url": {
+                    "type": "string"
+                },
                 "created_at": {
                     "type": "string",
                     "format": "date-time"
+                },
+                "global_roles": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.SlimRole"
+                    }
+                },
+                "name": {
+                    "type": "string"
                 },
                 "organization_id": {
                     "type": "string",
@@ -10448,6 +10756,10 @@ const docTemplate = `{
                 "name": {
                     "type": "string"
                 },
+                "organization_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
                 "provisioners": {
                     "type": "array",
                     "items": {
@@ -10594,6 +10906,26 @@ const docTemplate = `{
                 "ProvisionerJobUnknown"
             ]
         },
+        "codersdk.ProvisionerKey": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "organization": {
+                    "type": "string",
+                    "format": "uuid"
+                }
+            }
+        },
         "codersdk.ProvisionerLogLevel": {
             "type": "string",
             "enum": [
@@ -10729,6 +11061,7 @@ const docTemplate = `{
                 "organization",
                 "organization_member",
                 "provisioner_daemon",
+                "provisioner_keys",
                 "replicas",
                 "system",
                 "tailnet_coordinator",
@@ -10756,6 +11089,7 @@ const docTemplate = `{
                 "ResourceOrganization",
                 "ResourceOrganizationMember",
                 "ResourceProvisionerDaemon",
+                "ResourceProvisionerKeys",
                 "ResourceReplicas",
                 "ResourceSystem",
                 "ResourceTailnetCoordinator",
@@ -10825,6 +11159,10 @@ const docTemplate = `{
                 },
                 "theme_preference": {
                     "type": "string"
+                },
+                "updated_at": {
+                    "type": "string",
+                    "format": "date-time"
                 },
                 "username": {
                     "type": "string"
@@ -10939,6 +11277,7 @@ const docTemplate = `{
                 "license",
                 "convert_login",
                 "health_settings",
+                "notifications_settings",
                 "workspace_proxy",
                 "organization",
                 "oauth2_provider_app",
@@ -10957,6 +11296,7 @@ const docTemplate = `{
                 "ResourceTypeLicense",
                 "ResourceTypeConvertLogin",
                 "ResourceTypeHealthSettings",
+                "ResourceTypeNotificationsSettings",
                 "ResourceTypeWorkspaceProxy",
                 "ResourceTypeOrganization",
                 "ResourceTypeOAuth2ProviderApp",
@@ -11254,6 +11594,12 @@ const docTemplate = `{
                     "$ref": "#/definitions/codersdk.WorkspaceAgentPortShareLevel"
                 },
                 "name": {
+                    "type": "string"
+                },
+                "organization_display_name": {
+                    "type": "string"
+                },
+                "organization_icon": {
                     "type": "string"
                 },
                 "organization_id": {
@@ -11632,6 +11978,10 @@ const docTemplate = `{
                 },
                 "theme_preference": {
                     "type": "string"
+                },
+                "updated_at": {
+                    "type": "string",
+                    "format": "date-time"
                 },
                 "username": {
                     "type": "string"
@@ -12201,6 +12551,10 @@ const docTemplate = `{
                 },
                 "theme_preference": {
                     "type": "string"
+                },
+                "updated_at": {
+                    "type": "string",
+                    "format": "date-time"
                 },
                 "username": {
                     "type": "string"
