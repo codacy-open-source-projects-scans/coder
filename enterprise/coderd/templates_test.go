@@ -11,9 +11,13 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"cdr.dev/slog"
+	"cdr.dev/slog/sloggers/slogtest"
+
 	"github.com/coder/coder/v2/coderd/audit"
 	"github.com/coder/coder/v2/coderd/coderdtest"
 	"github.com/coder/coder/v2/coderd/database"
+	"github.com/coder/coder/v2/coderd/notifications"
 	"github.com/coder/coder/v2/coderd/rbac"
 	"github.com/coder/coder/v2/coderd/util/ptr"
 	"github.com/coder/coder/v2/codersdk"
@@ -28,6 +32,8 @@ import (
 
 func TestTemplates(t *testing.T) {
 	t.Parallel()
+
+	logger := slogtest.Make(t, &slogtest.Options{IgnoreErrors: true}).Leveled(slog.LevelDebug)
 
 	t.Run("Deprecated", func(t *testing.T) {
 		t.Parallel()
@@ -637,7 +643,7 @@ func TestTemplates(t *testing.T) {
 		client, user := coderdenttest.New(t, &coderdenttest.Options{
 			Options: &coderdtest.Options{
 				IncludeProvisionerDaemon: true,
-				TemplateScheduleStore:    schedule.NewEnterpriseTemplateScheduleStore(agplUserQuietHoursScheduleStore()),
+				TemplateScheduleStore:    schedule.NewEnterpriseTemplateScheduleStore(agplUserQuietHoursScheduleStore(), notifications.NewNoopEnqueuer(), logger),
 			},
 			LicenseOptions: &coderdenttest.LicenseOptions{
 				Features: license.Features{
@@ -687,7 +693,7 @@ func TestTemplates(t *testing.T) {
 		owner, first := coderdenttest.New(t, &coderdenttest.Options{
 			Options: &coderdtest.Options{
 				IncludeProvisionerDaemon: true,
-				TemplateScheduleStore:    schedule.NewEnterpriseTemplateScheduleStore(agplUserQuietHoursScheduleStore()),
+				TemplateScheduleStore:    schedule.NewEnterpriseTemplateScheduleStore(agplUserQuietHoursScheduleStore(), notifications.NewNoopEnqueuer(), logger),
 			},
 			LicenseOptions: &coderdenttest.LicenseOptions{
 				Features: license.Features{
@@ -723,7 +729,7 @@ func TestTemplates(t *testing.T) {
 		t.Parallel()
 
 		dv := coderdtest.DeploymentValues(t)
-		dv.Experiments = []string{string(codersdk.ExperimentCustomRoles)}
+		dv.Experiments = []string{string(codersdk.ExperimentCustomRoles), string(codersdk.ExperimentMultiOrganization)}
 		ownerClient, _ := coderdenttest.New(t, &coderdenttest.Options{
 			Options: &coderdtest.Options{
 				DeploymentValues:         dv,
@@ -734,12 +740,13 @@ func TestTemplates(t *testing.T) {
 					codersdk.FeatureAccessControl:              1,
 					codersdk.FeatureCustomRoles:                1,
 					codersdk.FeatureExternalProvisionerDaemons: 1,
+					codersdk.FeatureMultipleOrganizations:      1,
 				},
 			},
 		})
 
 		ctx := testutil.Context(t, testutil.WaitMedium)
-		secondOrg := coderdtest.CreateOrganization(t, ownerClient, coderdtest.CreateOrganizationOptions{
+		secondOrg := coderdenttest.CreateOrganization(t, ownerClient, coderdenttest.CreateOrganizationOptions{
 			IncludeProvisionerDaemon: true,
 		})
 
@@ -767,6 +774,60 @@ func TestTemplates(t *testing.T) {
 
 		template := coderdtest.CreateTemplate(t, orgTemplateAdmin, secondOrg.ID, version.ID)
 		require.Equal(t, template.OrganizationID, secondOrg.ID)
+	})
+
+	t.Run("MultipleOrganizations", func(t *testing.T) {
+		t.Parallel()
+		dv := coderdtest.DeploymentValues(t)
+		dv.Experiments = []string{string(codersdk.ExperimentMultiOrganization)}
+		ownerClient, owner := coderdenttest.New(t, &coderdenttest.Options{
+			Options: &coderdtest.Options{
+				DeploymentValues: dv,
+			},
+			LicenseOptions: &coderdenttest.LicenseOptions{
+				Features: license.Features{
+					codersdk.FeatureMultipleOrganizations: 1,
+				},
+			},
+		})
+
+		client, _ := coderdtest.CreateAnotherUser(t, ownerClient, owner.OrganizationID, rbac.RoleTemplateAdmin())
+		org2 := coderdenttest.CreateOrganization(t, ownerClient, coderdenttest.CreateOrganizationOptions{})
+		user, _ := coderdtest.CreateAnotherUser(t, ownerClient, org2.ID)
+
+		// 2 templates in first organization
+		version := coderdtest.CreateTemplateVersion(t, client, owner.OrganizationID, nil)
+		version2 := coderdtest.CreateTemplateVersion(t, client, owner.OrganizationID, nil)
+		coderdtest.CreateTemplate(t, client, owner.OrganizationID, version.ID)
+		coderdtest.CreateTemplate(t, client, owner.OrganizationID, version2.ID)
+
+		// 2 in the second organization
+		version3 := coderdtest.CreateTemplateVersion(t, client, org2.ID, nil)
+		version4 := coderdtest.CreateTemplateVersion(t, client, org2.ID, nil)
+		coderdtest.CreateTemplate(t, client, org2.ID, version3.ID)
+		coderdtest.CreateTemplate(t, client, org2.ID, version4.ID)
+
+		ctx := testutil.Context(t, testutil.WaitLong)
+
+		// All 4 are viewable by the owner
+		templates, err := client.Templates(ctx, codersdk.TemplateFilter{})
+		require.NoError(t, err)
+		require.Len(t, templates, 4)
+
+		// View a single organization from the owner
+		templates, err = client.Templates(ctx, codersdk.TemplateFilter{
+			OrganizationID: owner.OrganizationID,
+		})
+		require.NoError(t, err)
+		require.Len(t, templates, 2)
+
+		// Only 2 are viewable by the org user
+		templates, err = user.Templates(ctx, codersdk.TemplateFilter{})
+		require.NoError(t, err)
+		require.Len(t, templates, 2)
+		for _, tmpl := range templates {
+			require.Equal(t, tmpl.OrganizationName, org2.Name, "organization name on template")
+		}
 	})
 }
 
@@ -1630,11 +1691,19 @@ func TestTemplateAccess(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitLong*3)
 	t.Cleanup(cancel)
 
-	ownerClient, owner := coderdenttest.New(t, &coderdenttest.Options{LicenseOptions: &coderdenttest.LicenseOptions{
-		Features: license.Features{
-			codersdk.FeatureTemplateRBAC: 1,
+	dv := coderdtest.DeploymentValues(t)
+	dv.Experiments = []string{string(codersdk.ExperimentMultiOrganization)}
+	ownerClient, owner := coderdenttest.New(t, &coderdenttest.Options{
+		Options: &coderdtest.Options{
+			DeploymentValues: dv,
 		},
-	}})
+		LicenseOptions: &coderdenttest.LicenseOptions{
+			Features: license.Features{
+				codersdk.FeatureTemplateRBAC:          1,
+				codersdk.FeatureMultipleOrganizations: 1,
+			},
+		},
+	})
 
 	type coderUser struct {
 		*codersdk.Client
@@ -1833,25 +1902,29 @@ func TestTemplateAccess(t *testing.T) {
 func TestMultipleOrganizationTemplates(t *testing.T) {
 	t.Parallel()
 
+	dv := coderdtest.DeploymentValues(t)
+	dv.Experiments = []string{string(codersdk.ExperimentMultiOrganization)}
 	ownerClient, first := coderdenttest.New(t, &coderdenttest.Options{
 		Options: &coderdtest.Options{
 			// This only affects the first org.
 			IncludeProvisionerDaemon: true,
+			DeploymentValues:         dv,
 		},
 		LicenseOptions: &coderdenttest.LicenseOptions{
 			Features: license.Features{
 				codersdk.FeatureExternalProvisionerDaemons: 1,
+				codersdk.FeatureMultipleOrganizations:      1,
 			},
 		},
 	})
 
 	templateAdmin, _ := coderdtest.CreateAnotherUser(t, ownerClient, first.OrganizationID, rbac.RoleTemplateAdmin())
 
-	second := coderdtest.CreateOrganization(t, ownerClient, coderdtest.CreateOrganizationOptions{
+	second := coderdenttest.CreateOrganization(t, ownerClient, coderdenttest.CreateOrganizationOptions{
 		IncludeProvisionerDaemon: true,
 	})
 
-	third := coderdtest.CreateOrganization(t, ownerClient, coderdtest.CreateOrganizationOptions{
+	third := coderdenttest.CreateOrganization(t, ownerClient, coderdenttest.CreateOrganizationOptions{
 		IncludeProvisionerDaemon: true,
 	})
 

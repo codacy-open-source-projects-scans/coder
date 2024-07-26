@@ -558,6 +558,12 @@
   "id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
   "ip": "string",
   "is_deleted": true,
+  "organization": {
+    "display_name": "string",
+    "icon": "string",
+    "id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
+    "name": "string"
+  },
   "organization_id": "7c60d51f-b44e-4682-87d6-449835ea4de6",
   "request_id": "266ea41d-adf5-480b-af50-15b940c2b846",
   "resource_icon": "string",
@@ -594,26 +600,27 @@
 
 ### Properties
 
-| Name                | Type                                           | Required | Restrictions | Description                                  |
-| ------------------- | ---------------------------------------------- | -------- | ------------ | -------------------------------------------- |
-| `action`            | [codersdk.AuditAction](#codersdkauditaction)   | false    |              |                                              |
-| `additional_fields` | array of integer                               | false    |              |                                              |
-| `description`       | string                                         | false    |              |                                              |
-| `diff`              | [codersdk.AuditDiff](#codersdkauditdiff)       | false    |              |                                              |
-| `id`                | string                                         | false    |              |                                              |
-| `ip`                | string                                         | false    |              |                                              |
-| `is_deleted`        | boolean                                        | false    |              |                                              |
-| `organization_id`   | string                                         | false    |              |                                              |
-| `request_id`        | string                                         | false    |              |                                              |
-| `resource_icon`     | string                                         | false    |              |                                              |
-| `resource_id`       | string                                         | false    |              |                                              |
-| `resource_link`     | string                                         | false    |              |                                              |
-| `resource_target`   | string                                         | false    |              | Resource target is the name of the resource. |
-| `resource_type`     | [codersdk.ResourceType](#codersdkresourcetype) | false    |              |                                              |
-| `status_code`       | integer                                        | false    |              |                                              |
-| `time`              | string                                         | false    |              |                                              |
-| `user`              | [codersdk.User](#codersdkuser)                 | false    |              |                                              |
-| `user_agent`        | string                                         | false    |              |                                              |
+| Name                | Type                                                         | Required | Restrictions | Description                                  |
+| ------------------- | ------------------------------------------------------------ | -------- | ------------ | -------------------------------------------- |
+| `action`            | [codersdk.AuditAction](#codersdkauditaction)                 | false    |              |                                              |
+| `additional_fields` | array of integer                                             | false    |              |                                              |
+| `description`       | string                                                       | false    |              |                                              |
+| `diff`              | [codersdk.AuditDiff](#codersdkauditdiff)                     | false    |              |                                              |
+| `id`                | string                                                       | false    |              |                                              |
+| `ip`                | string                                                       | false    |              |                                              |
+| `is_deleted`        | boolean                                                      | false    |              |                                              |
+| `organization`      | [codersdk.MinimalOrganization](#codersdkminimalorganization) | false    |              |                                              |
+| `organization_id`   | string                                                       | false    |              | Deprecated: Use 'organization.id' instead.   |
+| `request_id`        | string                                                       | false    |              |                                              |
+| `resource_icon`     | string                                                       | false    |              |                                              |
+| `resource_id`       | string                                                       | false    |              |                                              |
+| `resource_link`     | string                                                       | false    |              |                                              |
+| `resource_target`   | string                                                       | false    |              | Resource target is the name of the resource. |
+| `resource_type`     | [codersdk.ResourceType](#codersdkresourcetype)               | false    |              |                                              |
+| `status_code`       | integer                                                      | false    |              |                                              |
+| `time`              | string                                                       | false    |              |                                              |
+| `user`              | [codersdk.User](#codersdkuser)                               | false    |              |                                              |
+| `user_agent`        | string                                                       | false    |              |                                              |
 
 ## codersdk.AuditLogResponse
 
@@ -639,6 +646,12 @@
       "id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
       "ip": "string",
       "is_deleted": true,
+      "organization": {
+        "display_name": "string",
+        "icon": "string",
+        "id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
+        "name": "string"
+      },
       "organization_id": "7c60d51f-b44e-4682-87d6-449835ea4de6",
       "request_id": "266ea41d-adf5-480b-af50-15b940c2b846",
       "resource_icon": "string",
@@ -1700,11 +1713,26 @@ CreateWorkspaceRequest provides options for creating a new workspace. Only one o
     "notifications": {
       "dispatch_timeout": 0,
       "email": {
+        "auth": {
+          "identity": "string",
+          "password": "string",
+          "password_file": "string",
+          "username": "string"
+        },
+        "force_tls": true,
         "from": "string",
         "hello": "string",
         "smarthost": {
           "host": "string",
           "port": "string"
+        },
+        "tls": {
+          "ca_file": "string",
+          "cert_file": "string",
+          "insecure_skip_verify": true,
+          "key_file": "string",
+          "server_name": "string",
+          "start_tls": true
         }
       },
       "fetch_interval": 0,
@@ -1776,6 +1804,7 @@ CreateWorkspaceRequest provides options for creating a new workspace. Only one o
       "scopes": ["string"],
       "sign_in_text": "string",
       "signups_disabled_text": "string",
+      "skip_issuer_checks": true,
       "user_role_field": "string",
       "user_role_mapping": {},
       "user_roles_default": ["string"],
@@ -2107,11 +2136,26 @@ CreateWorkspaceRequest provides options for creating a new workspace. Only one o
   "notifications": {
     "dispatch_timeout": 0,
     "email": {
+      "auth": {
+        "identity": "string",
+        "password": "string",
+        "password_file": "string",
+        "username": "string"
+      },
+      "force_tls": true,
       "from": "string",
       "hello": "string",
       "smarthost": {
         "host": "string",
         "port": "string"
+      },
+      "tls": {
+        "ca_file": "string",
+        "cert_file": "string",
+        "insecure_skip_verify": true,
+        "key_file": "string",
+        "server_name": "string",
+        "start_tls": true
       }
     },
     "fetch_interval": 0,
@@ -2183,6 +2227,7 @@ CreateWorkspaceRequest provides options for creating a new workspace. Only one o
     "scopes": ["string"],
     "sign_in_text": "string",
     "signups_disabled_text": "string",
+    "skip_issuer_checks": true,
     "user_role_field": "string",
     "user_role_mapping": {},
     "user_roles_default": ["string"],
@@ -3048,6 +3093,26 @@ CreateWorkspaceRequest provides options for creating a new workspace. Only one o
 | --------------- | ------ | -------- | ------------ | ----------- |
 | `session_token` | string | true     |              |             |
 
+## codersdk.MinimalOrganization
+
+```json
+{
+  "display_name": "string",
+  "icon": "string",
+  "id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
+  "name": "string"
+}
+```
+
+### Properties
+
+| Name           | Type   | Required | Restrictions | Description |
+| -------------- | ------ | -------- | ------------ | ----------- |
+| `display_name` | string | false    |              |             |
+| `icon`         | string | false    |              |             |
+| `id`           | string | true     |              |             |
+| `name`         | string | false    |              |             |
+
 ## codersdk.MinimalUser
 
 ```json
@@ -3072,11 +3137,26 @@ CreateWorkspaceRequest provides options for creating a new workspace. Only one o
 {
   "dispatch_timeout": 0,
   "email": {
+    "auth": {
+      "identity": "string",
+      "password": "string",
+      "password_file": "string",
+      "username": "string"
+    },
+    "force_tls": true,
     "from": "string",
     "hello": "string",
     "smarthost": {
       "host": "string",
       "port": "string"
+    },
+    "tls": {
+      "ca_file": "string",
+      "cert_file": "string",
+      "insecure_skip_verify": true,
+      "key_file": "string",
+      "server_name": "string",
+      "start_tls": true
     }
   },
   "fetch_interval": 0,
@@ -3121,26 +3201,88 @@ CreateWorkspaceRequest provides options for creating a new workspace. Only one o
 | `sync_interval`     | integer                                                                    | false    |              | The notifications system buffers message updates in memory to ease pressure on the database. This option controls how often it synchronizes its state with the database. The shorter this value the lower the change of state inconsistency in a non-graceful shutdown - but it also increases load on the database. It is recommended to keep this option at its default value.                                                                    |
 | `webhook`           | [codersdk.NotificationsWebhookConfig](#codersdknotificationswebhookconfig) | false    |              | Webhook settings.                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 
+## codersdk.NotificationsEmailAuthConfig
+
+```json
+{
+  "identity": "string",
+  "password": "string",
+  "password_file": "string",
+  "username": "string"
+}
+```
+
+### Properties
+
+| Name            | Type   | Required | Restrictions | Description                                                |
+| --------------- | ------ | -------- | ------------ | ---------------------------------------------------------- |
+| `identity`      | string | false    |              | Identity for PLAIN auth.                                   |
+| `password`      | string | false    |              | Password for LOGIN/PLAIN auth.                             |
+| `password_file` | string | false    |              | File from which to load the password for LOGIN/PLAIN auth. |
+| `username`      | string | false    |              | Username for LOGIN/PLAIN auth.                             |
+
 ## codersdk.NotificationsEmailConfig
 
 ```json
 {
+  "auth": {
+    "identity": "string",
+    "password": "string",
+    "password_file": "string",
+    "username": "string"
+  },
+  "force_tls": true,
   "from": "string",
   "hello": "string",
   "smarthost": {
     "host": "string",
     "port": "string"
+  },
+  "tls": {
+    "ca_file": "string",
+    "cert_file": "string",
+    "insecure_skip_verify": true,
+    "key_file": "string",
+    "server_name": "string",
+    "start_tls": true
   }
 }
 ```
 
 ### Properties
 
-| Name        | Type                                 | Required | Restrictions | Description                                                           |
-| ----------- | ------------------------------------ | -------- | ------------ | --------------------------------------------------------------------- |
-| `from`      | string                               | false    |              | The sender's address.                                                 |
-| `hello`     | string                               | false    |              | The hostname identifying the SMTP server.                             |
-| `smarthost` | [serpent.HostPort](#serpenthostport) | false    |              | The intermediary SMTP host through which emails are sent (host:port). |
+| Name        | Type                                                                           | Required | Restrictions | Description                                                           |
+| ----------- | ------------------------------------------------------------------------------ | -------- | ------------ | --------------------------------------------------------------------- |
+| `auth`      | [codersdk.NotificationsEmailAuthConfig](#codersdknotificationsemailauthconfig) | false    |              | Authentication details.                                               |
+| `force_tls` | boolean                                                                        | false    |              | Force tls causes a TLS connection to be attempted.                    |
+| `from`      | string                                                                         | false    |              | The sender's address.                                                 |
+| `hello`     | string                                                                         | false    |              | The hostname identifying the SMTP server.                             |
+| `smarthost` | [serpent.HostPort](#serpenthostport)                                           | false    |              | The intermediary SMTP host through which emails are sent (host:port). |
+| `tls`       | [codersdk.NotificationsEmailTLSConfig](#codersdknotificationsemailtlsconfig)   | false    |              | Tls details.                                                          |
+
+## codersdk.NotificationsEmailTLSConfig
+
+```json
+{
+  "ca_file": "string",
+  "cert_file": "string",
+  "insecure_skip_verify": true,
+  "key_file": "string",
+  "server_name": "string",
+  "start_tls": true
+}
+```
+
+### Properties
+
+| Name                   | Type    | Required | Restrictions | Description                                                  |
+| ---------------------- | ------- | -------- | ------------ | ------------------------------------------------------------ |
+| `ca_file`              | string  | false    |              | Ca file specifies the location of the CA certificate to use. |
+| `cert_file`            | string  | false    |              | Cert file specifies the location of the certificate to use.  |
+| `insecure_skip_verify` | boolean | false    |              | Insecure skip verify skips target certificate validation.    |
+| `key_file`             | string  | false    |              | Key file specifies the location of the key to use.           |
+| `server_name`          | string  | false    |              | Server name to verify the hostname for the targets.          |
+| `start_tls`            | boolean | false    |              | Start tls attempts to upgrade plain connections to TLS.      |
 
 ## codersdk.NotificationsSettings
 
@@ -3383,6 +3525,7 @@ CreateWorkspaceRequest provides options for creating a new workspace. Only one o
   "scopes": ["string"],
   "sign_in_text": "string",
   "signups_disabled_text": "string",
+  "skip_issuer_checks": true,
   "user_role_field": "string",
   "user_role_mapping": {},
   "user_roles_default": ["string"],
@@ -3415,6 +3558,7 @@ CreateWorkspaceRequest provides options for creating a new workspace. Only one o
 | `scopes`                | array of string                  | false    |              |                                                                                  |
 | `sign_in_text`          | string                           | false    |              |                                                                                  |
 | `signups_disabled_text` | string                           | false    |              |                                                                                  |
+| `skip_issuer_checks`    | boolean                          | false    |              |                                                                                  |
 | `user_role_field`       | string                           | false    |              |                                                                                  |
 | `user_role_mapping`     | object                           | false    |              |                                                                                  |
 | `user_roles_default`    | array of string                  | false    |              |                                                                                  |
@@ -3482,6 +3626,7 @@ CreateWorkspaceRequest provides options for creating a new workspace. Only one o
 {
   "avatar_url": "string",
   "created_at": "2019-08-24T14:15:22Z",
+  "email": "string",
   "global_roles": [
     {
       "display_name": "string",
@@ -3510,6 +3655,7 @@ CreateWorkspaceRequest provides options for creating a new workspace. Only one o
 | ----------------- | ----------------------------------------------- | -------- | ------------ | ----------- |
 | `avatar_url`      | string                                          | false    |              |             |
 | `created_at`      | string                                          | false    |              |             |
+| `email`           | string                                          | false    |              |             |
 | `global_roles`    | array of [codersdk.SlimRole](#codersdkslimrole) | false    |              |             |
 | `name`            | string                                          | false    |              |             |
 | `organization_id` | string                                          | false    |              |             |
@@ -3849,18 +3995,24 @@ CreateWorkspaceRequest provides options for creating a new workspace. Only one o
   "created_at": "2019-08-24T14:15:22Z",
   "id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
   "name": "string",
-  "organization": "452c1a86-a0af-475b-b03f-724878b0f387"
+  "organization": "452c1a86-a0af-475b-b03f-724878b0f387",
+  "tags": {
+    "property1": "string",
+    "property2": "string"
+  }
 }
 ```
 
 ### Properties
 
-| Name           | Type   | Required | Restrictions | Description |
-| -------------- | ------ | -------- | ------------ | ----------- |
-| `created_at`   | string | false    |              |             |
-| `id`           | string | false    |              |             |
-| `name`         | string | false    |              |             |
-| `organization` | string | false    |              |             |
+| Name               | Type   | Required | Restrictions | Description |
+| ------------------ | ------ | -------- | ------------ | ----------- |
+| `created_at`       | string | false    |              |             |
+| `id`               | string | false    |              |             |
+| `name`             | string | false    |              |             |
+| `organization`     | string | false    |              |             |
+| `tags`             | object | false    |              |             |
+| » `[any property]` | string | false    |              |             |
 
 ## codersdk.ProvisionerLogLevel
 

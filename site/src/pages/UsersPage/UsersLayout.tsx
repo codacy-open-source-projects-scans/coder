@@ -13,17 +13,21 @@ import { Margins } from "components/Margins/Margins";
 import { PageHeader, PageHeaderTitle } from "components/PageHeader/PageHeader";
 import { TAB_PADDING_Y, TabLink, Tabs, TabsList } from "components/Tabs/Tabs";
 import { useAuthenticated } from "contexts/auth/RequireAuth";
+import { useDashboard } from "modules/dashboard/useDashboard";
 import { useFeatureVisibility } from "modules/dashboard/useFeatureVisibility";
 import { USERS_LINK } from "modules/navigation";
 
 export const UsersLayout: FC = () => {
   const { permissions } = useAuthenticated();
+  const { experiments } = useDashboard();
   const { createUser: canCreateUser, createGroup: canCreateGroup } =
     permissions;
   const navigate = useNavigate();
   const { template_rbac: isTemplateRBACEnabled } = useFeatureVisibility();
   const location = useLocation();
   const activeTab = location.pathname.endsWith("groups") ? "groups" : "users";
+
+  const isMultiOrg = experiments.includes("multi-organization");
 
   return (
     <>
@@ -57,21 +61,23 @@ export const UsersLayout: FC = () => {
         </PageHeader>
       </Margins>
 
-      <Tabs
-        css={{ marginBottom: 40, marginTop: -TAB_PADDING_Y }}
-        active={activeTab}
-      >
-        <Margins>
-          <TabsList>
-            <TabLink to={USERS_LINK} value="users">
-              Users
-            </TabLink>
-            <TabLink to="/groups" value="groups">
-              Groups
-            </TabLink>
-          </TabsList>
-        </Margins>
-      </Tabs>
+      {!isMultiOrg && (
+        <Tabs
+          css={{ marginBottom: 40, marginTop: -TAB_PADDING_Y }}
+          active={activeTab}
+        >
+          <Margins>
+            <TabsList>
+              <TabLink to={USERS_LINK} value="users">
+                Users
+              </TabLink>
+              <TabLink to="/groups" value="groups">
+                Groups
+              </TabLink>
+            </TabsList>
+          </Margins>
+        </Tabs>
+      )}
 
       <Margins>
         <Suspense fallback={<Loader />}>

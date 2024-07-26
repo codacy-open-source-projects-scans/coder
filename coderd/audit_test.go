@@ -46,7 +46,7 @@ func TestAuditLogs(t *testing.T) {
 		require.Len(t, alogs.AuditLogs, 1)
 	})
 
-	t.Run("User", func(t *testing.T) {
+	t.Run("IncludeUser", func(t *testing.T) {
 		t.Parallel()
 
 		ctx := context.Background()
@@ -159,8 +159,7 @@ func TestAuditLogs(t *testing.T) {
 
 		// Add an extra audit log in another organization
 		err = client.CreateTestAuditLog(ctx, codersdk.CreateTestAuditLogRequest{
-			ResourceID:     owner.UserID,
-			OrganizationID: uuid.New(),
+			ResourceID: owner.UserID,
 		})
 		require.NoError(t, err)
 

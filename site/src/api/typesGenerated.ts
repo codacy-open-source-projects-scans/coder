@@ -89,7 +89,6 @@ export interface AuditLog {
   readonly id: string;
   readonly request_id: string;
   readonly time: string;
-  readonly organization_id: string;
   // Named type "net/netip.Addr" unknown, using "any"
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- External type
   readonly ip: any;
@@ -105,6 +104,8 @@ export interface AuditLog {
   readonly description: string;
   readonly resource_link: string;
   readonly is_deleted: boolean;
+  readonly organization_id: string;
+  readonly organization?: MinimalOrganization;
   readonly user?: User;
 }
 
@@ -236,6 +237,7 @@ export interface CreateOrganizationRequest {
 // From codersdk/provisionerdaemons.go
 export interface CreateProvisionerKeyRequest {
   readonly name: string;
+  readonly tags: Record<string, string>;
 }
 
 // From codersdk/provisionerdaemons.go
@@ -690,6 +692,14 @@ export interface LoginWithPasswordResponse {
   readonly session_token: string;
 }
 
+// From codersdk/organizations.go
+export interface MinimalOrganization {
+  readonly id: string;
+  readonly name: string;
+  readonly display_name: string;
+  readonly icon: string;
+}
+
 // From codersdk/users.go
 export interface MinimalUser {
   readonly id: string;
@@ -713,10 +723,31 @@ export interface NotificationsConfig {
 }
 
 // From codersdk/deployment.go
+export interface NotificationsEmailAuthConfig {
+  readonly identity: string;
+  readonly username: string;
+  readonly password: string;
+  readonly password_file: string;
+}
+
+// From codersdk/deployment.go
 export interface NotificationsEmailConfig {
   readonly from: string;
   readonly smarthost: string;
   readonly hello: string;
+  readonly auth: NotificationsEmailAuthConfig;
+  readonly tls: NotificationsEmailTLSConfig;
+  readonly force_tls: boolean;
+}
+
+// From codersdk/deployment.go
+export interface NotificationsEmailTLSConfig {
+  readonly start_tls: boolean;
+  readonly server_name: string;
+  readonly insecure_skip_verify: boolean;
+  readonly ca_file: string;
+  readonly cert_file: string;
+  readonly key_file: string;
 }
 
 // From codersdk/notifications.go
@@ -820,18 +851,15 @@ export interface OIDCConfig {
   readonly sign_in_text: string;
   readonly icon_url: string;
   readonly signups_disabled_text: string;
+  readonly skip_issuer_checks: boolean;
 }
 
 // From codersdk/organizations.go
-export interface Organization {
-  readonly id: string;
-  readonly name: string;
-  readonly display_name: string;
+export interface Organization extends MinimalOrganization {
   readonly description: string;
   readonly created_at: string;
   readonly updated_at: string;
   readonly is_default: boolean;
-  readonly icon: string;
 }
 
 // From codersdk/organizations.go
@@ -848,6 +876,7 @@ export interface OrganizationMemberWithUserData extends OrganizationMember {
   readonly username: string;
   readonly name: string;
   readonly avatar_url: string;
+  readonly email: string;
   readonly global_roles: readonly SlimRole[];
 }
 
@@ -974,6 +1003,7 @@ export interface ProvisionerKey {
   readonly created_at: string;
   readonly organization: string;
   readonly name: string;
+  readonly tags: Record<string, string>;
 }
 
 // From codersdk/workspaceproxy.go
@@ -2078,6 +2108,10 @@ export const FeatureNames: FeatureName[] = [
   "workspace_batch_actions",
   "workspace_proxy",
 ];
+
+// From codersdk/deployment.go
+export type FeatureSet = "" | "enterprise" | "premium";
+export const FeatureSets: FeatureSet[] = ["", "enterprise", "premium"];
 
 // From codersdk/groups.go
 export type GroupSource = "oidc" | "user";

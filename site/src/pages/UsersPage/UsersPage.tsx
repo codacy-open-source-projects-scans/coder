@@ -1,7 +1,12 @@
 import { type FC, useState } from "react";
 import { Helmet } from "react-helmet-async";
 import { useMutation, useQuery, useQueryClient } from "react-query";
-import { useSearchParams, useNavigate } from "react-router-dom";
+import {
+  useSearchParams,
+  useNavigate,
+  Navigate,
+  useLocation,
+} from "react-router-dom";
 import { getErrorMessage } from "api/errors";
 import { deploymentConfig } from "api/queries/deployment";
 import { groupsByUserId } from "api/queries/groups";
@@ -30,19 +35,24 @@ import { ResetPasswordDialog } from "./ResetPasswordDialog";
 import { useStatusFilterMenu } from "./UsersFilter";
 import { UsersPageView } from "./UsersPageView";
 
-export const UsersPage: FC = () => {
+const UsersPage: FC = () => {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
-
+  const location = useLocation();
   const searchParamsResult = useSearchParams();
-  const { entitlements, organizationId } = useDashboard();
+  const { entitlements, experiments, organizationId } = useDashboard();
   const [searchParams] = searchParamsResult;
+  const isMultiOrg = experiments.includes("multi-organization");
 
   const groupsByUserIdQuery = useQuery(groupsByUserId(organizationId));
   const authMethodsQuery = useQuery(authMethods());
 
   const { permissions, user: me } = useAuthenticated();
-  const { updateUsers: canEditUsers, viewDeploymentValues } = permissions;
+  const {
+    createUser: canCreateUser,
+    updateUsers: canEditUsers,
+    viewDeploymentValues,
+  } = permissions;
   const rolesQuery = useQuery(roles());
   const { data: deploymentValues } = useQuery({
     ...deploymentConfig(),
@@ -93,6 +103,13 @@ export const UsersPage: FC = () => {
     authMethodsQuery.isLoading ||
     groupsByUserIdQuery.isLoading;
 
+  if (
+    experiments.includes("multi-organization") &&
+    location.pathname !== "/deployment/users"
+  ) {
+    return <Navigate to={`/deployment/users${location.search}`} replace />;
+  }
+
   return (
     <>
       <Helmet>
@@ -125,12 +142,9 @@ export const UsersPage: FC = () => {
             newPassword: generateRandomString(12),
           });
         }}
-        onUpdateUserRoles={async (user, roles) => {
+        onUpdateUserRoles={async (userId, roles) => {
           try {
-            await updateRolesMutation.mutateAsync({
-              userId: user.id,
-              roles,
-            });
+            await updateRolesMutation.mutateAsync({ userId, roles });
             displaySuccess("Successfully updated the user roles.");
           } catch (e) {
             displayError(
@@ -150,6 +164,8 @@ export const UsersPage: FC = () => {
           menus: { status: statusMenu },
         }}
         usersQuery={usersQuery}
+        isMultiOrg={isMultiOrg}
+        canCreateUser={canCreateUser}
       />
 
       <DeleteDialog

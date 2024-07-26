@@ -30,11 +30,17 @@ func TestProvisionerDaemon_PSK(t *testing.T) {
 	t.Run("OK", func(t *testing.T) {
 		t.Parallel()
 
+		dv := coderdtest.DeploymentValues(t)
+		dv.Experiments = []string{string(codersdk.ExperimentMultiOrganization)}
 		client, _ := coderdenttest.New(t, &coderdenttest.Options{
+			Options: &coderdtest.Options{
+				DeploymentValues: dv,
+			},
 			ProvisionerDaemonPSK: "provisionersftw",
 			LicenseOptions: &coderdenttest.LicenseOptions{
 				Features: license.Features{
 					codersdk.FeatureExternalProvisionerDaemons: 1,
+					codersdk.FeatureMultipleOrganizations:      1,
 				},
 			},
 		})
@@ -64,15 +70,21 @@ func TestProvisionerDaemon_PSK(t *testing.T) {
 
 	t.Run("AnotherOrg", func(t *testing.T) {
 		t.Parallel()
+		dv := coderdtest.DeploymentValues(t)
+		dv.Experiments = []string{string(codersdk.ExperimentMultiOrganization)}
 		client, _ := coderdenttest.New(t, &coderdenttest.Options{
+			Options: &coderdtest.Options{
+				DeploymentValues: dv,
+			},
 			ProvisionerDaemonPSK: "provisionersftw",
 			LicenseOptions: &coderdenttest.LicenseOptions{
 				Features: license.Features{
 					codersdk.FeatureExternalProvisionerDaemons: 1,
+					codersdk.FeatureMultipleOrganizations:      1,
 				},
 			},
 		})
-		anotherOrg := coderdtest.CreateOrganization(t, client, coderdtest.CreateOrganizationOptions{})
+		anotherOrg := coderdenttest.CreateOrganization(t, client, coderdenttest.CreateOrganizationOptions{})
 		inv, conf := newCLI(t, "provisionerd", "start", "--psk=provisionersftw", "--name", "org-daemon", "--org", anotherOrg.ID.String())
 		err := conf.URL().Write(client.URL.String())
 		require.NoError(t, err)
@@ -98,15 +110,21 @@ func TestProvisionerDaemon_PSK(t *testing.T) {
 
 	t.Run("AnotherOrgByNameWithUser", func(t *testing.T) {
 		t.Parallel()
+		dv := coderdtest.DeploymentValues(t)
+		dv.Experiments = []string{string(codersdk.ExperimentMultiOrganization)}
 		client, _ := coderdenttest.New(t, &coderdenttest.Options{
+			Options: &coderdtest.Options{
+				DeploymentValues: dv,
+			},
 			ProvisionerDaemonPSK: "provisionersftw",
 			LicenseOptions: &coderdenttest.LicenseOptions{
 				Features: license.Features{
 					codersdk.FeatureExternalProvisionerDaemons: 1,
+					codersdk.FeatureMultipleOrganizations:      1,
 				},
 			},
 		})
-		anotherOrg := coderdtest.CreateOrganization(t, client, coderdtest.CreateOrganizationOptions{})
+		anotherOrg := coderdenttest.CreateOrganization(t, client, coderdenttest.CreateOrganizationOptions{})
 		anotherClient, _ := coderdtest.CreateAnotherUser(t, client, anotherOrg.ID, rbac.RoleTemplateAdmin())
 		inv, conf := newCLI(t, "provisionerd", "start", "--psk=provisionersftw", "--name", "org-daemon", "--org", anotherOrg.Name)
 		clitest.SetupConfig(t, anotherClient, conf)
@@ -119,15 +137,21 @@ func TestProvisionerDaemon_PSK(t *testing.T) {
 
 	t.Run("AnotherOrgByNameNoUser", func(t *testing.T) {
 		t.Parallel()
+		dv := coderdtest.DeploymentValues(t)
+		dv.Experiments = []string{string(codersdk.ExperimentMultiOrganization)}
 		client, _ := coderdenttest.New(t, &coderdenttest.Options{
+			Options: &coderdtest.Options{
+				DeploymentValues: dv,
+			},
 			ProvisionerDaemonPSK: "provisionersftw",
 			LicenseOptions: &coderdenttest.LicenseOptions{
 				Features: license.Features{
 					codersdk.FeatureExternalProvisionerDaemons: 1,
+					codersdk.FeatureMultipleOrganizations:      1,
 				},
 			},
 		})
-		anotherOrg := coderdtest.CreateOrganization(t, client, coderdtest.CreateOrganizationOptions{})
+		anotherOrg := coderdenttest.CreateOrganization(t, client, coderdenttest.CreateOrganizationOptions{})
 		inv, conf := newCLI(t, "provisionerd", "start", "--psk=provisionersftw", "--name", "org-daemon", "--org", anotherOrg.Name)
 		err := conf.URL().Write(client.URL.String())
 		require.NoError(t, err)
@@ -153,7 +177,7 @@ func TestProvisionerDaemon_PSK(t *testing.T) {
 		ctx, cancel := context.WithTimeout(inv.Context(), testutil.WaitLong)
 		defer cancel()
 		err = inv.WithContext(ctx).Run()
-		require.ErrorContains(t, err, "must provide a pre-shared key when not authenticated as a user")
+		require.ErrorContains(t, err, "must provide a pre-shared key or provisioner key when not authenticated as a user")
 	})
 }
 
@@ -266,15 +290,21 @@ func TestProvisionerDaemon_SessionToken(t *testing.T) {
 
 	t.Run("ScopeUserAnotherOrg", func(t *testing.T) {
 		t.Parallel()
+		dv := coderdtest.DeploymentValues(t)
+		dv.Experiments = []string{string(codersdk.ExperimentMultiOrganization)}
 		client, _ := coderdenttest.New(t, &coderdenttest.Options{
+			Options: &coderdtest.Options{
+				DeploymentValues: dv,
+			},
 			ProvisionerDaemonPSK: "provisionersftw",
 			LicenseOptions: &coderdenttest.LicenseOptions{
 				Features: license.Features{
 					codersdk.FeatureExternalProvisionerDaemons: 1,
+					codersdk.FeatureMultipleOrganizations:      1,
 				},
 			},
 		})
-		anotherOrg := coderdtest.CreateOrganization(t, client, coderdtest.CreateOrganizationOptions{})
+		anotherOrg := coderdenttest.CreateOrganization(t, client, coderdenttest.CreateOrganizationOptions{})
 		anotherClient, anotherUser := coderdtest.CreateAnotherUser(t, client, anotherOrg.ID, rbac.RoleTemplateAdmin())
 		inv, conf := newCLI(t, "provisionerd", "start", "--tag", "scope=user", "--name", "org-daemon", "--org", anotherOrg.ID.String())
 		clitest.SetupConfig(t, anotherClient, conf)
@@ -299,79 +329,248 @@ func TestProvisionerDaemon_SessionToken(t *testing.T) {
 		assert.Equal(t, buildinfo.Version(), daemons[0].Version)
 		assert.Equal(t, proto.CurrentVersion.String(), daemons[0].APIVersion)
 	})
+}
 
-	t.Run("PrometheusEnabled", func(t *testing.T) {
+func TestProvisionerDaemon_ProvisionerKey(t *testing.T) {
+	t.Parallel()
+
+	t.Run("OK", func(t *testing.T) {
 		t.Parallel()
 
-		prometheusPort := testutil.RandomPort(t)
-
-		// Configure CLI client
-		client, admin := coderdenttest.New(t, &coderdenttest.Options{
+		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitLong)
+		defer cancel()
+		dv := coderdtest.DeploymentValues(t)
+		dv.Experiments.Append(string(codersdk.ExperimentMultiOrganization))
+		client, user := coderdenttest.New(t, &coderdenttest.Options{
 			ProvisionerDaemonPSK: "provisionersftw",
 			LicenseOptions: &coderdenttest.LicenseOptions{
 				Features: license.Features{
 					codersdk.FeatureExternalProvisionerDaemons: 1,
+					codersdk.FeatureMultipleOrganizations:      1,
 				},
 			},
+			Options: &coderdtest.Options{
+				DeploymentValues: dv,
+			},
 		})
-		anotherClient, _ := coderdtest.CreateAnotherUser(t, client, admin.OrganizationID, rbac.RoleTemplateAdmin())
-		inv, conf := newCLI(t, "provisionerd", "start", "--name", "daemon-with-prometheus", "--prometheus-enable", "--prometheus-address", fmt.Sprintf("127.0.0.1:%d", prometheusPort))
-		clitest.SetupConfig(t, anotherClient, conf)
+		// nolint:gocritic // test
+		res, err := client.CreateProvisionerKey(ctx, user.OrganizationID, codersdk.CreateProvisionerKeyRequest{
+			Name: "dont-TEST-me",
+		})
+		require.NoError(t, err)
+		inv, conf := newCLI(t, "provisionerd", "start", "--key", res.Key, "--name=matt-daemon")
+		err = conf.URL().Write(client.URL.String())
+		require.NoError(t, err)
 		pty := ptytest.New(t).Attach(inv)
-		ctx, cancel := context.WithTimeout(inv.Context(), testutil.WaitLong)
-		defer cancel()
-
-		// Start "provisionerd" command
 		clitest.Start(t, inv)
-		pty.ExpectMatchContext(ctx, "starting provisioner daemon")
+		pty.ExpectNoMatchBefore(ctx, "check entitlement", "starting provisioner daemon")
+		pty.ExpectMatchContext(ctx, "matt-daemon")
 
 		var daemons []codersdk.ProvisionerDaemon
-		var err error
 		require.Eventually(t, func() bool {
-			daemons, err = client.ProvisionerDaemons(ctx)
+			daemons, err = client.OrganizationProvisionerDaemons(ctx, user.OrganizationID)
 			if err != nil {
 				return false
 			}
 			return len(daemons) == 1
 		}, testutil.WaitShort, testutil.IntervalSlow)
-		require.Equal(t, "daemon-with-prometheus", daemons[0].Name)
-
-		// Fetch metrics from Prometheus endpoint
-		var res *http.Response
-		require.Eventually(t, func() bool {
-			req, err := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("http://127.0.0.1:%d", prometheusPort), nil)
-			assert.NoError(t, err)
-			// nolint:bodyclose
-			res, err = http.DefaultClient.Do(req)
-			return err == nil
-		}, testutil.WaitShort, testutil.IntervalFast)
-		defer res.Body.Close()
-
-		// Scan for metric patterns
-		scanner := bufio.NewScanner(res.Body)
-		hasOneDaemon := false
-		hasGoStats := false
-		hasPromHTTP := false
-		for scanner.Scan() {
-			if strings.HasPrefix(scanner.Text(), "coderd_provisionerd_num_daemons 1") {
-				hasOneDaemon = true
-				continue
-			}
-			if strings.HasPrefix(scanner.Text(), "go_goroutines") {
-				hasGoStats = true
-				continue
-			}
-			if strings.HasPrefix(scanner.Text(), "promhttp_metric_handler_requests_total") {
-				hasPromHTTP = true
-				continue
-			}
-			t.Logf("scanned %s", scanner.Text())
-		}
-		require.NoError(t, scanner.Err())
-
-		// Verify patterns
-		require.True(t, hasOneDaemon, "should be one daemon running")
-		require.True(t, hasGoStats, "Go stats are missing")
-		require.True(t, hasPromHTTP, "Prometheus HTTP metrics are missing")
+		require.Equal(t, "matt-daemon", daemons[0].Name)
+		require.Equal(t, provisionersdk.ScopeOrganization, daemons[0].Tags[provisionersdk.TagScope])
+		require.Equal(t, buildinfo.Version(), daemons[0].Version)
+		require.Equal(t, proto.CurrentVersion.String(), daemons[0].APIVersion)
 	})
+
+	t.Run("NoPSK", func(t *testing.T) {
+		t.Parallel()
+
+		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitLong)
+		defer cancel()
+		dv := coderdtest.DeploymentValues(t)
+		dv.Experiments.Append(string(codersdk.ExperimentMultiOrganization))
+		client, user := coderdenttest.New(t, &coderdenttest.Options{
+			ProvisionerDaemonPSK: "provisionersftw",
+			LicenseOptions: &coderdenttest.LicenseOptions{
+				Features: license.Features{
+					codersdk.FeatureExternalProvisionerDaemons: 1,
+					codersdk.FeatureMultipleOrganizations:      1,
+				},
+			},
+			Options: &coderdtest.Options{
+				DeploymentValues: dv,
+			},
+		})
+		// nolint:gocritic // test
+		res, err := client.CreateProvisionerKey(ctx, user.OrganizationID, codersdk.CreateProvisionerKeyRequest{
+			Name: "dont-TEST-me",
+		})
+		require.NoError(t, err)
+		inv, conf := newCLI(t, "provisionerd", "start", "--psk", "provisionersftw", "--key", res.Key, "--name=matt-daemon")
+		err = conf.URL().Write(client.URL.String())
+		require.NoError(t, err)
+		err = inv.WithContext(ctx).Run()
+		require.ErrorContains(t, err, "cannot provide both provisioner key --key and pre-shared key --psk")
+	})
+
+	t.Run("NoTags", func(t *testing.T) {
+		t.Parallel()
+
+		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitLong)
+		defer cancel()
+		dv := coderdtest.DeploymentValues(t)
+		dv.Experiments.Append(string(codersdk.ExperimentMultiOrganization))
+		client, user := coderdenttest.New(t, &coderdenttest.Options{
+			ProvisionerDaemonPSK: "provisionersftw",
+			LicenseOptions: &coderdenttest.LicenseOptions{
+				Features: license.Features{
+					codersdk.FeatureExternalProvisionerDaemons: 1,
+					codersdk.FeatureMultipleOrganizations:      1,
+				},
+			},
+			Options: &coderdtest.Options{
+				DeploymentValues: dv,
+			},
+		})
+		// nolint:gocritic // test
+		res, err := client.CreateProvisionerKey(ctx, user.OrganizationID, codersdk.CreateProvisionerKeyRequest{
+			Name: "dont-TEST-me",
+		})
+		require.NoError(t, err)
+		inv, conf := newCLI(t, "provisionerd", "start", "--tag", "mykey=yourvalue", "--key", res.Key, "--name=matt-daemon")
+		err = conf.URL().Write(client.URL.String())
+		require.NoError(t, err)
+		err = inv.WithContext(ctx).Run()
+		require.ErrorContains(t, err, "cannot provide tags when using provisioner key")
+	})
+
+	t.Run("AnotherOrg", func(t *testing.T) {
+		t.Parallel()
+
+		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitLong)
+		defer cancel()
+		dv := coderdtest.DeploymentValues(t)
+		dv.Experiments.Append(string(codersdk.ExperimentMultiOrganization))
+		client, _ := coderdenttest.New(t, &coderdenttest.Options{
+			ProvisionerDaemonPSK: "provisionersftw",
+			LicenseOptions: &coderdenttest.LicenseOptions{
+				Features: license.Features{
+					codersdk.FeatureExternalProvisionerDaemons: 1,
+					codersdk.FeatureMultipleOrganizations:      1,
+				},
+			},
+			Options: &coderdtest.Options{
+				DeploymentValues: dv,
+			},
+		})
+		anotherOrg := coderdenttest.CreateOrganization(t, client, coderdenttest.CreateOrganizationOptions{})
+		// nolint:gocritic // test
+		res, err := client.CreateProvisionerKey(ctx, anotherOrg.ID, codersdk.CreateProvisionerKeyRequest{
+			Name: "dont-TEST-me",
+		})
+		require.NoError(t, err)
+		inv, conf := newCLI(t, "provisionerd", "start", "--org", anotherOrg.ID.String(), "--key", res.Key, "--name=matt-daemon")
+		err = conf.URL().Write(client.URL.String())
+		require.NoError(t, err)
+		pty := ptytest.New(t).Attach(inv)
+		clitest.Start(t, inv)
+		pty.ExpectNoMatchBefore(ctx, "check entitlement", "starting provisioner daemon")
+		pty.ExpectMatchContext(ctx, "matt-daemon")
+
+		var daemons []codersdk.ProvisionerDaemon
+		require.Eventually(t, func() bool {
+			daemons, err = client.OrganizationProvisionerDaemons(ctx, anotherOrg.ID)
+			if err != nil {
+				return false
+			}
+			return len(daemons) == 1
+		}, testutil.WaitShort, testutil.IntervalSlow)
+		require.Equal(t, "matt-daemon", daemons[0].Name)
+		require.Equal(t, provisionersdk.ScopeOrganization, daemons[0].Tags[provisionersdk.TagScope])
+		require.Equal(t, buildinfo.Version(), daemons[0].Version)
+		require.Equal(t, proto.CurrentVersion.String(), daemons[0].APIVersion)
+	})
+}
+
+//nolint:paralleltest,tparallel // Test uses a static port.
+func TestProvisionerDaemon_PrometheusEnabled(t *testing.T) {
+	// Ephemeral ports have a tendency to conflict and fail with `bind: address already in use` error.
+	// This workaround forces a static port for Prometheus that hopefully won't be used by other tests.
+	prometheusPort := 32001
+
+	// Configure CLI client
+	client, admin := coderdenttest.New(t, &coderdenttest.Options{
+		ProvisionerDaemonPSK: "provisionersftw",
+		LicenseOptions: &coderdenttest.LicenseOptions{
+			Features: license.Features{
+				codersdk.FeatureExternalProvisionerDaemons: 1,
+			},
+		},
+	})
+	anotherClient, _ := coderdtest.CreateAnotherUser(t, client, admin.OrganizationID, rbac.RoleTemplateAdmin())
+	inv, conf := newCLI(t, "provisionerd", "start", "--name", "daemon-with-prometheus", "--prometheus-enable", "--prometheus-address", fmt.Sprintf("127.0.0.1:%d", prometheusPort))
+	clitest.SetupConfig(t, anotherClient, conf)
+	pty := ptytest.New(t).Attach(inv)
+	ctx, cancel := context.WithTimeout(inv.Context(), testutil.WaitLong)
+	defer cancel()
+
+	// Start "provisionerd" command
+	clitest.Start(t, inv)
+	pty.ExpectMatchContext(ctx, "starting provisioner daemon")
+
+	var daemons []codersdk.ProvisionerDaemon
+	var err error
+	require.Eventually(t, func() bool {
+		daemons, err = client.ProvisionerDaemons(ctx)
+		if err != nil {
+			return false
+		}
+		return len(daemons) == 1
+	}, testutil.WaitLong, testutil.IntervalSlow)
+	require.Equal(t, "daemon-with-prometheus", daemons[0].Name)
+
+	// Fetch metrics from Prometheus endpoint
+	var req *http.Request
+	var res *http.Response
+	require.Eventually(t, func() bool {
+		req, err = http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("http://127.0.0.1:%d", prometheusPort), nil)
+		if err != nil {
+			t.Logf("unable to create new HTTP request: %s", err.Error())
+			return false
+		}
+
+		// nolint:bodyclose
+		res, err = http.DefaultClient.Do(req)
+		if err != nil {
+			t.Logf("unable to call Prometheus endpoint: %s", err.Error())
+			return false
+		}
+		return true
+	}, testutil.WaitShort, testutil.IntervalMedium)
+	defer res.Body.Close()
+
+	// Scan for metric patterns
+	scanner := bufio.NewScanner(res.Body)
+	hasOneDaemon := false
+	hasGoStats := false
+	hasPromHTTP := false
+	for scanner.Scan() {
+		if strings.HasPrefix(scanner.Text(), "coderd_provisionerd_num_daemons 1") {
+			hasOneDaemon = true
+			continue
+		}
+		if strings.HasPrefix(scanner.Text(), "go_goroutines") {
+			hasGoStats = true
+			continue
+		}
+		if strings.HasPrefix(scanner.Text(), "promhttp_metric_handler_requests_total") {
+			hasPromHTTP = true
+			continue
+		}
+		t.Logf("scanned %s", scanner.Text())
+	}
+	require.NoError(t, scanner.Err())
+
+	// Verify patterns
+	require.True(t, hasOneDaemon, "should be one daemon running")
+	require.True(t, hasGoStats, "Go stats are missing")
+	require.True(t, hasPromHTTP, "Prometheus HTTP metrics are missing")
 }

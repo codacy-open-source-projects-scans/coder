@@ -459,6 +459,9 @@ SELECT
     users.deleted AS user_deleted,
     users.theme_preference AS user_theme_preference,
     users.quiet_hours_schedule AS user_quiet_hours_schedule,
+    COALESCE(organizations.name, '') AS organization_name,
+    COALESCE(organizations.display_name, '') AS organization_display_name,
+    COALESCE(organizations.icon, '') AS organization_icon,
     COUNT(audit_logs.*) OVER () AS count
 FROM
     audit_logs
@@ -487,6 +490,7 @@ FROM
 				workspaces.id = workspace_builds.workspace_id AND
 				workspace_builds.build_number = 1
 			)
+		LEFT JOIN organizations ON audit_logs.organization_id = organizations.id
 WHERE
     -- Filter resource_type
 	CASE
@@ -582,35 +586,38 @@ type GetAuditLogsOffsetParams struct {
 }
 
 type GetAuditLogsOffsetRow struct {
-	ID                     uuid.UUID       `db:"id" json:"id"`
-	Time                   time.Time       `db:"time" json:"time"`
-	UserID                 uuid.UUID       `db:"user_id" json:"user_id"`
-	OrganizationID         uuid.UUID       `db:"organization_id" json:"organization_id"`
-	Ip                     pqtype.Inet     `db:"ip" json:"ip"`
-	UserAgent              sql.NullString  `db:"user_agent" json:"user_agent"`
-	ResourceType           ResourceType    `db:"resource_type" json:"resource_type"`
-	ResourceID             uuid.UUID       `db:"resource_id" json:"resource_id"`
-	ResourceTarget         string          `db:"resource_target" json:"resource_target"`
-	Action                 AuditAction     `db:"action" json:"action"`
-	Diff                   json.RawMessage `db:"diff" json:"diff"`
-	StatusCode             int32           `db:"status_code" json:"status_code"`
-	AdditionalFields       json.RawMessage `db:"additional_fields" json:"additional_fields"`
-	RequestID              uuid.UUID       `db:"request_id" json:"request_id"`
-	ResourceIcon           string          `db:"resource_icon" json:"resource_icon"`
-	UserUsername           sql.NullString  `db:"user_username" json:"user_username"`
-	UserName               sql.NullString  `db:"user_name" json:"user_name"`
-	UserEmail              sql.NullString  `db:"user_email" json:"user_email"`
-	UserCreatedAt          sql.NullTime    `db:"user_created_at" json:"user_created_at"`
-	UserUpdatedAt          sql.NullTime    `db:"user_updated_at" json:"user_updated_at"`
-	UserLastSeenAt         sql.NullTime    `db:"user_last_seen_at" json:"user_last_seen_at"`
-	UserStatus             NullUserStatus  `db:"user_status" json:"user_status"`
-	UserLoginType          NullLoginType   `db:"user_login_type" json:"user_login_type"`
-	UserRoles              pq.StringArray  `db:"user_roles" json:"user_roles"`
-	UserAvatarUrl          sql.NullString  `db:"user_avatar_url" json:"user_avatar_url"`
-	UserDeleted            sql.NullBool    `db:"user_deleted" json:"user_deleted"`
-	UserThemePreference    sql.NullString  `db:"user_theme_preference" json:"user_theme_preference"`
-	UserQuietHoursSchedule sql.NullString  `db:"user_quiet_hours_schedule" json:"user_quiet_hours_schedule"`
-	Count                  int64           `db:"count" json:"count"`
+	ID                      uuid.UUID       `db:"id" json:"id"`
+	Time                    time.Time       `db:"time" json:"time"`
+	UserID                  uuid.UUID       `db:"user_id" json:"user_id"`
+	OrganizationID          uuid.UUID       `db:"organization_id" json:"organization_id"`
+	Ip                      pqtype.Inet     `db:"ip" json:"ip"`
+	UserAgent               sql.NullString  `db:"user_agent" json:"user_agent"`
+	ResourceType            ResourceType    `db:"resource_type" json:"resource_type"`
+	ResourceID              uuid.UUID       `db:"resource_id" json:"resource_id"`
+	ResourceTarget          string          `db:"resource_target" json:"resource_target"`
+	Action                  AuditAction     `db:"action" json:"action"`
+	Diff                    json.RawMessage `db:"diff" json:"diff"`
+	StatusCode              int32           `db:"status_code" json:"status_code"`
+	AdditionalFields        json.RawMessage `db:"additional_fields" json:"additional_fields"`
+	RequestID               uuid.UUID       `db:"request_id" json:"request_id"`
+	ResourceIcon            string          `db:"resource_icon" json:"resource_icon"`
+	UserUsername            sql.NullString  `db:"user_username" json:"user_username"`
+	UserName                sql.NullString  `db:"user_name" json:"user_name"`
+	UserEmail               sql.NullString  `db:"user_email" json:"user_email"`
+	UserCreatedAt           sql.NullTime    `db:"user_created_at" json:"user_created_at"`
+	UserUpdatedAt           sql.NullTime    `db:"user_updated_at" json:"user_updated_at"`
+	UserLastSeenAt          sql.NullTime    `db:"user_last_seen_at" json:"user_last_seen_at"`
+	UserStatus              NullUserStatus  `db:"user_status" json:"user_status"`
+	UserLoginType           NullLoginType   `db:"user_login_type" json:"user_login_type"`
+	UserRoles               pq.StringArray  `db:"user_roles" json:"user_roles"`
+	UserAvatarUrl           sql.NullString  `db:"user_avatar_url" json:"user_avatar_url"`
+	UserDeleted             sql.NullBool    `db:"user_deleted" json:"user_deleted"`
+	UserThemePreference     sql.NullString  `db:"user_theme_preference" json:"user_theme_preference"`
+	UserQuietHoursSchedule  sql.NullString  `db:"user_quiet_hours_schedule" json:"user_quiet_hours_schedule"`
+	OrganizationName        string          `db:"organization_name" json:"organization_name"`
+	OrganizationDisplayName string          `db:"organization_display_name" json:"organization_display_name"`
+	OrganizationIcon        string          `db:"organization_icon" json:"organization_icon"`
+	Count                   int64           `db:"count" json:"count"`
 }
 
 // GetAuditLogsBefore retrieves `row_limit` number of audit logs before the provided
@@ -667,6 +674,9 @@ func (q *sqlQuerier) GetAuditLogsOffset(ctx context.Context, arg GetAuditLogsOff
 			&i.UserDeleted,
 			&i.UserThemePreference,
 			&i.UserQuietHoursSchedule,
+			&i.OrganizationName,
+			&i.OrganizationDisplayName,
+			&i.OrganizationIcon,
 			&i.Count,
 		); err != nil {
 			return nil, err
@@ -3536,7 +3546,8 @@ SELECT nt.name                                                    AS notificatio
        nt.actions                                                 AS actions,
        u.id                                                       AS user_id,
        u.email                                                    AS user_email,
-       COALESCE(NULLIF(u.name, ''), NULLIF(u.username, ''))::text AS user_name
+       COALESCE(NULLIF(u.name, ''), NULLIF(u.username, ''))::text AS user_name,
+       COALESCE(u.username, '')                                   AS user_username
 FROM notification_templates nt,
      users u
 WHERE nt.id = $1
@@ -3554,6 +3565,7 @@ type FetchNewMessageMetadataRow struct {
 	UserID           uuid.UUID `db:"user_id" json:"user_id"`
 	UserEmail        string    `db:"user_email" json:"user_email"`
 	UserName         string    `db:"user_name" json:"user_name"`
+	UserUsername     string    `db:"user_username" json:"user_username"`
 }
 
 // This is used to build up the notification_message's JSON payload.
@@ -3566,6 +3578,7 @@ func (q *sqlQuerier) FetchNewMessageMetadata(ctx context.Context, arg FetchNewMe
 		&i.UserID,
 		&i.UserEmail,
 		&i.UserName,
+		&i.UserUsername,
 	)
 	return i, err
 }
@@ -4283,7 +4296,7 @@ func (q *sqlQuerier) InsertOrganizationMember(ctx context.Context, arg InsertOrg
 const organizationMembers = `-- name: OrganizationMembers :many
 SELECT
 	organization_members.user_id, organization_members.organization_id, organization_members.created_at, organization_members.updated_at, organization_members.roles,
-	users.username, users.avatar_url, users.name, users.rbac_roles as "global_roles"
+	users.username, users.avatar_url, users.name, users.email, users.rbac_roles as "global_roles"
 FROM
 	organization_members
 		INNER JOIN
@@ -4313,6 +4326,7 @@ type OrganizationMembersRow struct {
 	Username           string             `db:"username" json:"username"`
 	AvatarURL          string             `db:"avatar_url" json:"avatar_url"`
 	Name               string             `db:"name" json:"name"`
+	Email              string             `db:"email" json:"email"`
 	GlobalRoles        pq.StringArray     `db:"global_roles" json:"global_roles"`
 }
 
@@ -4338,6 +4352,7 @@ func (q *sqlQuerier) OrganizationMembers(ctx context.Context, arg OrganizationMe
 			&i.Username,
 			&i.AvatarURL,
 			&i.Name,
+			&i.Email,
 			&i.GlobalRoles,
 		); err != nil {
 			return nil, err
@@ -4728,6 +4743,49 @@ FROM
 
 func (q *sqlQuerier) GetProvisionerDaemons(ctx context.Context) ([]ProvisionerDaemon, error) {
 	rows, err := q.db.QueryContext(ctx, getProvisionerDaemons)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ProvisionerDaemon
+	for rows.Next() {
+		var i ProvisionerDaemon
+		if err := rows.Scan(
+			&i.ID,
+			&i.CreatedAt,
+			&i.Name,
+			pq.Array(&i.Provisioners),
+			&i.ReplicaID,
+			&i.Tags,
+			&i.LastSeenAt,
+			&i.Version,
+			&i.APIVersion,
+			&i.OrganizationID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getProvisionerDaemonsByOrganization = `-- name: GetProvisionerDaemonsByOrganization :many
+SELECT
+	id, created_at, name, provisioners, replica_id, tags, last_seen_at, version, api_version, organization_id
+FROM
+	provisioner_daemons
+WHERE
+	organization_id = $1
+`
+
+func (q *sqlQuerier) GetProvisionerDaemonsByOrganization(ctx context.Context, organizationID uuid.UUID) ([]ProvisionerDaemon, error) {
+	rows, err := q.db.QueryContext(ctx, getProvisionerDaemonsByOrganization, organizationID)
 	if err != nil {
 		return nil, err
 	}
@@ -5473,9 +5531,32 @@ func (q *sqlQuerier) DeleteProvisionerKey(ctx context.Context, id uuid.UUID) err
 	return err
 }
 
+const getProvisionerKeyByHashedSecret = `-- name: GetProvisionerKeyByHashedSecret :one
+SELECT
+    id, created_at, organization_id, name, hashed_secret, tags
+FROM
+    provisioner_keys
+WHERE
+    hashed_secret = $1
+`
+
+func (q *sqlQuerier) GetProvisionerKeyByHashedSecret(ctx context.Context, hashedSecret []byte) (ProvisionerKey, error) {
+	row := q.db.QueryRowContext(ctx, getProvisionerKeyByHashedSecret, hashedSecret)
+	var i ProvisionerKey
+	err := row.Scan(
+		&i.ID,
+		&i.CreatedAt,
+		&i.OrganizationID,
+		&i.Name,
+		&i.HashedSecret,
+		&i.Tags,
+	)
+	return i, err
+}
+
 const getProvisionerKeyByID = `-- name: GetProvisionerKeyByID :one
 SELECT
-    id, created_at, organization_id, name, hashed_secret
+    id, created_at, organization_id, name, hashed_secret, tags
 FROM
     provisioner_keys
 WHERE
@@ -5491,13 +5572,14 @@ func (q *sqlQuerier) GetProvisionerKeyByID(ctx context.Context, id uuid.UUID) (P
 		&i.OrganizationID,
 		&i.Name,
 		&i.HashedSecret,
+		&i.Tags,
 	)
 	return i, err
 }
 
 const getProvisionerKeyByName = `-- name: GetProvisionerKeyByName :one
 SELECT
-    id, created_at, organization_id, name, hashed_secret
+    id, created_at, organization_id, name, hashed_secret, tags
 FROM
     provisioner_keys
 WHERE
@@ -5520,21 +5602,23 @@ func (q *sqlQuerier) GetProvisionerKeyByName(ctx context.Context, arg GetProvisi
 		&i.OrganizationID,
 		&i.Name,
 		&i.HashedSecret,
+		&i.Tags,
 	)
 	return i, err
 }
 
 const insertProvisionerKey = `-- name: InsertProvisionerKey :one
 INSERT INTO
-	provisioner_keys (
-		id,
+    provisioner_keys (
+        id,
         created_at,
         organization_id,
-		name,
-		hashed_secret
-	)
+        name,
+        hashed_secret,
+        tags
+    )
 VALUES
-	($1, $2, $3, lower($5), $4) RETURNING id, created_at, organization_id, name, hashed_secret
+    ($1, $2, $3, lower($6), $4, $5) RETURNING id, created_at, organization_id, name, hashed_secret, tags
 `
 
 type InsertProvisionerKeyParams struct {
@@ -5542,6 +5626,7 @@ type InsertProvisionerKeyParams struct {
 	CreatedAt      time.Time `db:"created_at" json:"created_at"`
 	OrganizationID uuid.UUID `db:"organization_id" json:"organization_id"`
 	HashedSecret   []byte    `db:"hashed_secret" json:"hashed_secret"`
+	Tags           StringMap `db:"tags" json:"tags"`
 	Name           string    `db:"name" json:"name"`
 }
 
@@ -5551,6 +5636,7 @@ func (q *sqlQuerier) InsertProvisionerKey(ctx context.Context, arg InsertProvisi
 		arg.CreatedAt,
 		arg.OrganizationID,
 		arg.HashedSecret,
+		arg.Tags,
 		arg.Name,
 	)
 	var i ProvisionerKey
@@ -5560,13 +5646,14 @@ func (q *sqlQuerier) InsertProvisionerKey(ctx context.Context, arg InsertProvisi
 		&i.OrganizationID,
 		&i.Name,
 		&i.HashedSecret,
+		&i.Tags,
 	)
 	return i, err
 }
 
 const listProvisionerKeysByOrganization = `-- name: ListProvisionerKeysByOrganization :many
 SELECT
-    id, created_at, organization_id, name, hashed_secret
+    id, created_at, organization_id, name, hashed_secret, tags
 FROM
     provisioner_keys
 WHERE
@@ -5588,6 +5675,7 @@ func (q *sqlQuerier) ListProvisionerKeysByOrganization(ctx context.Context, orga
 			&i.OrganizationID,
 			&i.Name,
 			&i.HashedSecret,
+			&i.Tags,
 		); err != nil {
 			return nil, err
 		}
@@ -14029,7 +14117,7 @@ func (q *sqlQuerier) UpdateWorkspaceTTL(ctx context.Context, arg UpdateWorkspace
 	return err
 }
 
-const updateWorkspacesDormantDeletingAtByTemplateID = `-- name: UpdateWorkspacesDormantDeletingAtByTemplateID :exec
+const updateWorkspacesDormantDeletingAtByTemplateID = `-- name: UpdateWorkspacesDormantDeletingAtByTemplateID :many
 UPDATE workspaces
 SET
     deleting_at = CASE
@@ -14042,6 +14130,7 @@ WHERE
     template_id = $3
 AND
     dormant_at IS NOT NULL
+RETURNING id, created_at, updated_at, owner_id, organization_id, template_id, deleted, name, autostart_schedule, ttl, last_used_at, dormant_at, deleting_at, automatic_updates, favorite
 `
 
 type UpdateWorkspacesDormantDeletingAtByTemplateIDParams struct {
@@ -14050,9 +14139,43 @@ type UpdateWorkspacesDormantDeletingAtByTemplateIDParams struct {
 	TemplateID                 uuid.UUID `db:"template_id" json:"template_id"`
 }
 
-func (q *sqlQuerier) UpdateWorkspacesDormantDeletingAtByTemplateID(ctx context.Context, arg UpdateWorkspacesDormantDeletingAtByTemplateIDParams) error {
-	_, err := q.db.ExecContext(ctx, updateWorkspacesDormantDeletingAtByTemplateID, arg.TimeTilDormantAutodeleteMs, arg.DormantAt, arg.TemplateID)
-	return err
+func (q *sqlQuerier) UpdateWorkspacesDormantDeletingAtByTemplateID(ctx context.Context, arg UpdateWorkspacesDormantDeletingAtByTemplateIDParams) ([]Workspace, error) {
+	rows, err := q.db.QueryContext(ctx, updateWorkspacesDormantDeletingAtByTemplateID, arg.TimeTilDormantAutodeleteMs, arg.DormantAt, arg.TemplateID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Workspace
+	for rows.Next() {
+		var i Workspace
+		if err := rows.Scan(
+			&i.ID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.OwnerID,
+			&i.OrganizationID,
+			&i.TemplateID,
+			&i.Deleted,
+			&i.Name,
+			&i.AutostartSchedule,
+			&i.Ttl,
+			&i.LastUsedAt,
+			&i.DormantAt,
+			&i.DeletingAt,
+			&i.AutomaticUpdates,
+			&i.Favorite,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const getWorkspaceAgentScriptsByAgentIDs = `-- name: GetWorkspaceAgentScriptsByAgentIDs :many

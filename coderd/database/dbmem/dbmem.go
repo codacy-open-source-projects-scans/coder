@@ -928,6 +928,16 @@ func (q *FakeQuerier) getLatestWorkspaceAppByTemplateIDUserIDSlugNoLock(ctx cont
 	return database.WorkspaceApp{}, sql.ErrNoRows
 }
 
+// getOrganizationByIDNoLock is used by other functions in the database fake.
+func (q *FakeQuerier) getOrganizationByIDNoLock(id uuid.UUID) (database.Organization, error) {
+	for _, organization := range q.organizations {
+		if organization.ID == id {
+			return organization, nil
+		}
+	}
+	return database.Organization{}, sql.ErrNoRows
+}
+
 func (*FakeQuerier) AcquireLock(_ context.Context, _ int64) error {
 	return xerrors.New("AcquireLock must only be called within a transaction")
 }
@@ -1919,6 +1929,7 @@ func (q *FakeQuerier) FetchNewMessageMetadata(_ context.Context, arg database.Fe
 	return database.FetchNewMessageMetadataRow{
 		UserEmail:        user.Email,
 		UserName:         userName,
+		UserUsername:     user.Username,
 		NotificationName: "Some notification",
 		Actions:          actions,
 		UserID:           arg.UserID,
@@ -2146,34 +2157,39 @@ func (q *FakeQuerier) GetAuditLogsOffset(_ context.Context, arg database.GetAudi
 		user, err := q.getUserByIDNoLock(alog.UserID)
 		userValid := err == nil
 
+		org, _ := q.getOrganizationByIDNoLock(alog.OrganizationID)
+
 		logs = append(logs, database.GetAuditLogsOffsetRow{
-			ID:                     alog.ID,
-			RequestID:              alog.RequestID,
-			OrganizationID:         alog.OrganizationID,
-			Ip:                     alog.Ip,
-			UserAgent:              alog.UserAgent,
-			ResourceType:           alog.ResourceType,
-			ResourceID:             alog.ResourceID,
-			ResourceTarget:         alog.ResourceTarget,
-			ResourceIcon:           alog.ResourceIcon,
-			Action:                 alog.Action,
-			Diff:                   alog.Diff,
-			StatusCode:             alog.StatusCode,
-			AdditionalFields:       alog.AdditionalFields,
-			UserID:                 alog.UserID,
-			UserUsername:           sql.NullString{String: user.Username, Valid: userValid},
-			UserName:               sql.NullString{String: user.Name, Valid: userValid},
-			UserEmail:              sql.NullString{String: user.Email, Valid: userValid},
-			UserCreatedAt:          sql.NullTime{Time: user.CreatedAt, Valid: userValid},
-			UserUpdatedAt:          sql.NullTime{Time: user.UpdatedAt, Valid: userValid},
-			UserLastSeenAt:         sql.NullTime{Time: user.LastSeenAt, Valid: userValid},
-			UserLoginType:          database.NullLoginType{LoginType: user.LoginType, Valid: userValid},
-			UserDeleted:            sql.NullBool{Bool: user.Deleted, Valid: userValid},
-			UserThemePreference:    sql.NullString{String: user.ThemePreference, Valid: userValid},
-			UserQuietHoursSchedule: sql.NullString{String: user.QuietHoursSchedule, Valid: userValid},
-			UserStatus:             database.NullUserStatus{UserStatus: user.Status, Valid: userValid},
-			UserRoles:              user.RBACRoles,
-			Count:                  0,
+			ID:                      alog.ID,
+			RequestID:               alog.RequestID,
+			OrganizationID:          alog.OrganizationID,
+			OrganizationName:        org.Name,
+			OrganizationDisplayName: org.DisplayName,
+			OrganizationIcon:        org.Icon,
+			Ip:                      alog.Ip,
+			UserAgent:               alog.UserAgent,
+			ResourceType:            alog.ResourceType,
+			ResourceID:              alog.ResourceID,
+			ResourceTarget:          alog.ResourceTarget,
+			ResourceIcon:            alog.ResourceIcon,
+			Action:                  alog.Action,
+			Diff:                    alog.Diff,
+			StatusCode:              alog.StatusCode,
+			AdditionalFields:        alog.AdditionalFields,
+			UserID:                  alog.UserID,
+			UserUsername:            sql.NullString{String: user.Username, Valid: userValid},
+			UserName:                sql.NullString{String: user.Name, Valid: userValid},
+			UserEmail:               sql.NullString{String: user.Email, Valid: userValid},
+			UserCreatedAt:           sql.NullTime{Time: user.CreatedAt, Valid: userValid},
+			UserUpdatedAt:           sql.NullTime{Time: user.UpdatedAt, Valid: userValid},
+			UserLastSeenAt:          sql.NullTime{Time: user.LastSeenAt, Valid: userValid},
+			UserLoginType:           database.NullLoginType{LoginType: user.LoginType, Valid: userValid},
+			UserDeleted:             sql.NullBool{Bool: user.Deleted, Valid: userValid},
+			UserThemePreference:     sql.NullString{String: user.ThemePreference, Valid: userValid},
+			UserQuietHoursSchedule:  sql.NullString{String: user.QuietHoursSchedule, Valid: userValid},
+			UserStatus:              database.NullUserStatus{UserStatus: user.Status, Valid: userValid},
+			UserRoles:               user.RBACRoles,
+			Count:                   0,
 		})
 
 		if len(logs) >= int(arg.LimitOpt) {
@@ -2969,12 +2985,7 @@ func (q *FakeQuerier) GetOrganizationByID(_ context.Context, id uuid.UUID) (data
 	q.mutex.RLock()
 	defer q.mutex.RUnlock()
 
-	for _, organization := range q.organizations {
-		if organization.ID == id {
-			return organization, nil
-		}
-	}
-	return database.Organization{}, sql.ErrNoRows
+	return q.getOrganizationByIDNoLock(id)
 }
 
 func (q *FakeQuerier) GetOrganizationByName(_ context.Context, name string) (database.Organization, error) {
@@ -3005,9 +3016,6 @@ func (q *FakeQuerier) GetOrganizationIDsByMemberIDs(_ context.Context, ids []uui
 			UserID:          userID,
 			OrganizationIDs: userOrganizationIDs,
 		})
-	}
-	if len(getOrganizationIDsByMemberIDRows) == 0 {
-		return nil, sql.ErrNoRows
 	}
 	return getOrganizationIDsByMemberIDRows, nil
 }
@@ -3133,6 +3141,21 @@ func (q *FakeQuerier) GetProvisionerDaemons(_ context.Context) ([]database.Provi
 	return out, nil
 }
 
+func (q *FakeQuerier) GetProvisionerDaemonsByOrganization(_ context.Context, organizationID uuid.UUID) ([]database.ProvisionerDaemon, error) {
+	q.mutex.RLock()
+	defer q.mutex.RUnlock()
+
+	daemons := make([]database.ProvisionerDaemon, 0)
+	for _, daemon := range q.provisionerDaemons {
+		if daemon.OrganizationID == organizationID {
+			daemon.Tags = maps.Clone(daemon.Tags)
+			daemons = append(daemons, daemon)
+		}
+	}
+
+	return daemons, nil
+}
+
 func (q *FakeQuerier) GetProvisionerJobByID(ctx context.Context, id uuid.UUID) (database.ProvisionerJob, error) {
 	q.mutex.RLock()
 	defer q.mutex.RUnlock()
@@ -3215,6 +3238,19 @@ func (q *FakeQuerier) GetProvisionerJobsCreatedAfter(_ context.Context, after ti
 		}
 	}
 	return jobs, nil
+}
+
+func (q *FakeQuerier) GetProvisionerKeyByHashedSecret(_ context.Context, hashedSecret []byte) (database.ProvisionerKey, error) {
+	q.mutex.RLock()
+	defer q.mutex.RUnlock()
+
+	for _, key := range q.provisionerKeys {
+		if bytes.Equal(key.HashedSecret, hashedSecret) {
+			return key, nil
+		}
+	}
+
+	return database.ProvisionerKey{}, sql.ErrNoRows
 }
 
 func (q *FakeQuerier) GetProvisionerKeyByID(_ context.Context, id uuid.UUID) (database.ProvisionerKey, error) {
@@ -6563,6 +6599,7 @@ func (q *FakeQuerier) InsertProvisionerKey(_ context.Context, arg database.Inser
 		OrganizationID: arg.OrganizationID,
 		Name:           strings.ToLower(arg.Name),
 		HashedSecret:   arg.HashedSecret,
+		Tags:           arg.Tags,
 	}
 	q.provisionerKeys = append(q.provisionerKeys, provisionerKey)
 
@@ -7253,13 +7290,7 @@ func (q *FakeQuerier) ListProvisionerKeysByOrganization(_ context.Context, organ
 	keys := make([]database.ProvisionerKey, 0)
 	for _, key := range q.provisionerKeys {
 		if key.OrganizationID == organizationID {
-			keys = append(keys, database.ProvisionerKey{
-				ID:             key.ID,
-				CreatedAt:      key.CreatedAt,
-				OrganizationID: key.OrganizationID,
-				Name:           key.Name,
-				HashedSecret:   key.HashedSecret,
-			})
+			keys = append(keys, key)
 		}
 	}
 
@@ -8678,15 +8709,16 @@ func (q *FakeQuerier) UpdateWorkspaceTTL(_ context.Context, arg database.UpdateW
 	return sql.ErrNoRows
 }
 
-func (q *FakeQuerier) UpdateWorkspacesDormantDeletingAtByTemplateID(_ context.Context, arg database.UpdateWorkspacesDormantDeletingAtByTemplateIDParams) error {
+func (q *FakeQuerier) UpdateWorkspacesDormantDeletingAtByTemplateID(_ context.Context, arg database.UpdateWorkspacesDormantDeletingAtByTemplateIDParams) ([]database.Workspace, error) {
 	q.mutex.Lock()
 	defer q.mutex.Unlock()
 
 	err := validateDatabaseType(arg)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
+	affectedRows := []database.Workspace{}
 	for i, ws := range q.workspaces {
 		if ws.TemplateID != arg.TemplateID {
 			continue
@@ -8711,9 +8743,10 @@ func (q *FakeQuerier) UpdateWorkspacesDormantDeletingAtByTemplateID(_ context.Co
 		}
 		ws.DeletingAt = deletingAt
 		q.workspaces[i] = ws
+		affectedRows = append(affectedRows, ws)
 	}
 
-	return nil
+	return affectedRows, nil
 }
 
 func (q *FakeQuerier) UpsertAnnouncementBanners(_ context.Context, data string) error {

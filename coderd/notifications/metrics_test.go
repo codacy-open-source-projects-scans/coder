@@ -2,7 +2,6 @@ package notifications_test
 
 import (
 	"context"
-	"sync"
 	"testing"
 	"time"
 
@@ -255,12 +254,13 @@ func TestPendingUpdatesMetric(t *testing.T) {
 	success := testutil.RequireRecvCtx(testutil.Context(t, testutil.WaitShort), t, interceptor.updateSuccess)
 	failure := testutil.RequireRecvCtx(testutil.Context(t, testutil.WaitShort), t, interceptor.updateFailure)
 
-	// Ensure that the value set in the metric is equivalent to the number of actual pending updates.
-	pending := promtest.ToFloat64(metrics.PendingUpdates)
-	require.EqualValues(t, pending, success+failure)
+	// Wait for the metric to be updated with the expected count of metrics.
+	require.Eventually(t, func() bool {
+		return promtest.ToFloat64(metrics.PendingUpdates) == float64(success+failure)
+	}, testutil.WaitShort, testutil.IntervalFast)
 
 	// Unpause the interceptor so the updates can proceed.
-	interceptor.proceed.Broadcast()
+	interceptor.unpause()
 
 	// Validate that the store synced the expected number of updates.
 	require.Eventually(t, func() bool {
@@ -376,7 +376,7 @@ func fingerprintLabels(lbs ...string) model.Fingerprint {
 type updateSignallingInterceptor struct {
 	notifications.Store
 
-	proceed *sync.Cond
+	pause chan any
 
 	updateSuccess chan int
 	updateFailure chan int
@@ -386,21 +386,22 @@ func newUpdateSignallingInterceptor(interceptor notifications.Store) *updateSign
 	return &updateSignallingInterceptor{
 		Store: interceptor,
 
-		proceed: sync.NewCond(&sync.Mutex{}),
+		pause: make(chan any, 1),
 
 		updateSuccess: make(chan int, 1),
 		updateFailure: make(chan int, 1),
 	}
 }
 
+func (u *updateSignallingInterceptor) unpause() {
+	close(u.pause)
+}
+
 func (u *updateSignallingInterceptor) BulkMarkNotificationMessagesSent(ctx context.Context, arg database.BulkMarkNotificationMessagesSentParams) (int64, error) {
 	u.updateSuccess <- len(arg.IDs)
 
-	u.proceed.L.Lock()
-	defer u.proceed.L.Unlock()
-
 	// Wait until signaled so we have a chance to read the number of pending updates.
-	u.proceed.Wait()
+	<-u.pause
 
 	return u.Store.BulkMarkNotificationMessagesSent(ctx, arg)
 }
@@ -408,11 +409,8 @@ func (u *updateSignallingInterceptor) BulkMarkNotificationMessagesSent(ctx conte
 func (u *updateSignallingInterceptor) BulkMarkNotificationMessagesFailed(ctx context.Context, arg database.BulkMarkNotificationMessagesFailedParams) (int64, error) {
 	u.updateFailure <- len(arg.IDs)
 
-	u.proceed.L.Lock()
-	defer u.proceed.L.Unlock()
-
 	// Wait until signaled so we have a chance to read the number of pending updates.
-	u.proceed.Wait()
+	<-u.pause
 
 	return u.Store.BulkMarkNotificationMessagesFailed(ctx, arg)
 }

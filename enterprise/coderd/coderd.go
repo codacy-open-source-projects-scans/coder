@@ -26,6 +26,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"cdr.dev/slog"
+
 	"github.com/coder/coder/v2/coderd"
 	agplaudit "github.com/coder/coder/v2/coderd/audit"
 	agpldbauthz "github.com/coder/coder/v2/coderd/database/dbauthz"
@@ -109,6 +110,7 @@ func New(ctx context.Context, options *Options) (_ *API, err error) {
 		provisionerDaemonAuth: &provisionerDaemonAuth{
 			psk:        options.ProvisionerDaemonPSK,
 			authorizer: options.Authorizer,
+			db:         options.Database,
 		},
 	}
 	// This must happen before coderd initialization!
@@ -238,6 +240,27 @@ func New(ctx context.Context, options *Options) (_ *API, err error) {
 				r.Delete("/", api.deleteWorkspaceProxy)
 			})
 		})
+
+		r.Group(func(r chi.Router) {
+			r.Use(
+				apiKeyMiddleware,
+				api.RequireFeatureMW(codersdk.FeatureMultipleOrganizations),
+				httpmw.RequireExperiment(api.AGPL.Experiments, codersdk.ExperimentMultiOrganization),
+			)
+			r.Post("/organizations", api.postOrganizations)
+		})
+
+		r.Group(func(r chi.Router) {
+			r.Use(
+				apiKeyMiddleware,
+				api.RequireFeatureMW(codersdk.FeatureMultipleOrganizations),
+				httpmw.RequireExperiment(api.AGPL.Experiments, codersdk.ExperimentMultiOrganization),
+				httpmw.ExtractOrganizationParam(api.Database),
+			)
+			r.Patch("/organizations/{organization}", api.patchOrganization)
+			r.Delete("/organizations/{organization}", api.deleteOrganization)
+		})
+
 		r.Route("/organizations/{organization}/groups", func(r chi.Router) {
 			r.Use(
 				apiKeyMiddleware,
@@ -284,9 +307,11 @@ func New(ctx context.Context, options *Options) (_ *API, err error) {
 				api.provisionerDaemonsEnabledMW,
 				apiKeyMiddlewareOptional,
 				httpmw.ExtractProvisionerDaemonAuthenticated(httpmw.ExtractProvisionerAuthConfig{
-					DB:       api.Database,
-					Optional: true,
-				}, api.ProvisionerDaemonPSK),
+					DB:              api.Database,
+					Optional:        true,
+					PSK:             api.ProvisionerDaemonPSK,
+					MultiOrgEnabled: api.AGPL.Experiments.Enabled(codersdk.ExperimentMultiOrganization),
+				}),
 				// Either a user auth or provisioner auth is required
 				// to move forward.
 				httpmw.RequireAPIKeyOrProvisionerDaemonAuth(),
@@ -569,7 +594,7 @@ func (api *API) updateEntitlements(ctx context.Context) error {
 
 	entitlements, err := license.Entitlements(
 		ctx, api.Database,
-		api.Logger, len(agedReplicas), len(api.ExternalAuthConfigs), api.LicenseKeys, map[codersdk.FeatureName]bool{
+		len(agedReplicas), len(api.ExternalAuthConfigs), api.LicenseKeys, map[codersdk.FeatureName]bool{
 			codersdk.FeatureAuditLog:                   api.AuditLogging,
 			codersdk.FeatureBrowserOnly:                api.BrowserOnly,
 			codersdk.FeatureSCIM:                       len(api.SCIMAPIKey) != 0,
@@ -582,7 +607,6 @@ func (api *API) updateEntitlements(ctx context.Context) error {
 			codersdk.FeatureUserRoleManagement:         true,
 			codersdk.FeatureAccessControl:              true,
 			codersdk.FeatureControlSharedPorts:         true,
-			codersdk.FeatureMultipleOrganizations:      true,
 		})
 	if err != nil {
 		return err
@@ -649,7 +673,7 @@ func (api *API) updateEntitlements(ctx context.Context) error {
 
 	if initial, changed, enabled := featureChanged(codersdk.FeatureAdvancedTemplateScheduling); shouldUpdate(initial, changed, enabled) {
 		if enabled {
-			templateStore := schedule.NewEnterpriseTemplateScheduleStore(api.AGPL.UserQuietHoursScheduleStore)
+			templateStore := schedule.NewEnterpriseTemplateScheduleStore(api.AGPL.UserQuietHoursScheduleStore, api.NotificationsEnqueuer, api.Logger.Named("template.schedule-store"))
 			templateStoreInterface := agplschedule.TemplateScheduleStore(templateStore)
 			api.AGPL.TemplateScheduleStore.Store(&templateStoreInterface)
 
