@@ -549,8 +549,8 @@ export const MockTemplate: TypesGen.Template = {
   created_at: "2022-05-17T17:39:01.382927298Z",
   updated_at: "2022-05-18T17:39:01.382927298Z",
   organization_id: MockOrganization.id,
-  organization_name: "default",
-  organization_display_name: "Default",
+  organization_name: MockOrganization.name,
+  organization_display_name: MockOrganization.display_name,
   organization_icon: "/emojis/1f5fa.png",
   name: "test-template",
   display_name: "Test Template",
@@ -2647,7 +2647,6 @@ export const MockLicenseResponse: GetLicensesResponse[] = [
     claims: {
       trial: false,
       all_features: true,
-      feature_set: "", // Legacy is empty
       version: 1,
       features: {},
       license_expires: 3420244800,
@@ -2661,7 +2660,6 @@ export const MockLicenseResponse: GetLicensesResponse[] = [
     claims: {
       trial: false,
       all_features: true,
-      feature_set: "", // Legacy is empty
       version: 1,
       features: {},
       license_expires: 1660104000,
@@ -2675,7 +2673,6 @@ export const MockLicenseResponse: GetLicensesResponse[] = [
     claims: {
       trial: false,
       all_features: true,
-      feature_set: "", // Legacy is empty
       version: 1,
       features: {},
       license_expires: 1682346425,

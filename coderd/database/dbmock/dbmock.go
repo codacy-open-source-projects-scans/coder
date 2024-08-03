@@ -955,6 +955,21 @@ func (mr *MockStoreMockRecorder) GetAuthorizationUserRoles(arg0, arg1 any) *gomo
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetAuthorizationUserRoles", reflect.TypeOf((*MockStore)(nil).GetAuthorizationUserRoles), arg0, arg1)
 }
 
+// GetAuthorizedAuditLogsOffset mocks base method.
+func (m *MockStore) GetAuthorizedAuditLogsOffset(arg0 context.Context, arg1 database.GetAuditLogsOffsetParams, arg2 rbac.PreparedAuthorized) ([]database.GetAuditLogsOffsetRow, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetAuthorizedAuditLogsOffset", arg0, arg1, arg2)
+	ret0, _ := ret[0].([]database.GetAuditLogsOffsetRow)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetAuthorizedAuditLogsOffset indicates an expected call of GetAuthorizedAuditLogsOffset.
+func (mr *MockStoreMockRecorder) GetAuthorizedAuditLogsOffset(arg0, arg1, arg2 any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetAuthorizedAuditLogsOffset", reflect.TypeOf((*MockStore)(nil).GetAuthorizedAuditLogsOffset), arg0, arg1, arg2)
+}
+
 // GetAuthorizedTemplates mocks base method.
 func (m *MockStore) GetAuthorizedTemplates(arg0 context.Context, arg1 database.GetTemplatesWithFilterParams, arg2 rbac.PreparedAuthorized) ([]database.Template, error) {
 	m.ctrl.T.Helper()
@@ -4399,6 +4414,20 @@ func (m *MockStore) UpdateUserDeletedByID(arg0 context.Context, arg1 uuid.UUID) 
 func (mr *MockStoreMockRecorder) UpdateUserDeletedByID(arg0, arg1 any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateUserDeletedByID", reflect.TypeOf((*MockStore)(nil).UpdateUserDeletedByID), arg0, arg1)
+}
+
+// UpdateUserGithubComUserID mocks base method.
+func (m *MockStore) UpdateUserGithubComUserID(arg0 context.Context, arg1 database.UpdateUserGithubComUserIDParams) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "UpdateUserGithubComUserID", arg0, arg1)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// UpdateUserGithubComUserID indicates an expected call of UpdateUserGithubComUserID.
+func (mr *MockStoreMockRecorder) UpdateUserGithubComUserID(arg0, arg1 any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateUserGithubComUserID", reflect.TypeOf((*MockStore)(nil).UpdateUserGithubComUserID), arg0, arg1)
 }
 
 // UpdateUserHashedPassword mocks base method.

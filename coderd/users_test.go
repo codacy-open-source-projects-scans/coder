@@ -10,6 +10,7 @@ import (
 
 	"github.com/coder/coder/v2/coderd"
 	"github.com/coder/coder/v2/coderd/coderdtest/oidctest"
+	"github.com/coder/coder/v2/coderd/notifications"
 	"github.com/coder/coder/v2/coderd/rbac/policy"
 	"github.com/coder/serpent"
 
@@ -355,7 +356,7 @@ func TestDeleteUser(t *testing.T) {
 		version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, nil)
 		coderdtest.AwaitTemplateVersionJobCompleted(t, client, version.ID)
 		template := coderdtest.CreateTemplate(t, client, user.OrganizationID, version.ID)
-		coderdtest.CreateWorkspace(t, anotherClient, user.OrganizationID, template.ID)
+		coderdtest.CreateWorkspace(t, anotherClient, template.ID)
 		err := client.DeleteUser(context.Background(), another.ID)
 		var apiErr *codersdk.Error
 		require.ErrorAs(t, err, &apiErr)
@@ -370,6 +371,90 @@ func TestDeleteUser(t *testing.T) {
 		require.Error(t, err, "should not be able to delete self")
 		require.ErrorAs(t, err, &apiErr, "should be a coderd error")
 		require.Equal(t, http.StatusForbidden, apiErr.StatusCode(), "should be forbidden")
+	})
+}
+
+func TestNotifyDeletedUser(t *testing.T) {
+	t.Parallel()
+
+	t.Run("OwnerNotified", func(t *testing.T) {
+		t.Parallel()
+
+		// given
+		notifyEnq := &testutil.FakeNotificationsEnqueuer{}
+		adminClient := coderdtest.New(t, &coderdtest.Options{
+			NotificationsEnqueuer: notifyEnq,
+		})
+		firstUser := coderdtest.CreateFirstUser(t, adminClient)
+
+		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitLong)
+		defer cancel()
+
+		user, err := adminClient.CreateUser(ctx, codersdk.CreateUserRequest{
+			OrganizationID: firstUser.OrganizationID,
+			Email:          "another@user.org",
+			Username:       "someone-else",
+			Password:       "SomeSecurePassword!",
+		})
+		require.NoError(t, err)
+
+		// when
+		err = adminClient.DeleteUser(context.Background(), user.ID)
+		require.NoError(t, err)
+
+		// then
+		require.Len(t, notifyEnq.Sent, 2)
+		// notifyEnq.Sent[0] is create account event
+		require.Equal(t, notifications.TemplateUserAccountDeleted, notifyEnq.Sent[1].TemplateID)
+		require.Equal(t, firstUser.UserID, notifyEnq.Sent[1].UserID)
+		require.Contains(t, notifyEnq.Sent[1].Targets, user.ID)
+		require.Equal(t, user.Username, notifyEnq.Sent[1].Labels["deleted_account_name"])
+	})
+
+	t.Run("UserAdminNotified", func(t *testing.T) {
+		t.Parallel()
+
+		// given
+		notifyEnq := &testutil.FakeNotificationsEnqueuer{}
+		adminClient := coderdtest.New(t, &coderdtest.Options{
+			NotificationsEnqueuer: notifyEnq,
+		})
+		firstUser := coderdtest.CreateFirstUser(t, adminClient)
+
+		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitLong)
+		defer cancel()
+
+		_, userAdmin := coderdtest.CreateAnotherUser(t, adminClient, firstUser.OrganizationID, rbac.RoleUserAdmin())
+
+		member, err := adminClient.CreateUser(ctx, codersdk.CreateUserRequest{
+			OrganizationID: firstUser.OrganizationID,
+			Email:          "another@user.org",
+			Username:       "someone-else",
+			Password:       "SomeSecurePassword!",
+		})
+		require.NoError(t, err)
+
+		// when
+		err = adminClient.DeleteUser(context.Background(), member.ID)
+		require.NoError(t, err)
+
+		// then
+		require.Len(t, notifyEnq.Sent, 5)
+		// notifyEnq.Sent[0]: "User admin" account created, "owner" notified
+		// notifyEnq.Sent[1]: "Member" account created, "owner" notified
+		// notifyEnq.Sent[2]: "Member" account created, "user admin" notified
+
+		// "Member" account deleted, "owner" notified
+		require.Equal(t, notifications.TemplateUserAccountDeleted, notifyEnq.Sent[3].TemplateID)
+		require.Equal(t, firstUser.UserID, notifyEnq.Sent[3].UserID)
+		require.Contains(t, notifyEnq.Sent[3].Targets, member.ID)
+		require.Equal(t, member.Username, notifyEnq.Sent[3].Labels["deleted_account_name"])
+
+		// "Member" account deleted, "user admin" notified
+		require.Equal(t, notifications.TemplateUserAccountDeleted, notifyEnq.Sent[4].TemplateID)
+		require.Equal(t, userAdmin.ID, notifyEnq.Sent[4].UserID)
+		require.Contains(t, notifyEnq.Sent[4].Targets, member.ID)
+		require.Equal(t, member.Username, notifyEnq.Sent[4].Labels["deleted_account_name"])
 	})
 }
 
@@ -595,6 +680,99 @@ func TestPostUsers(t *testing.T) {
 		found, err := userClient.User(ctx, "me")
 		require.NoError(t, err)
 		require.Equal(t, found.LoginType, codersdk.LoginTypeOIDC)
+	})
+}
+
+func TestNotifyCreatedUser(t *testing.T) {
+	t.Parallel()
+
+	t.Run("OwnerNotified", func(t *testing.T) {
+		t.Parallel()
+
+		// given
+		notifyEnq := &testutil.FakeNotificationsEnqueuer{}
+		adminClient := coderdtest.New(t, &coderdtest.Options{
+			NotificationsEnqueuer: notifyEnq,
+		})
+		firstUser := coderdtest.CreateFirstUser(t, adminClient)
+
+		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitLong)
+		defer cancel()
+
+		// when
+		user, err := adminClient.CreateUser(ctx, codersdk.CreateUserRequest{
+			OrganizationID: firstUser.OrganizationID,
+			Email:          "another@user.org",
+			Username:       "someone-else",
+			Password:       "SomeSecurePassword!",
+		})
+		require.NoError(t, err)
+
+		// then
+		require.Len(t, notifyEnq.Sent, 1)
+		require.Equal(t, notifications.TemplateUserAccountCreated, notifyEnq.Sent[0].TemplateID)
+		require.Equal(t, firstUser.UserID, notifyEnq.Sent[0].UserID)
+		require.Contains(t, notifyEnq.Sent[0].Targets, user.ID)
+		require.Equal(t, user.Username, notifyEnq.Sent[0].Labels["created_account_name"])
+	})
+
+	t.Run("UserAdminNotified", func(t *testing.T) {
+		t.Parallel()
+
+		// given
+		notifyEnq := &testutil.FakeNotificationsEnqueuer{}
+		adminClient := coderdtest.New(t, &coderdtest.Options{
+			NotificationsEnqueuer: notifyEnq,
+		})
+		firstUser := coderdtest.CreateFirstUser(t, adminClient)
+
+		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitLong)
+		defer cancel()
+
+		userAdmin, err := adminClient.CreateUser(ctx, codersdk.CreateUserRequest{
+			OrganizationID: firstUser.OrganizationID,
+			Email:          "user-admin@user.org",
+			Username:       "mr-user-admin",
+			Password:       "SomeSecurePassword!",
+		})
+		require.NoError(t, err)
+
+		_, err = adminClient.UpdateUserRoles(ctx, userAdmin.Username, codersdk.UpdateRoles{
+			Roles: []string{
+				rbac.RoleUserAdmin().String(),
+			},
+		})
+		require.NoError(t, err)
+
+		// when
+		member, err := adminClient.CreateUser(ctx, codersdk.CreateUserRequest{
+			OrganizationID: firstUser.OrganizationID,
+			Email:          "another@user.org",
+			Username:       "someone-else",
+			Password:       "SomeSecurePassword!",
+		})
+		require.NoError(t, err)
+
+		// then
+		require.Len(t, notifyEnq.Sent, 3)
+
+		// "User admin" account created, "owner" notified
+		require.Equal(t, notifications.TemplateUserAccountCreated, notifyEnq.Sent[0].TemplateID)
+		require.Equal(t, firstUser.UserID, notifyEnq.Sent[0].UserID)
+		require.Contains(t, notifyEnq.Sent[0].Targets, userAdmin.ID)
+		require.Equal(t, userAdmin.Username, notifyEnq.Sent[0].Labels["created_account_name"])
+
+		// "Member" account created, "owner" notified
+		require.Equal(t, notifications.TemplateUserAccountCreated, notifyEnq.Sent[1].TemplateID)
+		require.Equal(t, firstUser.UserID, notifyEnq.Sent[1].UserID)
+		require.Contains(t, notifyEnq.Sent[1].Targets, member.ID)
+		require.Equal(t, member.Username, notifyEnq.Sent[1].Labels["created_account_name"])
+
+		// "Member" account created, "user admin" notified
+		require.Equal(t, notifications.TemplateUserAccountCreated, notifyEnq.Sent[1].TemplateID)
+		require.Equal(t, userAdmin.ID, notifyEnq.Sent[2].UserID)
+		require.Contains(t, notifyEnq.Sent[2].Targets, member.ID)
+		require.Equal(t, member.Username, notifyEnq.Sent[2].Labels["created_account_name"])
 	})
 }
 
@@ -1486,7 +1664,7 @@ func TestWorkspacesByUser(t *testing.T) {
 		version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, nil)
 		coderdtest.AwaitTemplateVersionJobCompleted(t, client, version.ID)
 		template := coderdtest.CreateTemplate(t, client, user.OrganizationID, version.ID)
-		coderdtest.CreateWorkspace(t, client, user.OrganizationID, template.ID)
+		coderdtest.CreateWorkspace(t, client, template.ID)
 
 		res, err := newUserClient.Workspaces(ctx, codersdk.WorkspaceFilter{Owner: codersdk.Me})
 		require.NoError(t, err)

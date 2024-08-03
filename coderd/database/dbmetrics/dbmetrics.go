@@ -2097,6 +2097,13 @@ func (m metricsStore) UpdateUserDeletedByID(ctx context.Context, id uuid.UUID) e
 	return r0
 }
 
+func (m metricsStore) UpdateUserGithubComUserID(ctx context.Context, arg database.UpdateUserGithubComUserIDParams) error {
+	start := time.Now()
+	r0 := m.s.UpdateUserGithubComUserID(ctx, arg)
+	m.queryLatencies.WithLabelValues("UpdateUserGithubComUserID").Observe(time.Since(start).Seconds())
+	return r0
+}
+
 func (m metricsStore) UpdateUserHashedPassword(ctx context.Context, arg database.UpdateUserHashedPasswordParams) error {
 	start := time.Now()
 	err := m.s.UpdateUserHashedPassword(ctx, arg)
@@ -2465,5 +2472,12 @@ func (m metricsStore) GetAuthorizedUsers(ctx context.Context, arg database.GetUs
 	start := time.Now()
 	r0, r1 := m.s.GetAuthorizedUsers(ctx, arg, prepared)
 	m.queryLatencies.WithLabelValues("GetAuthorizedUsers").Observe(time.Since(start).Seconds())
+	return r0, r1
+}
+
+func (m metricsStore) GetAuthorizedAuditLogsOffset(ctx context.Context, arg database.GetAuditLogsOffsetParams, prepared rbac.PreparedAuthorized) ([]database.GetAuditLogsOffsetRow, error) {
+	start := time.Now()
+	r0, r1 := m.s.GetAuthorizedAuditLogsOffset(ctx, arg, prepared)
+	m.queryLatencies.WithLabelValues("GetAuthorizedAuditLogsOffset").Observe(time.Since(start).Seconds())
 	return r0, r1
 }

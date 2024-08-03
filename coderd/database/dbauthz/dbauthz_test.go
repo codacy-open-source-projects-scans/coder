@@ -266,7 +266,14 @@ func (s *MethodTestSuite) TestAuditLogs() {
 		_ = dbgen.AuditLog(s.T(), db, database.AuditLog{})
 		check.Args(database.GetAuditLogsOffsetParams{
 			LimitOpt: 10,
-		}).Asserts(rbac.ResourceAuditLog, policy.ActionRead)
+		}).Asserts()
+	}))
+	s.Run("GetAuthorizedAuditLogsOffset", s.Subtest(func(db database.Store, check *expects) {
+		_ = dbgen.AuditLog(s.T(), db, database.AuditLog{})
+		_ = dbgen.AuditLog(s.T(), db, database.AuditLog{})
+		check.Args(database.GetAuditLogsOffsetParams{
+			LimitOpt: 10,
+		}, emptyPreparedAuthorized{}).Asserts()
 	}))
 }
 
@@ -1097,6 +1104,12 @@ func (s *MethodTestSuite) TestUser() {
 	s.Run("UpdateUserDeletedByID", s.Subtest(func(db database.Store, check *expects) {
 		u := dbgen.User(s.T(), db, database.User{})
 		check.Args(u.ID).Asserts(u, policy.ActionDelete).Returns()
+	}))
+	s.Run("UpdateUserGithubComUserID", s.Subtest(func(db database.Store, check *expects) {
+		u := dbgen.User(s.T(), db, database.User{})
+		check.Args(database.UpdateUserGithubComUserIDParams{
+			ID: u.ID,
+		}).Asserts(u, policy.ActionUpdatePersonal)
 	}))
 	s.Run("UpdateUserHashedPassword", s.Subtest(func(db database.Store, check *expects) {
 		u := dbgen.User(s.T(), db, database.User{})
