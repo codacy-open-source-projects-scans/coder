@@ -18,7 +18,7 @@ import {
   FormFooter,
 } from "components/Form/Form";
 import { IconField } from "components/IconField/IconField";
-import { PageHeader, PageHeaderTitle } from "components/PageHeader/PageHeader";
+import { SettingsHeader } from "components/SettingsHeader/SettingsHeader";
 import {
   getFormHelpers,
   nameValidator,
@@ -66,9 +66,7 @@ export const OrganizationSettingsPageView: FC<
 
   return (
     <div>
-      <PageHeader>
-        <PageHeaderTitle>Organization settings</PageHeaderTitle>
-      </PageHeader>
+      <SettingsHeader title="Settings" />
 
       {Boolean(error) && !isApiValidationError(error) && (
         <div css={{ marginBottom: 32 }}>
@@ -77,12 +75,13 @@ export const OrganizationSettingsPageView: FC<
       )}
 
       <HorizontalForm
+        data-testid="org-settings-form"
         onSubmit={form.handleSubmit}
         aria-label="Organization settings form"
       >
         <FormSection
           title="Info"
-          description="Change the name or description of the organization."
+          description="The name and description of the organization."
         >
           <fieldset
             disabled={form.isSubmitting}
