@@ -61,12 +61,12 @@ func (api *API) templateAvailablePermissions(rw http.ResponseWriter, r *http.Req
 	sdkGroups := make([]codersdk.Group, 0, len(groups))
 	for _, group := range groups {
 		// nolint:gocritic
-		members, err := api.Database.GetGroupMembersByGroupID(dbauthz.AsSystemRestricted(ctx), group.ID)
+		members, err := api.Database.GetGroupMembersByGroupID(dbauthz.AsSystemRestricted(ctx), group.Group.ID)
 		if err != nil {
 			httpapi.InternalServerError(rw, err)
 			return
 		}
-		memberCount, err := api.Database.GetGroupMembersCountByGroupID(ctx, group.ID)
+		memberCount, err := api.Database.GetGroupMembersCountByGroupID(ctx, group.Group.ID)
 		if err != nil {
 			httpapi.InternalServerError(rw, err)
 			return
@@ -147,8 +147,12 @@ func (api *API) templateACL(rw http.ResponseWriter, r *http.Request) {
 			return
 		}
 		groups = append(groups, codersdk.TemplateGroup{
-			Group: db2sdk.Group(group.Group, members, int(memberCount)),
-			Role:  convertToTemplateRole(group.Actions),
+			Group: db2sdk.Group(database.GetGroupsRow{
+				Group:                   group.Group,
+				OrganizationName:        template.OrganizationName,
+				OrganizationDisplayName: template.OrganizationDisplayName,
+			}, members, int(memberCount)),
+			Role: convertToTemplateRole(group.Actions),
 		})
 	}
 
@@ -349,7 +353,7 @@ func (api *API) RequireFeatureMW(feat codersdk.FeatureName) func(http.Handler) h
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 			// Entitlement must be enabled.
-			if !api.entitlements.Enabled(feat) {
+			if !api.Entitlements.Enabled(feat) {
 				licenseType := "a Premium"
 				if feat.Enterprise() {
 					licenseType = "an Enterprise"

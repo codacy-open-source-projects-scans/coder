@@ -16,8 +16,10 @@ import (
 	"github.com/coder/coder/v2/coderd/appearance"
 	"github.com/coder/coder/v2/coderd/database"
 	"github.com/coder/coder/v2/coderd/entitlements"
+	"github.com/coder/coder/v2/coderd/idpsync"
 	agplportsharing "github.com/coder/coder/v2/coderd/portsharing"
 	"github.com/coder/coder/v2/coderd/rbac/policy"
+	"github.com/coder/coder/v2/enterprise/coderd/enidpsync"
 	"github.com/coder/coder/v2/enterprise/coderd/portsharing"
 
 	"golang.org/x/xerrors"
@@ -75,6 +77,16 @@ func New(ctx context.Context, options *Options) (_ *API, err error) {
 		// from when an additional replica was started.
 		options.ReplicaErrorGracePeriod = time.Minute
 	}
+	if options.Entitlements == nil {
+		options.Entitlements = entitlements.New()
+	}
+	if options.IDPSync == nil {
+		options.IDPSync = enidpsync.NewSync(options.Logger, options.Entitlements, idpsync.SyncSettings{
+			OrganizationField:         options.DeploymentValues.OIDC.OrganizationField.Value(),
+			OrganizationMapping:       options.DeploymentValues.OIDC.OrganizationMapping.Value,
+			OrganizationAssignDefault: options.DeploymentValues.OIDC.OrganizationAssignDefault.Value(),
+		})
+	}
 
 	ctx, cancelFunc := context.WithCancel(ctx)
 
@@ -105,25 +117,22 @@ func New(ctx context.Context, options *Options) (_ *API, err error) {
 		return nil, xerrors.Errorf("init database encryption: %w", err)
 	}
 
-	entitlementsSet := entitlements.New()
 	options.Database = cryptDB
 	api := &API{
-		ctx:          ctx,
-		cancel:       cancelFunc,
-		Options:      options,
-		entitlements: entitlementsSet,
+		ctx:     ctx,
+		cancel:  cancelFunc,
+		Options: options,
 		provisionerDaemonAuth: &provisionerDaemonAuth{
 			psk:        options.ProvisionerDaemonPSK,
 			authorizer: options.Authorizer,
 			db:         options.Database,
 		},
 		licenseMetricsCollector: &license.MetricsCollector{
-			Entitlements: entitlementsSet,
+			Entitlements: options.Entitlements,
 		},
 	}
 	// This must happen before coderd initialization!
 	options.PostAuthAdditionalHeadersFunc = api.writeEntitlementWarningsHeader
-	options.Options.Entitlements = api.entitlements
 	api.AGPL = coderd.New(options.Options)
 	defer func() {
 		if err != nil {
@@ -561,8 +570,6 @@ type API struct {
 	// ProxyHealth checks the reachability of all workspace proxies.
 	ProxyHealth *proxyhealth.ProxyHealth
 
-	entitlements *entitlements.Set
-
 	provisionerDaemonAuth *provisionerDaemonAuth
 
 	licenseMetricsCollector *license.MetricsCollector
@@ -575,27 +582,11 @@ type API struct {
 // This header is used by the CLI to display warnings to the user without having
 // to make additional requests!
 func (api *API) writeEntitlementWarningsHeader(a rbac.Subject, header http.Header) {
-	roles, err := a.Roles.Expand()
+	err := api.AGPL.HTTPAuth.Authorizer.Authorize(api.ctx, a, policy.ActionRead, rbac.ResourceDeploymentConfig)
 	if err != nil {
 		return
 	}
-	nonMemberRoles := 0
-	for _, role := range roles {
-		// The member role is implied, and not assignable.
-		// If there is no display name, then the role is also unassigned.
-		// This is not the ideal logic, but works for now.
-		if role.Identifier == rbac.RoleMember() || (role.DisplayName == "") {
-			continue
-		}
-		nonMemberRoles++
-	}
-	if nonMemberRoles == 0 {
-		// Don't show entitlement warnings if the user
-		// has no roles. This is a normal user!
-		return
-	}
-
-	api.entitlements.WriteEntitlementWarningHeaders(header)
+	api.Entitlements.WriteEntitlementWarningHeaders(header)
 }
 
 func (api *API) Close() error {
@@ -658,7 +649,7 @@ func (api *API) updateEntitlements(ctx context.Context) error {
 		//
 		// We don't simply append to entitlement.Errors since we don't want any
 		// enterprise features enabled.
-		api.entitlements.Update(func(entitlements *codersdk.Entitlements) {
+		api.Entitlements.Update(func(entitlements *codersdk.Entitlements) {
 			entitlements.Errors = []string{
 				"License requires telemetry but telemetry is disabled",
 			}
@@ -669,7 +660,7 @@ func (api *API) updateEntitlements(ctx context.Context) error {
 	}
 
 	featureChanged := func(featureName codersdk.FeatureName) (initial, changed, enabled bool) {
-		return api.entitlements.FeatureChanged(featureName, reloadedEntitlements.Features[featureName])
+		return api.Entitlements.FeatureChanged(featureName, reloadedEntitlements.Features[featureName])
 	}
 
 	shouldUpdate := func(initial, changed, enabled bool) bool {
@@ -835,7 +826,7 @@ func (api *API) updateEntitlements(ctx context.Context) error {
 	}
 	reloadedEntitlements.Features[codersdk.FeatureExternalTokenEncryption] = featureExternalTokenEncryption
 
-	api.entitlements.Replace(reloadedEntitlements)
+	api.Entitlements.Replace(reloadedEntitlements)
 	return nil
 }
 
@@ -1015,7 +1006,7 @@ func derpMapper(logger slog.Logger, proxyHealth *proxyhealth.ProxyHealth) func(*
 // @Router /entitlements [get]
 func (api *API) serveEntitlements(rw http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	httpapi.Write(ctx, rw, http.StatusOK, api.entitlements.AsJSON())
+	httpapi.Write(ctx, rw, http.StatusOK, api.Entitlements.AsJSON())
 }
 
 func (api *API) runEntitlementsLoop(ctx context.Context) {

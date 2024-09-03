@@ -10,8 +10,11 @@ import (
 
 	"github.com/google/uuid"
 	"golang.org/x/xerrors"
+	"tailscale.com/tailcfg"
 
 	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/coder/v2/codersdk/healthsdk"
+	"github.com/coder/coder/v2/codersdk/workspacesdk"
 	"github.com/coder/coder/v2/tailnet"
 )
 
@@ -345,4 +348,103 @@ func PeerDiagnostics(w io.Writer, d tailnet.PeerDiagnostics) {
 	} else {
 		_, _ = fmt.Fprint(w, "✘ Wireguard is not connected\n")
 	}
+}
+
+type ConnDiags struct {
+	ConnInfo        workspacesdk.AgentConnectionInfo
+	PingP2P         bool
+	DisableDirect   bool
+	LocalNetInfo    *tailcfg.NetInfo
+	LocalInterfaces *healthsdk.InterfacesReport
+	AgentNetcheck   *healthsdk.AgentNetcheckReport
+	ClientIPIsAWS   bool
+	AgentIPIsAWS    bool
+	Verbose         bool
+	// TODO: More diagnostics
+}
+
+func (d ConnDiags) Write(w io.Writer) {
+	_, _ = fmt.Fprintln(w, "")
+	general, client, agent := d.splitDiagnostics()
+	for _, msg := range general {
+		_, _ = fmt.Fprintln(w, msg)
+	}
+	if len(client) > 0 {
+		_, _ = fmt.Fprint(w, "Possible client-side issues with direct connection:\n\n")
+		for _, msg := range client {
+			_, _ = fmt.Fprintf(w, " - %s\n\n", msg)
+		}
+	}
+	if len(agent) > 0 {
+		_, _ = fmt.Fprint(w, "Possible agent-side issues with direct connections:\n\n")
+		for _, msg := range agent {
+			_, _ = fmt.Fprintf(w, " - %s\n\n", msg)
+		}
+	}
+}
+
+func (d ConnDiags) splitDiagnostics() (general, client, agent []string) {
+	if d.PingP2P {
+		general = append(general, "✔ You are connected directly (p2p)")
+	} else {
+		general = append(general, "❗ You are connected via a DERP relay, not directly (p2p)")
+	}
+
+	if d.AgentNetcheck != nil {
+		for _, msg := range d.AgentNetcheck.Interfaces.Warnings {
+			agent = append(agent, msg.Message)
+		}
+	}
+
+	if d.LocalInterfaces != nil {
+		for _, msg := range d.LocalInterfaces.Warnings {
+			client = append(client, msg.Message)
+		}
+	}
+
+	if d.PingP2P && !d.Verbose {
+		return general, client, agent
+	}
+
+	if d.DisableDirect {
+		general = append(general, "❗ Direct connections are disabled locally, by `--disable-direct` or `CODER_DISABLE_DIRECT`")
+		if !d.Verbose {
+			return general, client, agent
+		}
+	}
+
+	if d.ConnInfo.DisableDirectConnections {
+		general = append(general, "❗ Your Coder administrator has blocked direct connections")
+		if !d.Verbose {
+			return general, client, agent
+		}
+	}
+
+	if !d.ConnInfo.DERPMap.HasSTUN() {
+		general = append(general, "The DERP map is not configured to use STUN")
+	} else if d.LocalNetInfo != nil && !d.LocalNetInfo.UDP {
+		client = append(client, "Client could not connect to STUN over UDP")
+	}
+
+	if d.LocalNetInfo != nil && d.LocalNetInfo.MappingVariesByDestIP.EqualBool(true) {
+		client = append(client, "Client is potentially behind a hard NAT, as multiple endpoints were retrieved from different STUN servers")
+	}
+
+	if d.AgentNetcheck != nil && d.AgentNetcheck.NetInfo != nil {
+		if d.AgentNetcheck.NetInfo.MappingVariesByDestIP.EqualBool(true) {
+			agent = append(agent, "Agent is potentially behind a hard NAT, as multiple endpoints were retrieved from different STUN servers")
+		}
+		if !d.AgentNetcheck.NetInfo.UDP {
+			agent = append(agent, "Agent could not connect to STUN over UDP")
+		}
+	}
+
+	if d.ClientIPIsAWS {
+		client = append(client, "Client IP address is within an AWS range (AWS uses hard NAT)")
+	}
+
+	if d.AgentIPIsAWS {
+		agent = append(agent, "Agent IP address is within an AWS range (AWS uses hard NAT)")
+	}
+	return general, client, agent
 }
