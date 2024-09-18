@@ -2,6 +2,7 @@ package runtimeconfig
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"golang.org/x/xerrors"
@@ -45,7 +46,7 @@ func MustNew[T EntryValue](name string) RuntimeEntry[T] {
 }
 
 // SetRuntimeValue attempts to update the runtime value of this field in the store via the given Mutator.
-func (e *RuntimeEntry[T]) SetRuntimeValue(ctx context.Context, m Resolver, val T) error {
+func (e RuntimeEntry[T]) SetRuntimeValue(ctx context.Context, m Resolver, val T) error {
 	name, err := e.name()
 	if err != nil {
 		return xerrors.Errorf("set runtime: %w", err)
@@ -55,7 +56,7 @@ func (e *RuntimeEntry[T]) SetRuntimeValue(ctx context.Context, m Resolver, val T
 }
 
 // UnsetRuntimeValue removes the runtime value from the store.
-func (e *RuntimeEntry[T]) UnsetRuntimeValue(ctx context.Context, m Resolver) error {
+func (e RuntimeEntry[T]) UnsetRuntimeValue(ctx context.Context, m Resolver) error {
 	name, err := e.name()
 	if err != nil {
 		return xerrors.Errorf("unset runtime: %w", err)
@@ -65,7 +66,7 @@ func (e *RuntimeEntry[T]) UnsetRuntimeValue(ctx context.Context, m Resolver) err
 }
 
 // Resolve attempts to resolve the runtime value of this field from the store via the given Resolver.
-func (e *RuntimeEntry[T]) Resolve(ctx context.Context, r Resolver) (T, error) {
+func (e RuntimeEntry[T]) Resolve(ctx context.Context, r Resolver) (T, error) {
 	var zero T
 
 	name, err := e.name()
@@ -86,10 +87,18 @@ func (e *RuntimeEntry[T]) Resolve(ctx context.Context, r Resolver) (T, error) {
 }
 
 // name returns the configured name, or fails with ErrNameNotSet.
-func (e *RuntimeEntry[T]) name() (string, error) {
+func (e RuntimeEntry[T]) name() (string, error) {
 	if e.n == "" {
 		return "", ErrNameNotSet
 	}
 
 	return e.n, nil
+}
+
+func JSONString(v any) string {
+	s, err := json.Marshal(v)
+	if err != nil {
+		return "decode failed: " + err.Error()
+	}
+	return string(s)
 }

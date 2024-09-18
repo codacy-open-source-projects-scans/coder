@@ -68,6 +68,7 @@ func New() database.Store {
 			notificationPreferences:   make([]database.NotificationPreference, 0),
 			parameterSchemas:          make([]database.ParameterSchema, 0),
 			provisionerDaemons:        make([]database.ProvisionerDaemon, 0),
+			provisionerKeys:           make([]database.ProvisionerKey, 0),
 			workspaceAgents:           make([]database.WorkspaceAgent, 0),
 			provisionerJobLogs:        make([]database.ProvisionerJobLog, 0),
 			workspaceResources:        make([]database.WorkspaceResource, 0),
@@ -108,6 +109,41 @@ func New() database.Store {
 
 	q.defaultProxyDisplayName = "Default"
 	q.defaultProxyIconURL = "/emojis/1f3e1.png"
+
+	_, err = q.InsertProvisionerKey(context.Background(), database.InsertProvisionerKeyParams{
+		ID:             uuid.MustParse(codersdk.ProvisionerKeyIDBuiltIn),
+		OrganizationID: defaultOrg.ID,
+		CreatedAt:      dbtime.Now(),
+		HashedSecret:   []byte{},
+		Name:           codersdk.ProvisionerKeyNameBuiltIn,
+		Tags:           map[string]string{},
+	})
+	if err != nil {
+		panic(xerrors.Errorf("failed to create built-in provisioner key: %w", err))
+	}
+	_, err = q.InsertProvisionerKey(context.Background(), database.InsertProvisionerKeyParams{
+		ID:             uuid.MustParse(codersdk.ProvisionerKeyIDUserAuth),
+		OrganizationID: defaultOrg.ID,
+		CreatedAt:      dbtime.Now(),
+		HashedSecret:   []byte{},
+		Name:           codersdk.ProvisionerKeyNameUserAuth,
+		Tags:           map[string]string{},
+	})
+	if err != nil {
+		panic(xerrors.Errorf("failed to create user-auth provisioner key: %w", err))
+	}
+	_, err = q.InsertProvisionerKey(context.Background(), database.InsertProvisionerKeyParams{
+		ID:             uuid.MustParse(codersdk.ProvisionerKeyIDPSK),
+		OrganizationID: defaultOrg.ID,
+		CreatedAt:      dbtime.Now(),
+		HashedSecret:   []byte{},
+		Name:           codersdk.ProvisionerKeyNamePSK,
+		Tags:           map[string]string{},
+	})
+	if err != nil {
+		panic(xerrors.Errorf("failed to create psk provisioner key: %w", err))
+	}
+
 	return q
 }
 
@@ -153,6 +189,7 @@ type data struct {
 	// New tables
 	workspaceAgentStats           []database.WorkspaceAgentStat
 	auditLogs                     []database.AuditLog
+	cryptoKeys                    []database.CryptoKey
 	dbcryptKeys                   []database.DBCryptKey
 	files                         []database.File
 	externalAuthLinks             []database.ExternalAuthLink
@@ -195,6 +232,7 @@ type data struct {
 	workspaces                    []database.Workspace
 	workspaceProxies              []database.WorkspaceProxy
 	customRoles                   []database.CustomRole
+	provisionerJobTimings         []database.ProvisionerJobTiming
 	runtimeConfig                 map[string]string
 	// Locks is a map of lock names. Any keys within the map are currently
 	// locked.
@@ -1434,6 +1472,27 @@ func (*FakeQuerier) DeleteCoordinator(context.Context, uuid.UUID) error {
 	return ErrUnimplemented
 }
 
+func (q *FakeQuerier) DeleteCryptoKey(_ context.Context, arg database.DeleteCryptoKeyParams) (database.CryptoKey, error) {
+	err := validateDatabaseType(arg)
+	if err != nil {
+		return database.CryptoKey{}, err
+	}
+
+	q.mutex.Lock()
+	defer q.mutex.Unlock()
+
+	for i, key := range q.cryptoKeys {
+		if key.Feature == arg.Feature && key.Sequence == arg.Sequence {
+			q.cryptoKeys[i].Secret.String = ""
+			q.cryptoKeys[i].Secret.Valid = false
+			q.cryptoKeys[i].SecretKeyID.String = ""
+			q.cryptoKeys[i].SecretKeyID.Valid = false
+			return q.cryptoKeys[i], nil
+		}
+	}
+	return database.CryptoKey{}, sql.ErrNoRows
+}
+
 func (q *FakeQuerier) DeleteCustomRole(_ context.Context, arg database.DeleteCustomRoleParams) error {
 	err := validateDatabaseType(arg)
 	if err != nil {
@@ -1885,7 +1944,7 @@ func (q *FakeQuerier) DeleteOrganization(_ context.Context, id uuid.UUID) error 
 	return sql.ErrNoRows
 }
 
-func (q *FakeQuerier) DeleteOrganizationMember(_ context.Context, arg database.DeleteOrganizationMemberParams) error {
+func (q *FakeQuerier) DeleteOrganizationMember(ctx context.Context, arg database.DeleteOrganizationMemberParams) error {
 	err := validateDatabaseType(arg)
 	if err != nil {
 		return err
@@ -1900,6 +1959,16 @@ func (q *FakeQuerier) DeleteOrganizationMember(_ context.Context, arg database.D
 	if len(deleted) == 0 {
 		return sql.ErrNoRows
 	}
+
+	// Delete group member trigger
+	q.groupMembers = slices.DeleteFunc(q.groupMembers, func(member database.GroupMemberTable) bool {
+		if member.UserID != arg.UserID {
+			return false
+		}
+		g, _ := q.getGroupByIDNoLock(ctx, member.GroupID)
+		return g.OrganizationID == arg.OrganizationID
+	})
+
 	return nil
 }
 
@@ -2309,6 +2378,41 @@ func (q *FakeQuerier) GetCoordinatorResumeTokenSigningKey(_ context.Context) (st
 	return q.coordinatorResumeTokenSigningKey, nil
 }
 
+func (q *FakeQuerier) GetCryptoKeyByFeatureAndSequence(_ context.Context, arg database.GetCryptoKeyByFeatureAndSequenceParams) (database.CryptoKey, error) {
+	err := validateDatabaseType(arg)
+	if err != nil {
+		return database.CryptoKey{}, err
+	}
+
+	q.mutex.RLock()
+	defer q.mutex.RUnlock()
+
+	for _, key := range q.cryptoKeys {
+		if key.Feature == arg.Feature && key.Sequence == arg.Sequence {
+			// Keys with NULL secrets are considered deleted.
+			if key.Secret.Valid {
+				return key, nil
+			}
+			return database.CryptoKey{}, sql.ErrNoRows
+		}
+	}
+
+	return database.CryptoKey{}, sql.ErrNoRows
+}
+
+func (q *FakeQuerier) GetCryptoKeys(_ context.Context) ([]database.CryptoKey, error) {
+	q.mutex.RLock()
+	defer q.mutex.RUnlock()
+
+	keys := make([]database.CryptoKey, 0)
+	for _, key := range q.cryptoKeys {
+		if key.Secret.Valid {
+			keys = append(keys, key)
+		}
+	}
+	return keys, nil
+}
+
 func (q *FakeQuerier) GetDBCryptKeys(_ context.Context) ([]database.DBCryptKey, error) {
 	q.mutex.RLock()
 	defer q.mutex.RUnlock()
@@ -2695,18 +2799,18 @@ func (q *FakeQuerier) GetGroups(_ context.Context, arg database.GetGroupsParams)
 	q.mutex.RLock()
 	defer q.mutex.RUnlock()
 
-	groupIDs := make(map[uuid.UUID]struct{})
+	userGroupIDs := make(map[uuid.UUID]struct{})
 	if arg.HasMemberID != uuid.Nil {
 		for _, member := range q.groupMembers {
 			if member.UserID == arg.HasMemberID {
-				groupIDs[member.GroupID] = struct{}{}
+				userGroupIDs[member.GroupID] = struct{}{}
 			}
 		}
 
 		// Handle the everyone group
 		for _, orgMember := range q.organizationMembers {
 			if orgMember.UserID == arg.HasMemberID {
-				groupIDs[orgMember.OrganizationID] = struct{}{}
+				userGroupIDs[orgMember.OrganizationID] = struct{}{}
 			}
 		}
 	}
@@ -2714,12 +2818,22 @@ func (q *FakeQuerier) GetGroups(_ context.Context, arg database.GetGroupsParams)
 	orgDetailsCache := make(map[uuid.UUID]struct{ name, displayName string })
 	filtered := make([]database.GetGroupsRow, 0)
 	for _, group := range q.groups {
+		if len(arg.GroupIds) > 0 {
+			if !slices.Contains(arg.GroupIds, group.ID) {
+				continue
+			}
+		}
+
 		if arg.OrganizationID != uuid.Nil && group.OrganizationID != arg.OrganizationID {
 			continue
 		}
 
-		_, ok := groupIDs[group.ID]
+		_, ok := userGroupIDs[group.ID]
 		if arg.HasMemberID != uuid.Nil && !ok {
+			continue
+		}
+
+		if len(arg.GroupNames) > 0 && !slices.Contains(arg.GroupNames, group.Name) {
 			continue
 		}
 
@@ -2800,6 +2914,22 @@ func (q *FakeQuerier) GetLastUpdateCheck(_ context.Context) (string, error) {
 		return "", sql.ErrNoRows
 	}
 	return string(q.lastUpdateCheck), nil
+}
+
+func (q *FakeQuerier) GetLatestCryptoKeyByFeature(_ context.Context, feature database.CryptoKeyFeature) (database.CryptoKey, error) {
+	q.mutex.RLock()
+	defer q.mutex.RUnlock()
+
+	var latestKey database.CryptoKey
+	for _, key := range q.cryptoKeys {
+		if key.Feature == feature && latestKey.Sequence < key.Sequence {
+			latestKey = key
+		}
+	}
+	if latestKey.StartsAt.IsZero() {
+		return database.CryptoKey{}, sql.ErrNoRows
+	}
+	return latestKey, nil
 }
 
 func (q *FakeQuerier) GetLatestWorkspaceBuildByWorkspaceID(ctx context.Context, workspaceID uuid.UUID) (database.WorkspaceBuild, error) {
@@ -3278,6 +3408,26 @@ func (q *FakeQuerier) GetProvisionerJobByID(ctx context.Context, id uuid.UUID) (
 	defer q.mutex.RUnlock()
 
 	return q.getProvisionerJobByIDNoLock(ctx, id)
+}
+
+func (q *FakeQuerier) GetProvisionerJobTimingsByJobID(_ context.Context, jobID uuid.UUID) ([]database.ProvisionerJobTiming, error) {
+	q.mutex.RLock()
+	defer q.mutex.RUnlock()
+
+	timings := make([]database.ProvisionerJobTiming, 0)
+	for _, timing := range q.provisionerJobTimings {
+		if timing.JobID == jobID {
+			timings = append(timings, timing)
+		}
+	}
+	if len(timings) == 0 {
+		return nil, sql.ErrNoRows
+	}
+	sort.Slice(timings, func(i, j int) bool {
+		return timings[i].StartedAt.Before(timings[j].StartedAt)
+	})
+
+	return timings, nil
 }
 
 func (q *FakeQuerier) GetProvisionerJobsByIDs(_ context.Context, ids []uuid.UUID) ([]database.ProvisionerJob, error) {
@@ -6301,6 +6451,28 @@ func (q *FakeQuerier) InsertAuditLog(_ context.Context, arg database.InsertAudit
 	return alog, nil
 }
 
+func (q *FakeQuerier) InsertCryptoKey(_ context.Context, arg database.InsertCryptoKeyParams) (database.CryptoKey, error) {
+	err := validateDatabaseType(arg)
+	if err != nil {
+		return database.CryptoKey{}, err
+	}
+
+	q.mutex.Lock()
+	defer q.mutex.Unlock()
+
+	key := database.CryptoKey{
+		Feature:     arg.Feature,
+		Sequence:    arg.Sequence,
+		Secret:      arg.Secret,
+		SecretKeyID: arg.SecretKeyID,
+		StartsAt:    arg.StartsAt,
+	}
+
+	q.cryptoKeys = append(q.cryptoKeys, key)
+
+	return key, nil
+}
+
 func (q *FakeQuerier) InsertCustomRole(_ context.Context, arg database.InsertCustomRoleParams) (database.CustomRole, error) {
 	err := validateDatabaseType(arg)
 	if err != nil {
@@ -6773,13 +6945,31 @@ func (q *FakeQuerier) InsertProvisionerJobLogs(_ context.Context, arg database.I
 	return logs, nil
 }
 
-func (*FakeQuerier) InsertProvisionerJobTimings(_ context.Context, arg database.InsertProvisionerJobTimingsParams) ([]database.ProvisionerJobTiming, error) {
+func (q *FakeQuerier) InsertProvisionerJobTimings(_ context.Context, arg database.InsertProvisionerJobTimingsParams) ([]database.ProvisionerJobTiming, error) {
 	err := validateDatabaseType(arg)
 	if err != nil {
 		return nil, err
 	}
 
-	return nil, nil
+	q.mutex.Lock()
+	defer q.mutex.Unlock()
+
+	insertedTimings := make([]database.ProvisionerJobTiming, 0, len(arg.StartedAt))
+	for i := range arg.StartedAt {
+		timing := database.ProvisionerJobTiming{
+			JobID:     arg.JobID,
+			StartedAt: arg.StartedAt[i],
+			EndedAt:   arg.EndedAt[i],
+			Stage:     arg.Stage[i],
+			Source:    arg.Source[i],
+			Action:    arg.Action[i],
+			Resource:  arg.Resource[i],
+		}
+		q.provisionerJobTimings = append(q.provisionerJobTimings, timing)
+		insertedTimings = append(insertedTimings, timing)
+	}
+
+	return insertedTimings, nil
 }
 
 func (q *FakeQuerier) InsertProvisionerKey(_ context.Context, arg database.InsertProvisionerKeyParams) (database.ProvisionerKey, error) {
@@ -7015,7 +7205,37 @@ func (q *FakeQuerier) InsertUser(_ context.Context, arg database.InsertUserParam
 	return user, nil
 }
 
+func (q *FakeQuerier) InsertUserGroupsByID(_ context.Context, arg database.InsertUserGroupsByIDParams) ([]uuid.UUID, error) {
+	err := validateDatabaseType(arg)
+	if err != nil {
+		return nil, err
+	}
+
+	q.mutex.Lock()
+	defer q.mutex.Unlock()
+
+	var groupIDs []uuid.UUID
+	for _, group := range q.groups {
+		for _, groupID := range arg.GroupIds {
+			if group.ID == groupID {
+				q.groupMembers = append(q.groupMembers, database.GroupMemberTable{
+					UserID:  arg.UserID,
+					GroupID: groupID,
+				})
+				groupIDs = append(groupIDs, group.ID)
+			}
+		}
+	}
+
+	return groupIDs, nil
+}
+
 func (q *FakeQuerier) InsertUserGroupsByName(_ context.Context, arg database.InsertUserGroupsByNameParams) error {
+	err := validateDatabaseType(arg)
+	if err != nil {
+		return err
+	}
+
 	q.mutex.Lock()
 	defer q.mutex.Unlock()
 
@@ -7503,6 +7723,25 @@ func (q *FakeQuerier) ListProvisionerKeysByOrganization(_ context.Context, organ
 	return keys, nil
 }
 
+func (q *FakeQuerier) ListProvisionerKeysByOrganizationExcludeReserved(_ context.Context, organizationID uuid.UUID) ([]database.ProvisionerKey, error) {
+	q.mutex.RLock()
+	defer q.mutex.RUnlock()
+
+	keys := make([]database.ProvisionerKey, 0)
+	for _, key := range q.provisionerKeys {
+		if key.ID.String() == codersdk.ProvisionerKeyIDBuiltIn ||
+			key.ID.String() == codersdk.ProvisionerKeyIDUserAuth ||
+			key.ID.String() == codersdk.ProvisionerKeyIDPSK {
+			continue
+		}
+		if key.OrganizationID == organizationID {
+			keys = append(keys, key)
+		}
+	}
+
+	return keys, nil
+}
+
 func (q *FakeQuerier) ListWorkspaceAgentPortShares(_ context.Context, workspaceID uuid.UUID) ([]database.WorkspaceAgentPortShare, error) {
 	q.mutex.Lock()
 	defer q.mutex.Unlock()
@@ -7605,6 +7844,34 @@ func (q *FakeQuerier) RemoveUserFromAllGroups(_ context.Context, userID uuid.UUI
 	q.groupMembers = newMembers
 
 	return nil
+}
+
+func (q *FakeQuerier) RemoveUserFromGroups(_ context.Context, arg database.RemoveUserFromGroupsParams) ([]uuid.UUID, error) {
+	err := validateDatabaseType(arg)
+	if err != nil {
+		return nil, err
+	}
+
+	q.mutex.Lock()
+	defer q.mutex.Unlock()
+
+	removed := make([]uuid.UUID, 0)
+	q.data.groupMembers = slices.DeleteFunc(q.data.groupMembers, func(groupMember database.GroupMemberTable) bool {
+		// Delete all group members that match the arguments.
+		if groupMember.UserID != arg.UserID {
+			// Not the right user, ignore.
+			return false
+		}
+
+		if !slices.Contains(arg.GroupIds, groupMember.GroupID) {
+			return false
+		}
+
+		removed = append(removed, groupMember.GroupID)
+		return true
+	})
+
+	return removed, nil
 }
 
 func (q *FakeQuerier) RevokeDBCryptKey(_ context.Context, activeKeyDigest string) error {
@@ -7710,6 +7977,25 @@ func (q *FakeQuerier) UpdateAPIKeyByID(_ context.Context, arg database.UpdateAPI
 		return nil
 	}
 	return sql.ErrNoRows
+}
+
+func (q *FakeQuerier) UpdateCryptoKeyDeletesAt(_ context.Context, arg database.UpdateCryptoKeyDeletesAtParams) (database.CryptoKey, error) {
+	err := validateDatabaseType(arg)
+	if err != nil {
+		return database.CryptoKey{}, err
+	}
+	q.mutex.Lock()
+	defer q.mutex.Unlock()
+
+	for i, key := range q.cryptoKeys {
+		if key.Feature == arg.Feature && key.Sequence == arg.Sequence {
+			key.DeletesAt = arg.DeletesAt
+			q.cryptoKeys[i] = key
+			return key, nil
+		}
+	}
+
+	return database.CryptoKey{}, sql.ErrNoRows
 }
 
 func (q *FakeQuerier) UpdateCustomRole(_ context.Context, arg database.UpdateCustomRoleParams) (database.CustomRole, error) {
@@ -8568,7 +8854,7 @@ func (q *FakeQuerier) UpdateUserRoles(_ context.Context, arg database.UpdateUser
 		}
 
 		// Set new roles
-		user.RBACRoles = arg.GrantedRoles
+		user.RBACRoles = slice.Unique(arg.GrantedRoles)
 		// Remove duplicates and sort
 		uniqueRoles := make([]string, 0, len(user.RBACRoles))
 		exist := make(map[string]struct{})
@@ -9204,6 +9490,7 @@ func (q *FakeQuerier) UpsertProvisionerDaemon(_ context.Context, arg database.Up
 		Version:        arg.Version,
 		APIVersion:     arg.APIVersion,
 		OrganizationID: arg.OrganizationID,
+		KeyID:          arg.KeyID,
 	}
 	q.provisionerDaemons = append(q.provisionerDaemons, d)
 	return d, nil

@@ -761,6 +761,186 @@ func (q *sqlQuerier) InsertAuditLog(ctx context.Context, arg InsertAuditLogParam
 	return i, err
 }
 
+const deleteCryptoKey = `-- name: DeleteCryptoKey :one
+UPDATE crypto_keys
+SET secret = NULL, secret_key_id = NULL
+WHERE feature = $1 AND sequence = $2 RETURNING feature, sequence, secret, secret_key_id, starts_at, deletes_at
+`
+
+type DeleteCryptoKeyParams struct {
+	Feature  CryptoKeyFeature `db:"feature" json:"feature"`
+	Sequence int32            `db:"sequence" json:"sequence"`
+}
+
+func (q *sqlQuerier) DeleteCryptoKey(ctx context.Context, arg DeleteCryptoKeyParams) (CryptoKey, error) {
+	row := q.db.QueryRowContext(ctx, deleteCryptoKey, arg.Feature, arg.Sequence)
+	var i CryptoKey
+	err := row.Scan(
+		&i.Feature,
+		&i.Sequence,
+		&i.Secret,
+		&i.SecretKeyID,
+		&i.StartsAt,
+		&i.DeletesAt,
+	)
+	return i, err
+}
+
+const getCryptoKeyByFeatureAndSequence = `-- name: GetCryptoKeyByFeatureAndSequence :one
+SELECT feature, sequence, secret, secret_key_id, starts_at, deletes_at
+FROM crypto_keys
+WHERE feature = $1
+  AND sequence = $2
+  AND secret IS NOT NULL
+`
+
+type GetCryptoKeyByFeatureAndSequenceParams struct {
+	Feature  CryptoKeyFeature `db:"feature" json:"feature"`
+	Sequence int32            `db:"sequence" json:"sequence"`
+}
+
+func (q *sqlQuerier) GetCryptoKeyByFeatureAndSequence(ctx context.Context, arg GetCryptoKeyByFeatureAndSequenceParams) (CryptoKey, error) {
+	row := q.db.QueryRowContext(ctx, getCryptoKeyByFeatureAndSequence, arg.Feature, arg.Sequence)
+	var i CryptoKey
+	err := row.Scan(
+		&i.Feature,
+		&i.Sequence,
+		&i.Secret,
+		&i.SecretKeyID,
+		&i.StartsAt,
+		&i.DeletesAt,
+	)
+	return i, err
+}
+
+const getCryptoKeys = `-- name: GetCryptoKeys :many
+SELECT feature, sequence, secret, secret_key_id, starts_at, deletes_at
+FROM crypto_keys
+WHERE secret IS NOT NULL
+`
+
+func (q *sqlQuerier) GetCryptoKeys(ctx context.Context) ([]CryptoKey, error) {
+	rows, err := q.db.QueryContext(ctx, getCryptoKeys)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []CryptoKey
+	for rows.Next() {
+		var i CryptoKey
+		if err := rows.Scan(
+			&i.Feature,
+			&i.Sequence,
+			&i.Secret,
+			&i.SecretKeyID,
+			&i.StartsAt,
+			&i.DeletesAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getLatestCryptoKeyByFeature = `-- name: GetLatestCryptoKeyByFeature :one
+SELECT feature, sequence, secret, secret_key_id, starts_at, deletes_at
+FROM crypto_keys
+WHERE feature = $1
+ORDER BY sequence DESC
+LIMIT 1
+`
+
+func (q *sqlQuerier) GetLatestCryptoKeyByFeature(ctx context.Context, feature CryptoKeyFeature) (CryptoKey, error) {
+	row := q.db.QueryRowContext(ctx, getLatestCryptoKeyByFeature, feature)
+	var i CryptoKey
+	err := row.Scan(
+		&i.Feature,
+		&i.Sequence,
+		&i.Secret,
+		&i.SecretKeyID,
+		&i.StartsAt,
+		&i.DeletesAt,
+	)
+	return i, err
+}
+
+const insertCryptoKey = `-- name: InsertCryptoKey :one
+INSERT INTO crypto_keys (
+    feature,
+    sequence,
+    secret,
+    starts_at,
+    secret_key_id
+) VALUES (
+    $1,
+    $2,
+    $3,
+    $4,
+    $5
+) RETURNING feature, sequence, secret, secret_key_id, starts_at, deletes_at
+`
+
+type InsertCryptoKeyParams struct {
+	Feature     CryptoKeyFeature `db:"feature" json:"feature"`
+	Sequence    int32            `db:"sequence" json:"sequence"`
+	Secret      sql.NullString   `db:"secret" json:"secret"`
+	StartsAt    time.Time        `db:"starts_at" json:"starts_at"`
+	SecretKeyID sql.NullString   `db:"secret_key_id" json:"secret_key_id"`
+}
+
+func (q *sqlQuerier) InsertCryptoKey(ctx context.Context, arg InsertCryptoKeyParams) (CryptoKey, error) {
+	row := q.db.QueryRowContext(ctx, insertCryptoKey,
+		arg.Feature,
+		arg.Sequence,
+		arg.Secret,
+		arg.StartsAt,
+		arg.SecretKeyID,
+	)
+	var i CryptoKey
+	err := row.Scan(
+		&i.Feature,
+		&i.Sequence,
+		&i.Secret,
+		&i.SecretKeyID,
+		&i.StartsAt,
+		&i.DeletesAt,
+	)
+	return i, err
+}
+
+const updateCryptoKeyDeletesAt = `-- name: UpdateCryptoKeyDeletesAt :one
+UPDATE crypto_keys
+SET deletes_at = $3
+WHERE feature = $1 AND sequence = $2 RETURNING feature, sequence, secret, secret_key_id, starts_at, deletes_at
+`
+
+type UpdateCryptoKeyDeletesAtParams struct {
+	Feature   CryptoKeyFeature `db:"feature" json:"feature"`
+	Sequence  int32            `db:"sequence" json:"sequence"`
+	DeletesAt sql.NullTime     `db:"deletes_at" json:"deletes_at"`
+}
+
+func (q *sqlQuerier) UpdateCryptoKeyDeletesAt(ctx context.Context, arg UpdateCryptoKeyDeletesAtParams) (CryptoKey, error) {
+	row := q.db.QueryRowContext(ctx, updateCryptoKeyDeletesAt, arg.Feature, arg.Sequence, arg.DeletesAt)
+	var i CryptoKey
+	err := row.Scan(
+		&i.Feature,
+		&i.Sequence,
+		&i.Secret,
+		&i.SecretKeyID,
+		&i.StartsAt,
+		&i.DeletesAt,
+	)
+	return i, err
+}
+
 const getDBCryptKeys = `-- name: GetDBCryptKeys :many
 SELECT number, active_key_digest, revoked_key_digest, created_at, revoked_at, test FROM dbcrypt_keys ORDER BY number ASC
 `
@@ -1446,6 +1626,56 @@ func (q *sqlQuerier) InsertGroupMember(ctx context.Context, arg InsertGroupMembe
 	return err
 }
 
+const insertUserGroupsByID = `-- name: InsertUserGroupsByID :many
+WITH groups AS (
+	SELECT
+		id
+	FROM
+		groups
+	WHERE
+		groups.id = ANY($2 :: uuid [])
+)
+INSERT INTO
+	group_members (user_id, group_id)
+SELECT
+	$1,
+	groups.id
+FROM
+	groups
+ON CONFLICT DO NOTHING
+RETURNING group_id
+`
+
+type InsertUserGroupsByIDParams struct {
+	UserID   uuid.UUID   `db:"user_id" json:"user_id"`
+	GroupIds []uuid.UUID `db:"group_ids" json:"group_ids"`
+}
+
+// InsertUserGroupsByID adds a user to all provided groups, if they exist.
+// If there is a conflict, the user is already a member
+func (q *sqlQuerier) InsertUserGroupsByID(ctx context.Context, arg InsertUserGroupsByIDParams) ([]uuid.UUID, error) {
+	rows, err := q.db.QueryContext(ctx, insertUserGroupsByID, arg.UserID, pq.Array(arg.GroupIds))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []uuid.UUID
+	for rows.Next() {
+		var group_id uuid.UUID
+		if err := rows.Scan(&group_id); err != nil {
+			return nil, err
+		}
+		items = append(items, group_id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const insertUserGroupsByName = `-- name: InsertUserGroupsByName :exec
 WITH groups AS (
     SELECT
@@ -1487,6 +1717,43 @@ WHERE
 func (q *sqlQuerier) RemoveUserFromAllGroups(ctx context.Context, userID uuid.UUID) error {
 	_, err := q.db.ExecContext(ctx, removeUserFromAllGroups, userID)
 	return err
+}
+
+const removeUserFromGroups = `-- name: RemoveUserFromGroups :many
+DELETE FROM
+	group_members
+WHERE
+	user_id = $1 AND
+	group_id = ANY($2 :: uuid [])
+RETURNING group_id
+`
+
+type RemoveUserFromGroupsParams struct {
+	UserID   uuid.UUID   `db:"user_id" json:"user_id"`
+	GroupIds []uuid.UUID `db:"group_ids" json:"group_ids"`
+}
+
+func (q *sqlQuerier) RemoveUserFromGroups(ctx context.Context, arg RemoveUserFromGroupsParams) ([]uuid.UUID, error) {
+	rows, err := q.db.QueryContext(ctx, removeUserFromGroups, arg.UserID, pq.Array(arg.GroupIds))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []uuid.UUID
+	for rows.Next() {
+		var group_id uuid.UUID
+		if err := rows.Scan(&group_id); err != nil {
+			return nil, err
+		}
+		items = append(items, group_id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const deleteGroupByID = `-- name: DeleteGroupByID :exec
@@ -1592,11 +1859,21 @@ WHERE
 						)
 				ELSE true
 		END
+		AND CASE WHEN array_length($3 :: text[], 1) > 0  THEN
+				groups.name = ANY($3)
+			ELSE true
+		END
+		AND CASE WHEN array_length($4 :: uuid[], 1) > 0  THEN
+				groups.id = ANY($4)
+			ELSE true
+		END
 `
 
 type GetGroupsParams struct {
-	OrganizationID uuid.UUID `db:"organization_id" json:"organization_id"`
-	HasMemberID    uuid.UUID `db:"has_member_id" json:"has_member_id"`
+	OrganizationID uuid.UUID   `db:"organization_id" json:"organization_id"`
+	HasMemberID    uuid.UUID   `db:"has_member_id" json:"has_member_id"`
+	GroupNames     []string    `db:"group_names" json:"group_names"`
+	GroupIds       []uuid.UUID `db:"group_ids" json:"group_ids"`
 }
 
 type GetGroupsRow struct {
@@ -1606,7 +1883,12 @@ type GetGroupsRow struct {
 }
 
 func (q *sqlQuerier) GetGroups(ctx context.Context, arg GetGroupsParams) ([]GetGroupsRow, error) {
-	rows, err := q.db.QueryContext(ctx, getGroups, arg.OrganizationID, arg.HasMemberID)
+	rows, err := q.db.QueryContext(ctx, getGroups,
+		arg.OrganizationID,
+		arg.HasMemberID,
+		pq.Array(arg.GroupNames),
+		pq.Array(arg.GroupIds),
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -3499,6 +3781,7 @@ func (q *sqlQuerier) EnqueueNotificationMessage(ctx context.Context, arg Enqueue
 
 const fetchNewMessageMetadata = `-- name: FetchNewMessageMetadata :one
 SELECT nt.name                                                    AS notification_name,
+       nt.id                                                      AS notification_template_id,
        nt.actions                                                 AS actions,
        nt.method                                                  AS custom_method,
        u.id                                                       AS user_id,
@@ -3517,13 +3800,14 @@ type FetchNewMessageMetadataParams struct {
 }
 
 type FetchNewMessageMetadataRow struct {
-	NotificationName string                 `db:"notification_name" json:"notification_name"`
-	Actions          []byte                 `db:"actions" json:"actions"`
-	CustomMethod     NullNotificationMethod `db:"custom_method" json:"custom_method"`
-	UserID           uuid.UUID              `db:"user_id" json:"user_id"`
-	UserEmail        string                 `db:"user_email" json:"user_email"`
-	UserName         string                 `db:"user_name" json:"user_name"`
-	UserUsername     string                 `db:"user_username" json:"user_username"`
+	NotificationName       string                 `db:"notification_name" json:"notification_name"`
+	NotificationTemplateID uuid.UUID              `db:"notification_template_id" json:"notification_template_id"`
+	Actions                []byte                 `db:"actions" json:"actions"`
+	CustomMethod           NullNotificationMethod `db:"custom_method" json:"custom_method"`
+	UserID                 uuid.UUID              `db:"user_id" json:"user_id"`
+	UserEmail              string                 `db:"user_email" json:"user_email"`
+	UserName               string                 `db:"user_name" json:"user_name"`
+	UserUsername           string                 `db:"user_username" json:"user_username"`
 }
 
 // This is used to build up the notification_message's JSON payload.
@@ -3532,6 +3816,7 @@ func (q *sqlQuerier) FetchNewMessageMetadata(ctx context.Context, arg FetchNewMe
 	var i FetchNewMessageMetadataRow
 	err := row.Scan(
 		&i.NotificationName,
+		&i.NotificationTemplateID,
 		&i.Actions,
 		&i.CustomMethod,
 		&i.UserID,
@@ -4866,7 +5151,7 @@ func (q *sqlQuerier) DeleteOldProvisionerDaemons(ctx context.Context) error {
 
 const getProvisionerDaemons = `-- name: GetProvisionerDaemons :many
 SELECT
-	id, created_at, name, provisioners, replica_id, tags, last_seen_at, version, api_version, organization_id
+	id, created_at, name, provisioners, replica_id, tags, last_seen_at, version, api_version, organization_id, key_id
 FROM
 	provisioner_daemons
 `
@@ -4891,6 +5176,7 @@ func (q *sqlQuerier) GetProvisionerDaemons(ctx context.Context) ([]ProvisionerDa
 			&i.Version,
 			&i.APIVersion,
 			&i.OrganizationID,
+			&i.KeyID,
 		); err != nil {
 			return nil, err
 		}
@@ -4907,7 +5193,7 @@ func (q *sqlQuerier) GetProvisionerDaemons(ctx context.Context) ([]ProvisionerDa
 
 const getProvisionerDaemonsByOrganization = `-- name: GetProvisionerDaemonsByOrganization :many
 SELECT
-	id, created_at, name, provisioners, replica_id, tags, last_seen_at, version, api_version, organization_id
+	id, created_at, name, provisioners, replica_id, tags, last_seen_at, version, api_version, organization_id, key_id
 FROM
 	provisioner_daemons
 WHERE
@@ -4934,6 +5220,7 @@ func (q *sqlQuerier) GetProvisionerDaemonsByOrganization(ctx context.Context, or
 			&i.Version,
 			&i.APIVersion,
 			&i.OrganizationID,
+			&i.KeyID,
 		); err != nil {
 			return nil, err
 		}
@@ -4979,7 +5266,8 @@ INSERT INTO
 		last_seen_at,
 		"version",
 		organization_id,
-		api_version
+		api_version,
+		key_id
 	)
 VALUES (
 	gen_random_uuid(),
@@ -4990,15 +5278,17 @@ VALUES (
 	$5,
 	$6,
 	$7,
-	$8
+	$8,
+	$9
 ) ON CONFLICT("organization_id", "name", LOWER(COALESCE(tags ->> 'owner'::text, ''::text))) DO UPDATE SET
 	provisioners = $3,
 	tags = $4,
 	last_seen_at = $5,
 	"version" = $6,
 	api_version = $8,
-	organization_id = $7
-RETURNING id, created_at, name, provisioners, replica_id, tags, last_seen_at, version, api_version, organization_id
+	organization_id = $7,
+	key_id = $9
+RETURNING id, created_at, name, provisioners, replica_id, tags, last_seen_at, version, api_version, organization_id, key_id
 `
 
 type UpsertProvisionerDaemonParams struct {
@@ -5010,6 +5300,7 @@ type UpsertProvisionerDaemonParams struct {
 	Version        string            `db:"version" json:"version"`
 	OrganizationID uuid.UUID         `db:"organization_id" json:"organization_id"`
 	APIVersion     string            `db:"api_version" json:"api_version"`
+	KeyID          uuid.UUID         `db:"key_id" json:"key_id"`
 }
 
 func (q *sqlQuerier) UpsertProvisionerDaemon(ctx context.Context, arg UpsertProvisionerDaemonParams) (ProvisionerDaemon, error) {
@@ -5022,6 +5313,7 @@ func (q *sqlQuerier) UpsertProvisionerDaemon(ctx context.Context, arg UpsertProv
 		arg.Version,
 		arg.OrganizationID,
 		arg.APIVersion,
+		arg.KeyID,
 	)
 	var i ProvisionerDaemon
 	err := row.Scan(
@@ -5035,6 +5327,7 @@ func (q *sqlQuerier) UpsertProvisionerDaemon(ctx context.Context, arg UpsertProv
 		&i.Version,
 		&i.APIVersion,
 		&i.OrganizationID,
+		&i.KeyID,
 	)
 	return i, err
 }
@@ -5315,6 +5608,43 @@ func (q *sqlQuerier) GetProvisionerJobByID(ctx context.Context, id uuid.UUID) (P
 		&i.JobStatus,
 	)
 	return i, err
+}
+
+const getProvisionerJobTimingsByJobID = `-- name: GetProvisionerJobTimingsByJobID :many
+SELECT job_id, started_at, ended_at, stage, source, action, resource FROM provisioner_job_timings
+WHERE job_id = $1
+ORDER BY started_at ASC
+`
+
+func (q *sqlQuerier) GetProvisionerJobTimingsByJobID(ctx context.Context, jobID uuid.UUID) ([]ProvisionerJobTiming, error) {
+	rows, err := q.db.QueryContext(ctx, getProvisionerJobTimingsByJobID, jobID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ProvisionerJobTiming
+	for rows.Next() {
+		var i ProvisionerJobTiming
+		if err := rows.Scan(
+			&i.JobID,
+			&i.StartedAt,
+			&i.EndedAt,
+			&i.Stage,
+			&i.Source,
+			&i.Action,
+			&i.Resource,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const getProvisionerJobsByIDs = `-- name: GetProvisionerJobsByIDs :many
@@ -5851,6 +6181,54 @@ WHERE
 
 func (q *sqlQuerier) ListProvisionerKeysByOrganization(ctx context.Context, organizationID uuid.UUID) ([]ProvisionerKey, error) {
 	rows, err := q.db.QueryContext(ctx, listProvisionerKeysByOrganization, organizationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ProvisionerKey
+	for rows.Next() {
+		var i ProvisionerKey
+		if err := rows.Scan(
+			&i.ID,
+			&i.CreatedAt,
+			&i.OrganizationID,
+			&i.Name,
+			&i.HashedSecret,
+			&i.Tags,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listProvisionerKeysByOrganizationExcludeReserved = `-- name: ListProvisionerKeysByOrganizationExcludeReserved :many
+SELECT
+    id, created_at, organization_id, name, hashed_secret, tags
+FROM
+    provisioner_keys
+WHERE
+    organization_id = $1
+AND
+    -- exclude reserved built-in key
+    id != '00000000-0000-0000-0000-000000000001'::uuid
+AND 
+    -- exclude reserved user-auth key
+    id != '00000000-0000-0000-0000-000000000002'::uuid
+AND 
+    -- exclude reserved psk key
+    id != '00000000-0000-0000-0000-000000000003'::uuid
+`
+
+func (q *sqlQuerier) ListProvisionerKeysByOrganizationExcludeReserved(ctx context.Context, organizationID uuid.UUID) ([]ProvisionerKey, error) {
+	rows, err := q.db.QueryContext(ctx, listProvisionerKeysByOrganizationExcludeReserved, organizationID)
 	if err != nil {
 		return nil, err
 	}

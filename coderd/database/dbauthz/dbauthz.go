@@ -253,6 +253,7 @@ var (
 					rbac.ResourceDeploymentConfig.Type:       {policy.ActionCreate, policy.ActionUpdate, policy.ActionDelete},
 					rbac.ResourceNotificationPreference.Type: {policy.ActionCreate, policy.ActionUpdate, policy.ActionDelete},
 					rbac.ResourceNotificationTemplate.Type:   {policy.ActionCreate, policy.ActionUpdate, policy.ActionDelete},
+					rbac.ResourceCryptoKey.Type:              {policy.ActionCreate, policy.ActionUpdate, policy.ActionDelete},
 				}),
 				Org:  map[string][]rbac.Permission{},
 				User: []rbac.Permission{},
@@ -1041,6 +1042,13 @@ func (q *querier) DeleteCoordinator(ctx context.Context, id uuid.UUID) error {
 	return q.db.DeleteCoordinator(ctx, id)
 }
 
+func (q *querier) DeleteCryptoKey(ctx context.Context, arg database.DeleteCryptoKeyParams) (database.CryptoKey, error) {
+	if err := q.authorizeContext(ctx, policy.ActionDelete, rbac.ResourceCryptoKey); err != nil {
+		return database.CryptoKey{}, err
+	}
+	return q.db.DeleteCryptoKey(ctx, arg)
+}
+
 func (q *querier) DeleteCustomRole(ctx context.Context, arg database.DeleteCustomRoleParams) error {
 	if arg.OrganizationID.UUID != uuid.Nil {
 		if err := q.authorizeContext(ctx, policy.ActionDelete, rbac.ResourceAssignOrgRole.InOrg(arg.OrganizationID.UUID)); err != nil {
@@ -1383,6 +1391,20 @@ func (q *querier) GetCoordinatorResumeTokenSigningKey(ctx context.Context) (stri
 	return q.db.GetCoordinatorResumeTokenSigningKey(ctx)
 }
 
+func (q *querier) GetCryptoKeyByFeatureAndSequence(ctx context.Context, arg database.GetCryptoKeyByFeatureAndSequenceParams) (database.CryptoKey, error) {
+	if err := q.authorizeContext(ctx, policy.ActionRead, rbac.ResourceCryptoKey); err != nil {
+		return database.CryptoKey{}, err
+	}
+	return q.db.GetCryptoKeyByFeatureAndSequence(ctx, arg)
+}
+
+func (q *querier) GetCryptoKeys(ctx context.Context) ([]database.CryptoKey, error) {
+	if err := q.authorizeContext(ctx, policy.ActionRead, rbac.ResourceCryptoKey); err != nil {
+		return nil, err
+	}
+	return q.db.GetCryptoKeys(ctx)
+}
+
 func (q *querier) GetDBCryptKeys(ctx context.Context) ([]database.DBCryptKey, error) {
 	if err := q.authorizeContext(ctx, policy.ActionRead, rbac.ResourceSystem); err != nil {
 		return nil, err
@@ -1547,6 +1569,13 @@ func (q *querier) GetLastUpdateCheck(ctx context.Context) (string, error) {
 		return "", err
 	}
 	return q.db.GetLastUpdateCheck(ctx)
+}
+
+func (q *querier) GetLatestCryptoKeyByFeature(ctx context.Context, feature database.CryptoKeyFeature) (database.CryptoKey, error) {
+	if err := q.authorizeContext(ctx, policy.ActionRead, rbac.ResourceCryptoKey); err != nil {
+		return database.CryptoKey{}, err
+	}
+	return q.db.GetLatestCryptoKeyByFeature(ctx, feature)
 }
 
 func (q *querier) GetLatestWorkspaceBuildByWorkspaceID(ctx context.Context, workspaceID uuid.UUID) (database.WorkspaceBuild, error) {
@@ -1789,6 +1818,14 @@ func (q *querier) GetProvisionerJobByID(ctx context.Context, id uuid.UUID) (data
 	}
 
 	return job, nil
+}
+
+func (q *querier) GetProvisionerJobTimingsByJobID(ctx context.Context, jobID uuid.UUID) ([]database.ProvisionerJobTiming, error) {
+	_, err := q.GetProvisionerJobByID(ctx, jobID)
+	if err != nil {
+		return nil, err
+	}
+	return q.db.GetProvisionerJobTimingsByJobID(ctx, jobID)
 }
 
 // TODO: we need to add a provisioner job resource
@@ -2654,6 +2691,13 @@ func (q *querier) InsertAuditLog(ctx context.Context, arg database.InsertAuditLo
 	return insert(q.log, q.auth, rbac.ResourceAuditLog, q.db.InsertAuditLog)(ctx, arg)
 }
 
+func (q *querier) InsertCryptoKey(ctx context.Context, arg database.InsertCryptoKeyParams) (database.CryptoKey, error) {
+	if err := q.authorizeContext(ctx, policy.ActionCreate, rbac.ResourceCryptoKey); err != nil {
+		return database.CryptoKey{}, err
+	}
+	return q.db.InsertCryptoKey(ctx, arg)
+}
+
 func (q *querier) InsertCustomRole(ctx context.Context, arg database.InsertCustomRoleParams) (database.CustomRole, error) {
 	// Org and site role upsert share the same query. So switch the assertion based on the org uuid.
 	if arg.OrganizationID.UUID != uuid.Nil {
@@ -2892,6 +2936,14 @@ func (q *querier) InsertUser(ctx context.Context, arg database.InsertUserParams)
 	return insert(q.log, q.auth, obj, q.db.InsertUser)(ctx, arg)
 }
 
+func (q *querier) InsertUserGroupsByID(ctx context.Context, arg database.InsertUserGroupsByIDParams) ([]uuid.UUID, error) {
+	// This is used by OIDC sync. So only used by a system user.
+	if err := q.authorizeContext(ctx, policy.ActionUpdate, rbac.ResourceSystem); err != nil {
+		return nil, err
+	}
+	return q.db.InsertUserGroupsByID(ctx, arg)
+}
+
 func (q *querier) InsertUserGroupsByName(ctx context.Context, arg database.InsertUserGroupsByNameParams) error {
 	// This will add the user to all named groups. This counts as updating a group.
 	// NOTE: instead of checking if the user has permission to update each group, we instead
@@ -3054,6 +3106,10 @@ func (q *querier) ListProvisionerKeysByOrganization(ctx context.Context, organiz
 	return fetchWithPostFilter(q.auth, policy.ActionRead, q.db.ListProvisionerKeysByOrganization)(ctx, organizationID)
 }
 
+func (q *querier) ListProvisionerKeysByOrganizationExcludeReserved(ctx context.Context, organizationID uuid.UUID) ([]database.ProvisionerKey, error) {
+	return fetchWithPostFilter(q.auth, policy.ActionRead, q.db.ListProvisionerKeysByOrganizationExcludeReserved)(ctx, organizationID)
+}
+
 func (q *querier) ListWorkspaceAgentPortShares(ctx context.Context, workspaceID uuid.UUID) ([]database.WorkspaceAgentPortShare, error) {
 	workspace, err := q.db.GetWorkspaceByID(ctx, workspaceID)
 	if err != nil {
@@ -3100,6 +3156,14 @@ func (q *querier) RemoveUserFromAllGroups(ctx context.Context, userID uuid.UUID)
 	return q.db.RemoveUserFromAllGroups(ctx, userID)
 }
 
+func (q *querier) RemoveUserFromGroups(ctx context.Context, arg database.RemoveUserFromGroupsParams) ([]uuid.UUID, error) {
+	// This is a system function to clear user groups in group sync.
+	if err := q.authorizeContext(ctx, policy.ActionUpdate, rbac.ResourceSystem); err != nil {
+		return nil, err
+	}
+	return q.db.RemoveUserFromGroups(ctx, arg)
+}
+
 func (q *querier) RevokeDBCryptKey(ctx context.Context, activeKeyDigest string) error {
 	if err := q.authorizeContext(ctx, policy.ActionUpdate, rbac.ResourceSystem); err != nil {
 		return err
@@ -3139,6 +3203,13 @@ func (q *querier) UpdateAPIKeyByID(ctx context.Context, arg database.UpdateAPIKe
 		return q.db.GetAPIKeyByID(ctx, arg.ID)
 	}
 	return update(q.log, q.auth, fetch, q.db.UpdateAPIKeyByID)(ctx, arg)
+}
+
+func (q *querier) UpdateCryptoKeyDeletesAt(ctx context.Context, arg database.UpdateCryptoKeyDeletesAtParams) (database.CryptoKey, error) {
+	if err := q.authorizeContext(ctx, policy.ActionUpdate, rbac.ResourceCryptoKey); err != nil {
+		return database.CryptoKey{}, err
+	}
+	return q.db.UpdateCryptoKeyDeletesAt(ctx, arg)
 }
 
 func (q *querier) UpdateCustomRole(ctx context.Context, arg database.UpdateCustomRoleParams) (database.CustomRole, error) {

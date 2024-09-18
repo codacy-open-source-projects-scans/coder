@@ -214,6 +214,13 @@ func (m metricsStore) DeleteCoordinator(ctx context.Context, id uuid.UUID) error
 	return r0
 }
 
+func (m metricsStore) DeleteCryptoKey(ctx context.Context, arg database.DeleteCryptoKeyParams) (database.CryptoKey, error) {
+	start := time.Now()
+	r0, r1 := m.s.DeleteCryptoKey(ctx, arg)
+	m.queryLatencies.WithLabelValues("DeleteCryptoKey").Observe(time.Since(start).Seconds())
+	return r0, r1
+}
+
 func (m metricsStore) DeleteCustomRole(ctx context.Context, arg database.DeleteCustomRoleParams) error {
 	start := time.Now()
 	r0 := m.s.DeleteCustomRole(ctx, arg)
@@ -543,6 +550,20 @@ func (m metricsStore) GetCoordinatorResumeTokenSigningKey(ctx context.Context) (
 	return r0, r1
 }
 
+func (m metricsStore) GetCryptoKeyByFeatureAndSequence(ctx context.Context, arg database.GetCryptoKeyByFeatureAndSequenceParams) (database.CryptoKey, error) {
+	start := time.Now()
+	r0, r1 := m.s.GetCryptoKeyByFeatureAndSequence(ctx, arg)
+	m.queryLatencies.WithLabelValues("GetCryptoKeyByFeatureAndSequence").Observe(time.Since(start).Seconds())
+	return r0, r1
+}
+
+func (m metricsStore) GetCryptoKeys(ctx context.Context) ([]database.CryptoKey, error) {
+	start := time.Now()
+	r0, r1 := m.s.GetCryptoKeys(ctx)
+	m.queryLatencies.WithLabelValues("GetCryptoKeys").Observe(time.Since(start).Seconds())
+	return r0, r1
+}
+
 func (m metricsStore) GetDBCryptKeys(ctx context.Context) ([]database.DBCryptKey, error) {
 	start := time.Now()
 	r0, r1 := m.s.GetDBCryptKeys(ctx)
@@ -709,6 +730,13 @@ func (m metricsStore) GetLastUpdateCheck(ctx context.Context) (string, error) {
 	version, err := m.s.GetLastUpdateCheck(ctx)
 	m.queryLatencies.WithLabelValues("GetLastUpdateCheck").Observe(time.Since(start).Seconds())
 	return version, err
+}
+
+func (m metricsStore) GetLatestCryptoKeyByFeature(ctx context.Context, feature database.CryptoKeyFeature) (database.CryptoKey, error) {
+	start := time.Now()
+	r0, r1 := m.s.GetLatestCryptoKeyByFeature(ctx, feature)
+	m.queryLatencies.WithLabelValues("GetLatestCryptoKeyByFeature").Observe(time.Since(start).Seconds())
+	return r0, r1
 }
 
 func (m metricsStore) GetLatestWorkspaceBuildByWorkspaceID(ctx context.Context, workspaceID uuid.UUID) (database.WorkspaceBuild, error) {
@@ -919,6 +947,13 @@ func (m metricsStore) GetProvisionerJobByID(ctx context.Context, id uuid.UUID) (
 	job, err := m.s.GetProvisionerJobByID(ctx, id)
 	m.queryLatencies.WithLabelValues("GetProvisionerJobByID").Observe(time.Since(start).Seconds())
 	return job, err
+}
+
+func (m metricsStore) GetProvisionerJobTimingsByJobID(ctx context.Context, jobID uuid.UUID) ([]database.ProvisionerJobTiming, error) {
+	start := time.Now()
+	r0, r1 := m.s.GetProvisionerJobTimingsByJobID(ctx, jobID)
+	m.queryLatencies.WithLabelValues("GetProvisionerJobTimingsByJobID").Observe(time.Since(start).Seconds())
+	return r0, r1
 }
 
 func (m metricsStore) GetProvisionerJobsByIDs(ctx context.Context, ids []uuid.UUID) ([]database.ProvisionerJob, error) {
@@ -1593,6 +1628,13 @@ func (m metricsStore) InsertAuditLog(ctx context.Context, arg database.InsertAud
 	return log, err
 }
 
+func (m metricsStore) InsertCryptoKey(ctx context.Context, arg database.InsertCryptoKeyParams) (database.CryptoKey, error) {
+	start := time.Now()
+	key, err := m.s.InsertCryptoKey(ctx, arg)
+	m.queryLatencies.WithLabelValues("InsertCryptoKey").Observe(time.Since(start).Seconds())
+	return key, err
+}
+
 func (m metricsStore) InsertCustomRole(ctx context.Context, arg database.InsertCustomRoleParams) (database.CustomRole, error) {
 	start := time.Now()
 	r0, r1 := m.s.InsertCustomRole(ctx, arg)
@@ -1789,6 +1831,13 @@ func (m metricsStore) InsertUser(ctx context.Context, arg database.InsertUserPar
 	return user, err
 }
 
+func (m metricsStore) InsertUserGroupsByID(ctx context.Context, arg database.InsertUserGroupsByIDParams) ([]uuid.UUID, error) {
+	start := time.Now()
+	r0, r1 := m.s.InsertUserGroupsByID(ctx, arg)
+	m.queryLatencies.WithLabelValues("InsertUserGroupsByID").Observe(time.Since(start).Seconds())
+	return r0, r1
+}
+
 func (m metricsStore) InsertUserGroupsByName(ctx context.Context, arg database.InsertUserGroupsByNameParams) error {
 	start := time.Now()
 	err := m.s.InsertUserGroupsByName(ctx, arg)
@@ -1908,6 +1957,13 @@ func (m metricsStore) ListProvisionerKeysByOrganization(ctx context.Context, org
 	return r0, r1
 }
 
+func (m metricsStore) ListProvisionerKeysByOrganizationExcludeReserved(ctx context.Context, organizationID uuid.UUID) ([]database.ProvisionerKey, error) {
+	start := time.Now()
+	r0, r1 := m.s.ListProvisionerKeysByOrganizationExcludeReserved(ctx, organizationID)
+	m.queryLatencies.WithLabelValues("ListProvisionerKeysByOrganizationExcludeReserved").Observe(time.Since(start).Seconds())
+	return r0, r1
+}
+
 func (m metricsStore) ListWorkspaceAgentPortShares(ctx context.Context, workspaceID uuid.UUID) ([]database.WorkspaceAgentPortShare, error) {
 	start := time.Now()
 	r0, r1 := m.s.ListWorkspaceAgentPortShares(ctx, workspaceID)
@@ -1943,6 +1999,13 @@ func (m metricsStore) RemoveUserFromAllGroups(ctx context.Context, userID uuid.U
 	return r0
 }
 
+func (m metricsStore) RemoveUserFromGroups(ctx context.Context, arg database.RemoveUserFromGroupsParams) ([]uuid.UUID, error) {
+	start := time.Now()
+	r0, r1 := m.s.RemoveUserFromGroups(ctx, arg)
+	m.queryLatencies.WithLabelValues("RemoveUserFromGroups").Observe(time.Since(start).Seconds())
+	return r0, r1
+}
+
 func (m metricsStore) RevokeDBCryptKey(ctx context.Context, activeKeyDigest string) error {
 	start := time.Now()
 	r0 := m.s.RevokeDBCryptKey(ctx, activeKeyDigest)
@@ -1976,6 +2039,13 @@ func (m metricsStore) UpdateAPIKeyByID(ctx context.Context, arg database.UpdateA
 	err := m.s.UpdateAPIKeyByID(ctx, arg)
 	m.queryLatencies.WithLabelValues("UpdateAPIKeyByID").Observe(time.Since(start).Seconds())
 	return err
+}
+
+func (m metricsStore) UpdateCryptoKeyDeletesAt(ctx context.Context, arg database.UpdateCryptoKeyDeletesAtParams) (database.CryptoKey, error) {
+	start := time.Now()
+	key, err := m.s.UpdateCryptoKeyDeletesAt(ctx, arg)
+	m.queryLatencies.WithLabelValues("UpdateCryptoKeyDeletesAt").Observe(time.Since(start).Seconds())
+	return key, err
 }
 
 func (m metricsStore) UpdateCustomRole(ctx context.Context, arg database.UpdateCustomRoleParams) (database.CustomRole, error) {
