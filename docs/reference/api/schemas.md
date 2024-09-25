@@ -391,6 +391,7 @@
 		}
 	],
 	"application_name": "string",
+	"docs_url": "string",
 	"logo_url": "string",
 	"service_banner": {
 		"background_color": "string",
@@ -413,6 +414,7 @@
 | ---------------------- | ------------------------------------------------------- | -------- | ------------ | ------------------------------------------------------------------- |
 | `announcement_banners` | array of [codersdk.BannerConfig](#codersdkbannerconfig) | false    |              |                                                                     |
 | `application_name`     | string                                                  | false    |              |                                                                     |
+| `docs_url`             | string                                                  | false    |              |                                                                     |
 | `logo_url`             | string                                                  | false    |              |                                                                     |
 | `service_banner`       | [codersdk.BannerConfig](#codersdkbannerconfig)          | false    |              | Deprecated: ServiceBanner has been replaced by AnnouncementBanners. |
 | `support_links`        | array of [codersdk.LinkConfig](#codersdklinkconfig)     | false    |              |                                                                     |
@@ -1902,6 +1904,7 @@ CreateWorkspaceRequest provides options for creating a new workspace. Only one o
 		"secure_auth_cookie": true,
 		"session_lifetime": {
 			"default_duration": 0,
+			"default_token_lifetime": 0,
 			"disable_expiry_refresh": true,
 			"max_token_lifetime": 0
 		},
@@ -2328,6 +2331,7 @@ CreateWorkspaceRequest provides options for creating a new workspace. Only one o
 	"secure_auth_cookie": true,
 	"session_lifetime": {
 		"default_duration": 0,
+		"default_token_lifetime": 0,
 		"disable_expiry_refresh": true,
 		"max_token_lifetime": 0
 	},
@@ -4772,6 +4776,7 @@ CreateWorkspaceRequest provides options for creating a new workspace. Only one o
 ```json
 {
 	"default_duration": 0,
+	"default_token_lifetime": 0,
 	"disable_expiry_refresh": true,
 	"max_token_lifetime": 0
 }
@@ -4781,7 +4786,8 @@ CreateWorkspaceRequest provides options for creating a new workspace. Only one o
 
 | Name                     | Type    | Required | Restrictions | Description                                                                                                                                                                        |
 | ------------------------ | ------- | -------- | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `default_duration`       | integer | false    |              | Default duration is for api keys, not tokens.                                                                                                                                      |
+| `default_duration`       | integer | false    |              | Default duration is only for browser, workspace app and oauth sessions.                                                                                                            |
+| `default_token_lifetime` | integer | false    |              |                                                                                                                                                                                    |
 | `disable_expiry_refresh` | boolean | false    |              | Disable expiry refresh will disable automatically refreshing api keys when they are used from the api. This means the api key lifetime at creation is the lifetime of the api key. |
 | `max_token_lifetime`     | integer | false    |              |                                                                                                                                                                                    |
 
@@ -6448,6 +6454,8 @@ If the schedule is empty, the user will be updated to use the default schedule.|
 						"scripts": [
 							{
 								"cron": "string",
+								"display_name": "string",
+								"id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
 								"log_path": "string",
 								"log_source_id": "4197ab25-95cf-4b91-9c78-f7f2af5d353a",
 								"run_on_start": true,
@@ -6627,6 +6635,8 @@ If the schedule is empty, the user will be updated to use the default schedule.|
 	"scripts": [
 		{
 			"cron": "string",
+			"display_name": "string",
+			"id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
 			"log_path": "string",
 			"log_source_id": "4197ab25-95cf-4b91-9c78-f7f2af5d353a",
 			"run_on_start": true,
@@ -6895,6 +6905,8 @@ If the schedule is empty, the user will be updated to use the default schedule.|
 ```json
 {
 	"cron": "string",
+	"display_name": "string",
+	"id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
 	"log_path": "string",
 	"log_source_id": "4197ab25-95cf-4b91-9c78-f7f2af5d353a",
 	"run_on_start": true,
@@ -6910,6 +6922,8 @@ If the schedule is empty, the user will be updated to use the default schedule.|
 | Name                 | Type    | Required | Restrictions | Description |
 | -------------------- | ------- | -------- | ------------ | ----------- |
 | `cron`               | string  | false    |              |             |
+| `display_name`       | string  | false    |              |             |
+| `id`                 | string  | false    |              |             |
 | `log_path`           | string  | false    |              |             |
 | `log_source_id`      | string  | false    |              |             |
 | `run_on_start`       | boolean | false    |              |             |
@@ -7138,6 +7152,8 @@ If the schedule is empty, the user will be updated to use the default schedule.|
 					"scripts": [
 						{
 							"cron": "string",
+							"display_name": "string",
+							"id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
 							"log_path": "string",
 							"log_source_id": "4197ab25-95cf-4b91-9c78-f7f2af5d353a",
 							"run_on_start": true,
@@ -7473,6 +7489,8 @@ If the schedule is empty, the user will be updated to use the default schedule.|
 			"scripts": [
 				{
 					"cron": "string",
+					"display_name": "string",
+					"id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
 					"log_path": "string",
 					"log_source_id": "4197ab25-95cf-4b91-9c78-f7f2af5d353a",
 					"run_on_start": true,
@@ -7733,6 +7751,8 @@ If the schedule is empty, the user will be updated to use the default schedule.|
 								"scripts": [
 									{
 										"cron": "string",
+										"display_name": "string",
+										"id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
 										"log_path": "string",
 										"log_source_id": "4197ab25-95cf-4b91-9c78-f7f2af5d353a",
 										"run_on_start": true,

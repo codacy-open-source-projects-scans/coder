@@ -216,6 +216,23 @@ CREATE TYPE workspace_agent_lifecycle_state AS ENUM (
     'off'
 );
 
+CREATE TYPE workspace_agent_script_timing_stage AS ENUM (
+    'start',
+    'stop',
+    'cron'
+);
+
+COMMENT ON TYPE workspace_agent_script_timing_stage IS 'What stage the script was ran in.';
+
+CREATE TYPE workspace_agent_script_timing_status AS ENUM (
+    'ok',
+    'exit_failure',
+    'timed_out',
+    'pipes_left_open'
+);
+
+COMMENT ON TYPE workspace_agent_script_timing_status IS 'What the exit status of the script is.';
+
 CREATE TYPE workspace_agent_subsystem AS ENUM (
     'envbuilder',
     'envbox',
@@ -750,6 +767,13 @@ CREATE TABLE notification_preferences (
     created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
+
+CREATE TABLE notification_report_generator_logs (
+    notification_template_id uuid NOT NULL,
+    last_generated_at timestamp with time zone NOT NULL
+);
+
+COMMENT ON TABLE notification_report_generator_logs IS 'Log of generated reports for users.';
 
 CREATE TABLE notification_templates (
     id uuid NOT NULL,
@@ -1348,6 +1372,15 @@ CREATE TABLE workspace_agent_port_share (
     protocol port_share_protocol DEFAULT 'http'::port_share_protocol NOT NULL
 );
 
+CREATE TABLE workspace_agent_script_timings (
+    script_id uuid NOT NULL,
+    started_at timestamp with time zone NOT NULL,
+    ended_at timestamp with time zone NOT NULL,
+    exit_code integer NOT NULL,
+    stage workspace_agent_script_timing_stage NOT NULL,
+    status workspace_agent_script_timing_status NOT NULL
+);
+
 CREATE TABLE workspace_agent_scripts (
     workspace_agent_id uuid NOT NULL,
     log_source_id uuid NOT NULL,
@@ -1358,7 +1391,9 @@ CREATE TABLE workspace_agent_scripts (
     start_blocks_login boolean NOT NULL,
     run_on_start boolean NOT NULL,
     run_on_stop boolean NOT NULL,
-    timeout_seconds integer NOT NULL
+    timeout_seconds integer NOT NULL,
+    display_name text NOT NULL,
+    id uuid DEFAULT gen_random_uuid() NOT NULL
 );
 
 CREATE SEQUENCE workspace_agent_startup_logs_id_seq
@@ -1387,7 +1422,8 @@ CREATE TABLE workspace_agent_stats (
     session_count_vscode bigint DEFAULT 0 NOT NULL,
     session_count_jetbrains bigint DEFAULT 0 NOT NULL,
     session_count_reconnecting_pty bigint DEFAULT 0 NOT NULL,
-    session_count_ssh bigint DEFAULT 0 NOT NULL
+    session_count_ssh bigint DEFAULT 0 NOT NULL,
+    usage boolean DEFAULT false NOT NULL
 );
 
 CREATE TABLE workspace_agents (
@@ -1726,6 +1762,9 @@ ALTER TABLE ONLY notification_messages
 ALTER TABLE ONLY notification_preferences
     ADD CONSTRAINT notification_preferences_pkey PRIMARY KEY (user_id, notification_template_id);
 
+ALTER TABLE ONLY notification_report_generator_logs
+    ADD CONSTRAINT notification_report_generator_logs_pkey PRIMARY KEY (notification_template_id);
+
 ALTER TABLE ONLY notification_templates
     ADD CONSTRAINT notification_templates_name_key UNIQUE (name);
 
@@ -1845,6 +1884,12 @@ ALTER TABLE ONLY workspace_agent_metadata
 
 ALTER TABLE ONLY workspace_agent_port_share
     ADD CONSTRAINT workspace_agent_port_share_pkey PRIMARY KEY (workspace_id, agent_name, port);
+
+ALTER TABLE ONLY workspace_agent_script_timings
+    ADD CONSTRAINT workspace_agent_script_timings_script_id_started_at_key UNIQUE (script_id, started_at);
+
+ALTER TABLE ONLY workspace_agent_scripts
+    ADD CONSTRAINT workspace_agent_scripts_id_key UNIQUE (id);
 
 ALTER TABLE ONLY workspace_agent_logs
     ADD CONSTRAINT workspace_agent_startup_logs_pkey PRIMARY KEY (id);
@@ -2212,6 +2257,9 @@ ALTER TABLE ONLY workspace_agent_metadata
 
 ALTER TABLE ONLY workspace_agent_port_share
     ADD CONSTRAINT workspace_agent_port_share_workspace_id_fkey FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY workspace_agent_script_timings
+    ADD CONSTRAINT workspace_agent_script_timings_script_id_fkey FOREIGN KEY (script_id) REFERENCES workspace_agent_scripts(id) ON DELETE CASCADE;
 
 ALTER TABLE ONLY workspace_agent_scripts
     ADD CONSTRAINT workspace_agent_scripts_workspace_agent_id_fkey FOREIGN KEY (workspace_agent_id) REFERENCES workspace_agents(id) ON DELETE CASCADE;

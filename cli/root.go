@@ -692,6 +692,19 @@ func namedWorkspace(ctx context.Context, client *codersdk.Client, identifier str
 	return client.WorkspaceByOwnerAndName(ctx, owner, name, codersdk.WorkspaceOptions{})
 }
 
+func initAppearance(client *codersdk.Client, outConfig *codersdk.AppearanceConfig) serpent.MiddlewareFunc {
+	return func(next serpent.HandlerFunc) serpent.HandlerFunc {
+		return func(inv *serpent.Invocation) error {
+			cfg, _ := client.Appearance(inv.Context())
+			if cfg.DocsURL == "" {
+				cfg.DocsURL = codersdk.DefaultDocsURL()
+			}
+			*outConfig = cfg
+			return next(inv)
+		}
+	}
+}
+
 // createConfig consumes the global configuration flag to produce a config root.
 func (r *RootCmd) createConfig() config.Root {
 	return config.Root(r.globalConfig)

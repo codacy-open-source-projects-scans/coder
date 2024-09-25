@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"reflect"
 	"regexp"
 	"sort"
@@ -187,53 +188,55 @@ type data struct {
 	userLinks           []database.UserLink
 
 	// New tables
-	workspaceAgentStats           []database.WorkspaceAgentStat
-	auditLogs                     []database.AuditLog
-	cryptoKeys                    []database.CryptoKey
-	dbcryptKeys                   []database.DBCryptKey
-	files                         []database.File
-	externalAuthLinks             []database.ExternalAuthLink
-	gitSSHKey                     []database.GitSSHKey
-	groupMembers                  []database.GroupMemberTable
-	groups                        []database.Group
-	jfrogXRayScans                []database.JfrogXrayScan
-	licenses                      []database.License
-	notificationMessages          []database.NotificationMessage
-	notificationPreferences       []database.NotificationPreference
-	oauth2ProviderApps            []database.OAuth2ProviderApp
-	oauth2ProviderAppSecrets      []database.OAuth2ProviderAppSecret
-	oauth2ProviderAppCodes        []database.OAuth2ProviderAppCode
-	oauth2ProviderAppTokens       []database.OAuth2ProviderAppToken
-	parameterSchemas              []database.ParameterSchema
-	provisionerDaemons            []database.ProvisionerDaemon
-	provisionerJobLogs            []database.ProvisionerJobLog
-	provisionerJobs               []database.ProvisionerJob
-	provisionerKeys               []database.ProvisionerKey
-	replicas                      []database.Replica
-	templateVersions              []database.TemplateVersionTable
-	templateVersionParameters     []database.TemplateVersionParameter
-	templateVersionVariables      []database.TemplateVersionVariable
-	templateVersionWorkspaceTags  []database.TemplateVersionWorkspaceTag
-	templates                     []database.TemplateTable
-	templateUsageStats            []database.TemplateUsageStat
-	workspaceAgents               []database.WorkspaceAgent
-	workspaceAgentMetadata        []database.WorkspaceAgentMetadatum
-	workspaceAgentLogs            []database.WorkspaceAgentLog
-	workspaceAgentLogSources      []database.WorkspaceAgentLogSource
-	workspaceAgentScripts         []database.WorkspaceAgentScript
-	workspaceAgentPortShares      []database.WorkspaceAgentPortShare
-	workspaceApps                 []database.WorkspaceApp
-	workspaceAppStatsLastInsertID int64
-	workspaceAppStats             []database.WorkspaceAppStat
-	workspaceBuilds               []database.WorkspaceBuild
-	workspaceBuildParameters      []database.WorkspaceBuildParameter
-	workspaceResourceMetadata     []database.WorkspaceResourceMetadatum
-	workspaceResources            []database.WorkspaceResource
-	workspaces                    []database.Workspace
-	workspaceProxies              []database.WorkspaceProxy
-	customRoles                   []database.CustomRole
-	provisionerJobTimings         []database.ProvisionerJobTiming
-	runtimeConfig                 map[string]string
+	auditLogs                       []database.AuditLog
+	cryptoKeys                      []database.CryptoKey
+	dbcryptKeys                     []database.DBCryptKey
+	files                           []database.File
+	externalAuthLinks               []database.ExternalAuthLink
+	gitSSHKey                       []database.GitSSHKey
+	groupMembers                    []database.GroupMemberTable
+	groups                          []database.Group
+	jfrogXRayScans                  []database.JfrogXrayScan
+	licenses                        []database.License
+	notificationMessages            []database.NotificationMessage
+	notificationPreferences         []database.NotificationPreference
+	notificationReportGeneratorLogs []database.NotificationReportGeneratorLog
+	oauth2ProviderApps              []database.OAuth2ProviderApp
+	oauth2ProviderAppSecrets        []database.OAuth2ProviderAppSecret
+	oauth2ProviderAppCodes          []database.OAuth2ProviderAppCode
+	oauth2ProviderAppTokens         []database.OAuth2ProviderAppToken
+	parameterSchemas                []database.ParameterSchema
+	provisionerDaemons              []database.ProvisionerDaemon
+	provisionerJobLogs              []database.ProvisionerJobLog
+	provisionerJobs                 []database.ProvisionerJob
+	provisionerKeys                 []database.ProvisionerKey
+	replicas                        []database.Replica
+	templateVersions                []database.TemplateVersionTable
+	templateVersionParameters       []database.TemplateVersionParameter
+	templateVersionVariables        []database.TemplateVersionVariable
+	templateVersionWorkspaceTags    []database.TemplateVersionWorkspaceTag
+	templates                       []database.TemplateTable
+	templateUsageStats              []database.TemplateUsageStat
+	workspaceAgents                 []database.WorkspaceAgent
+	workspaceAgentMetadata          []database.WorkspaceAgentMetadatum
+	workspaceAgentLogs              []database.WorkspaceAgentLog
+	workspaceAgentLogSources        []database.WorkspaceAgentLogSource
+	workspaceAgentPortShares        []database.WorkspaceAgentPortShare
+	workspaceAgentScriptTimings     []database.WorkspaceAgentScriptTiming
+	workspaceAgentScripts           []database.WorkspaceAgentScript
+	workspaceAgentStats             []database.WorkspaceAgentStat
+	workspaceApps                   []database.WorkspaceApp
+	workspaceAppStatsLastInsertID   int64
+	workspaceAppStats               []database.WorkspaceAppStat
+	workspaceBuilds                 []database.WorkspaceBuild
+	workspaceBuildParameters        []database.WorkspaceBuildParameter
+	workspaceResourceMetadata       []database.WorkspaceResourceMetadatum
+	workspaceResources              []database.WorkspaceResource
+	workspaces                      []database.Workspace
+	workspaceProxies                []database.WorkspaceProxy
+	customRoles                     []database.CustomRole
+	provisionerJobTimings           []database.ProvisionerJobTiming
+	runtimeConfig                   map[string]string
 	// Locks is a map of lock names. Any keys within the map are currently
 	// locked.
 	locks                            map[int64]struct{}
@@ -251,6 +254,19 @@ type data struct {
 	lastLicenseID                    int32
 	defaultProxyDisplayName          string
 	defaultProxyIconURL              string
+}
+
+func tryPercentile(fs []float64, p float64) float64 {
+	if len(fs) == 0 {
+		return -1
+	}
+	sort.Float64s(fs)
+	pos := p * (float64(len(fs)) - 1) / 100
+	lower, upper := int(pos), int(math.Ceil(pos))
+	if lower == upper {
+		return fs[lower]
+	}
+	return fs[lower] + (fs[upper]-fs[lower])*(pos-float64(lower))
 }
 
 func validateDatabaseTypeWithValid(v reflect.Value) (handled bool, err error) {
@@ -2532,16 +2548,64 @@ func (q *FakeQuerier) GetDeploymentWorkspaceAgentStats(_ context.Context, create
 		latencies = append(latencies, agentStat.ConnectionMedianLatencyMS)
 	}
 
-	tryPercentile := func(fs []float64, p float64) float64 {
-		if len(fs) == 0 {
-			return -1
-		}
-		sort.Float64s(fs)
-		return fs[int(float64(len(fs))*p/100)]
-	}
-
 	stat.WorkspaceConnectionLatency50 = tryPercentile(latencies, 50)
 	stat.WorkspaceConnectionLatency95 = tryPercentile(latencies, 95)
+
+	return stat, nil
+}
+
+func (q *FakeQuerier) GetDeploymentWorkspaceAgentUsageStats(_ context.Context, createdAt time.Time) (database.GetDeploymentWorkspaceAgentUsageStatsRow, error) {
+	q.mutex.RLock()
+	defer q.mutex.RUnlock()
+
+	stat := database.GetDeploymentWorkspaceAgentUsageStatsRow{}
+	sessions := make(map[uuid.UUID]database.WorkspaceAgentStat)
+	agentStatsCreatedAfter := make([]database.WorkspaceAgentStat, 0)
+	for _, agentStat := range q.workspaceAgentStats {
+		// WHERE workspace_agent_stats.created_at > $1
+		if agentStat.CreatedAt.After(createdAt) {
+			agentStatsCreatedAfter = append(agentStatsCreatedAfter, agentStat)
+		}
+		// WHERE
+		// created_at > $1
+		// AND created_at < date_trunc('minute', now())  -- Exclude current partial minute
+		// AND usage = true
+		if agentStat.Usage &&
+			(agentStat.CreatedAt.After(createdAt) || agentStat.CreatedAt.Equal(createdAt)) &&
+			agentStat.CreatedAt.Before(time.Now().Truncate(time.Minute)) {
+			val, ok := sessions[agentStat.AgentID]
+			if !ok {
+				sessions[agentStat.AgentID] = agentStat
+			} else if agentStat.CreatedAt.After(val.CreatedAt) {
+				sessions[agentStat.AgentID] = agentStat
+			} else if agentStat.CreatedAt.Truncate(time.Minute).Equal(val.CreatedAt.Truncate(time.Minute)) {
+				val.SessionCountVSCode += agentStat.SessionCountVSCode
+				val.SessionCountJetBrains += agentStat.SessionCountJetBrains
+				val.SessionCountReconnectingPTY += agentStat.SessionCountReconnectingPTY
+				val.SessionCountSSH += agentStat.SessionCountSSH
+				sessions[agentStat.AgentID] = val
+			}
+		}
+	}
+
+	latencies := make([]float64, 0)
+	for _, agentStat := range agentStatsCreatedAfter {
+		if agentStat.ConnectionMedianLatencyMS <= 0 {
+			continue
+		}
+		stat.WorkspaceRxBytes += agentStat.RxBytes
+		stat.WorkspaceTxBytes += agentStat.TxBytes
+		latencies = append(latencies, agentStat.ConnectionMedianLatencyMS)
+	}
+	stat.WorkspaceConnectionLatency50 = tryPercentile(latencies, 50)
+	stat.WorkspaceConnectionLatency95 = tryPercentile(latencies, 95)
+
+	for _, agentStat := range sessions {
+		stat.SessionCountVSCode += agentStat.SessionCountVSCode
+		stat.SessionCountJetBrains += agentStat.SessionCountJetBrains
+		stat.SessionCountReconnectingPTY += agentStat.SessionCountReconnectingPTY
+		stat.SessionCountSSH += agentStat.SessionCountSSH
+	}
 
 	return stat, nil
 }
@@ -2619,6 +2683,75 @@ func (q *FakeQuerier) GetExternalAuthLinksByUserID(_ context.Context, userID uui
 		}
 	}
 	return gals, nil
+}
+
+func (q *FakeQuerier) GetFailedWorkspaceBuildsByTemplateID(ctx context.Context, arg database.GetFailedWorkspaceBuildsByTemplateIDParams) ([]database.GetFailedWorkspaceBuildsByTemplateIDRow, error) {
+	err := validateDatabaseType(arg)
+	if err != nil {
+		return nil, err
+	}
+
+	q.mutex.RLock()
+	defer q.mutex.RUnlock()
+
+	workspaceBuildStats := []database.GetFailedWorkspaceBuildsByTemplateIDRow{}
+	for _, wb := range q.workspaceBuilds {
+		job, err := q.getProvisionerJobByIDNoLock(ctx, wb.JobID)
+		if err != nil {
+			return nil, xerrors.Errorf("get provisioner job by ID: %w", err)
+		}
+
+		if job.JobStatus != database.ProvisionerJobStatusFailed {
+			continue
+		}
+
+		if !job.CompletedAt.Valid {
+			continue
+		}
+
+		if wb.CreatedAt.Before(arg.Since) {
+			continue
+		}
+
+		w, err := q.getWorkspaceByIDNoLock(ctx, wb.WorkspaceID)
+		if err != nil {
+			return nil, xerrors.Errorf("get workspace by ID: %w", err)
+		}
+
+		t, err := q.getTemplateByIDNoLock(ctx, w.TemplateID)
+		if err != nil {
+			return nil, xerrors.Errorf("get template by ID: %w", err)
+		}
+
+		if t.ID != arg.TemplateID {
+			continue
+		}
+
+		workspaceOwner, err := q.getUserByIDNoLock(w.OwnerID)
+		if err != nil {
+			return nil, xerrors.Errorf("get user by ID: %w", err)
+		}
+
+		templateVersion, err := q.getTemplateVersionByIDNoLock(ctx, wb.TemplateVersionID)
+		if err != nil {
+			return nil, xerrors.Errorf("get template version by ID: %w", err)
+		}
+
+		workspaceBuildStats = append(workspaceBuildStats, database.GetFailedWorkspaceBuildsByTemplateIDRow{
+			WorkspaceName:          w.Name,
+			WorkspaceOwnerUsername: workspaceOwner.Username,
+			TemplateVersionName:    templateVersion.Name,
+			WorkspaceBuildNumber:   wb.BuildNumber,
+		})
+	}
+
+	sort.Slice(workspaceBuildStats, func(i, j int) bool {
+		if workspaceBuildStats[i].TemplateVersionName != workspaceBuildStats[j].TemplateVersionName {
+			return workspaceBuildStats[i].TemplateVersionName < workspaceBuildStats[j].TemplateVersionName
+		}
+		return workspaceBuildStats[i].WorkspaceBuildNumber > workspaceBuildStats[j].WorkspaceBuildNumber
+	})
+	return workspaceBuildStats, nil
 }
 
 func (q *FakeQuerier) GetFileByHashAndCreator(_ context.Context, arg database.GetFileByHashAndCreatorParams) (database.File, error) {
@@ -3042,6 +3175,23 @@ func (q *FakeQuerier) GetNotificationMessagesByStatus(_ context.Context, arg dat
 	}
 
 	return out, nil
+}
+
+func (q *FakeQuerier) GetNotificationReportGeneratorLogByTemplate(_ context.Context, templateID uuid.UUID) (database.NotificationReportGeneratorLog, error) {
+	err := validateDatabaseType(templateID)
+	if err != nil {
+		return database.NotificationReportGeneratorLog{}, err
+	}
+
+	q.mutex.RLock()
+	defer q.mutex.RUnlock()
+
+	for _, record := range q.notificationReportGeneratorLogs {
+		if record.NotificationTemplateID == templateID {
+			return record, nil
+		}
+	}
+	return database.NotificationReportGeneratorLog{}, sql.ErrNoRows
 }
 
 func (*FakeQuerier) GetNotificationTemplateByID(_ context.Context, _ uuid.UUID) (database.NotificationTemplate, error) {
@@ -4151,14 +4301,6 @@ func (q *FakeQuerier) GetTemplateAverageBuildTime(ctx context.Context, arg datab
 		}
 	}
 
-	tryPercentile := func(fs []float64, p float64) float64 {
-		if len(fs) == 0 {
-			return -1
-		}
-		sort.Float64s(fs)
-		return fs[int(float64(len(fs))*p/100)]
-	}
-
 	var row database.GetTemplateAverageBuildTimeRow
 	row.Delete50, row.Delete95 = tryPercentile(deleteTimes, 50), tryPercentile(deleteTimes, 95)
 	row.Stop50, row.Stop95 = tryPercentile(stopTimes, 50), tryPercentile(stopTimes, 95)
@@ -5186,14 +5328,6 @@ func (q *FakeQuerier) GetUserLatencyInsights(_ context.Context, arg database.Get
 		seenTemplatesByUserID[stat.UserID] = uniqueSortedUUIDs(append(seenTemplatesByUserID[stat.UserID], stat.TemplateID))
 	}
 
-	tryPercentile := func(fs []float64, p float64) float64 {
-		if len(fs) == 0 {
-			return -1
-		}
-		sort.Float64s(fs)
-		return fs[int(float64(len(fs))*p/100)]
-	}
-
 	var rows []database.GetUserLatencyInsightsRow
 	for userID, latencies := range latenciesByUserID {
 		user, err := q.getUserByIDNoLock(userID)
@@ -5707,14 +5841,6 @@ func (q *FakeQuerier) GetWorkspaceAgentStats(_ context.Context, createdAfter tim
 		latenciesByAgent[agentStat.AgentID] = append(latenciesByAgent[agentStat.AgentID], agentStat.ConnectionMedianLatencyMS)
 	}
 
-	tryPercentile := func(fs []float64, p float64) float64 {
-		if len(fs) == 0 {
-			return -1
-		}
-		sort.Float64s(fs)
-		return fs[int(float64(len(fs))*p/100)]
-	}
-
 	for _, stat := range statByAgent {
 		stat.AggregatedFrom = minimumDateByAgent[stat.AgentID]
 		statByAgent[stat.AgentID] = stat
@@ -5802,6 +5928,218 @@ func (q *FakeQuerier) GetWorkspaceAgentStatsAndLabels(ctx context.Context, creat
 	stats := make([]database.GetWorkspaceAgentStatsAndLabelsRow, 0, len(statByAgent))
 	for _, agent := range statByAgent {
 		stats = append(stats, agent)
+	}
+	return stats, nil
+}
+
+func (q *FakeQuerier) GetWorkspaceAgentUsageStats(_ context.Context, createdAt time.Time) ([]database.GetWorkspaceAgentUsageStatsRow, error) {
+	q.mutex.RLock()
+	defer q.mutex.RUnlock()
+
+	type agentStatsKey struct {
+		UserID      uuid.UUID
+		AgentID     uuid.UUID
+		WorkspaceID uuid.UUID
+		TemplateID  uuid.UUID
+	}
+
+	type minuteStatsKey struct {
+		agentStatsKey
+		MinuteBucket time.Time
+	}
+
+	latestAgentStats := map[agentStatsKey]database.GetWorkspaceAgentUsageStatsRow{}
+	latestAgentLatencies := map[agentStatsKey][]float64{}
+	for _, agentStat := range q.workspaceAgentStats {
+		key := agentStatsKey{
+			UserID:      agentStat.UserID,
+			AgentID:     agentStat.AgentID,
+			WorkspaceID: agentStat.WorkspaceID,
+			TemplateID:  agentStat.TemplateID,
+		}
+		if agentStat.CreatedAt.After(createdAt) {
+			val, ok := latestAgentStats[key]
+			if ok {
+				val.WorkspaceRxBytes += agentStat.RxBytes
+				val.WorkspaceTxBytes += agentStat.TxBytes
+				latestAgentStats[key] = val
+			} else {
+				latestAgentStats[key] = database.GetWorkspaceAgentUsageStatsRow{
+					UserID:           agentStat.UserID,
+					AgentID:          agentStat.AgentID,
+					WorkspaceID:      agentStat.WorkspaceID,
+					TemplateID:       agentStat.TemplateID,
+					AggregatedFrom:   createdAt,
+					WorkspaceRxBytes: agentStat.RxBytes,
+					WorkspaceTxBytes: agentStat.TxBytes,
+				}
+			}
+
+			latencies, ok := latestAgentLatencies[key]
+			if !ok {
+				latestAgentLatencies[key] = []float64{agentStat.ConnectionMedianLatencyMS}
+			} else {
+				latestAgentLatencies[key] = append(latencies, agentStat.ConnectionMedianLatencyMS)
+			}
+		}
+	}
+
+	for key, latencies := range latestAgentLatencies {
+		val, ok := latestAgentStats[key]
+		if ok {
+			val.WorkspaceConnectionLatency50 = tryPercentile(latencies, 50)
+			val.WorkspaceConnectionLatency95 = tryPercentile(latencies, 95)
+		}
+		latestAgentStats[key] = val
+	}
+
+	type bucketRow struct {
+		database.GetWorkspaceAgentUsageStatsRow
+		MinuteBucket time.Time
+	}
+
+	minuteBuckets := make(map[minuteStatsKey]bucketRow)
+	for _, agentStat := range q.workspaceAgentStats {
+		if agentStat.Usage &&
+			(agentStat.CreatedAt.After(createdAt) || agentStat.CreatedAt.Equal(createdAt)) &&
+			agentStat.CreatedAt.Before(time.Now().Truncate(time.Minute)) {
+			key := minuteStatsKey{
+				agentStatsKey: agentStatsKey{
+					UserID:      agentStat.UserID,
+					AgentID:     agentStat.AgentID,
+					WorkspaceID: agentStat.WorkspaceID,
+					TemplateID:  agentStat.TemplateID,
+				},
+				MinuteBucket: agentStat.CreatedAt.Truncate(time.Minute),
+			}
+			val, ok := minuteBuckets[key]
+			if ok {
+				val.SessionCountVSCode += agentStat.SessionCountVSCode
+				val.SessionCountJetBrains += agentStat.SessionCountJetBrains
+				val.SessionCountReconnectingPTY += agentStat.SessionCountReconnectingPTY
+				val.SessionCountSSH += agentStat.SessionCountSSH
+				minuteBuckets[key] = val
+			} else {
+				minuteBuckets[key] = bucketRow{
+					GetWorkspaceAgentUsageStatsRow: database.GetWorkspaceAgentUsageStatsRow{
+						UserID:                      agentStat.UserID,
+						AgentID:                     agentStat.AgentID,
+						WorkspaceID:                 agentStat.WorkspaceID,
+						TemplateID:                  agentStat.TemplateID,
+						SessionCountVSCode:          agentStat.SessionCountVSCode,
+						SessionCountSSH:             agentStat.SessionCountSSH,
+						SessionCountJetBrains:       agentStat.SessionCountJetBrains,
+						SessionCountReconnectingPTY: agentStat.SessionCountReconnectingPTY,
+					},
+					MinuteBucket: agentStat.CreatedAt.Truncate(time.Minute),
+				}
+			}
+		}
+	}
+
+	// Get the latest minute bucket for each agent.
+	latestBuckets := make(map[uuid.UUID]bucketRow)
+	for key, bucket := range minuteBuckets {
+		latest, ok := latestBuckets[key.AgentID]
+		if !ok || key.MinuteBucket.After(latest.MinuteBucket) {
+			latestBuckets[key.AgentID] = bucket
+		}
+	}
+
+	for key, stat := range latestAgentStats {
+		bucket, ok := latestBuckets[stat.AgentID]
+		if ok {
+			stat.SessionCountVSCode = bucket.SessionCountVSCode
+			stat.SessionCountJetBrains = bucket.SessionCountJetBrains
+			stat.SessionCountReconnectingPTY = bucket.SessionCountReconnectingPTY
+			stat.SessionCountSSH = bucket.SessionCountSSH
+		}
+		latestAgentStats[key] = stat
+	}
+	return maps.Values(latestAgentStats), nil
+}
+
+func (q *FakeQuerier) GetWorkspaceAgentUsageStatsAndLabels(_ context.Context, createdAt time.Time) ([]database.GetWorkspaceAgentUsageStatsAndLabelsRow, error) {
+	q.mutex.RLock()
+	defer q.mutex.RUnlock()
+
+	type statsKey struct {
+		AgentID     uuid.UUID
+		UserID      uuid.UUID
+		WorkspaceID uuid.UUID
+	}
+
+	latestAgentStats := map[statsKey]database.WorkspaceAgentStat{}
+	maxConnMedianLatency := 0.0
+	for _, agentStat := range q.workspaceAgentStats {
+		key := statsKey{
+			AgentID:     agentStat.AgentID,
+			UserID:      agentStat.UserID,
+			WorkspaceID: agentStat.WorkspaceID,
+		}
+		// WHERE workspace_agent_stats.created_at > $1
+		// GROUP BY user_id, agent_id, workspace_id
+		if agentStat.CreatedAt.After(createdAt) {
+			val, ok := latestAgentStats[key]
+			if !ok {
+				val = agentStat
+				val.SessionCountJetBrains = 0
+				val.SessionCountReconnectingPTY = 0
+				val.SessionCountSSH = 0
+				val.SessionCountVSCode = 0
+			} else {
+				val.RxBytes += agentStat.RxBytes
+				val.TxBytes += agentStat.TxBytes
+			}
+			if agentStat.ConnectionMedianLatencyMS > maxConnMedianLatency {
+				val.ConnectionMedianLatencyMS = agentStat.ConnectionMedianLatencyMS
+			}
+			latestAgentStats[key] = val
+		}
+		// WHERE usage = true AND created_at > now() - '1 minute'::interval
+		// GROUP BY user_id, agent_id, workspace_id
+		if agentStat.Usage && agentStat.CreatedAt.After(time.Now().Add(-time.Minute)) {
+			val, ok := latestAgentStats[key]
+			if !ok {
+				latestAgentStats[key] = agentStat
+			} else {
+				val.SessionCountVSCode += agentStat.SessionCountVSCode
+				val.SessionCountJetBrains += agentStat.SessionCountJetBrains
+				val.SessionCountReconnectingPTY += agentStat.SessionCountReconnectingPTY
+				val.SessionCountSSH += agentStat.SessionCountSSH
+				val.ConnectionCount += agentStat.ConnectionCount
+				latestAgentStats[key] = val
+			}
+		}
+	}
+
+	stats := make([]database.GetWorkspaceAgentUsageStatsAndLabelsRow, 0, len(latestAgentStats))
+	for key, agentStat := range latestAgentStats {
+		user, err := q.getUserByIDNoLock(key.UserID)
+		if err != nil {
+			return nil, err
+		}
+		workspace, err := q.getWorkspaceByIDNoLock(context.Background(), key.WorkspaceID)
+		if err != nil {
+			return nil, err
+		}
+		agent, err := q.getWorkspaceAgentByIDNoLock(context.Background(), key.AgentID)
+		if err != nil {
+			return nil, err
+		}
+		stats = append(stats, database.GetWorkspaceAgentUsageStatsAndLabelsRow{
+			Username:                    user.Username,
+			AgentName:                   agent.Name,
+			WorkspaceName:               workspace.Name,
+			RxBytes:                     agentStat.RxBytes,
+			TxBytes:                     agentStat.TxBytes,
+			SessionCountVSCode:          agentStat.SessionCountVSCode,
+			SessionCountSSH:             agentStat.SessionCountSSH,
+			SessionCountJetBrains:       agentStat.SessionCountJetBrains,
+			SessionCountReconnectingPTY: agentStat.SessionCountReconnectingPTY,
+			ConnectionCount:             agentStat.ConnectionCount,
+			ConnectionMedianLatencyMS:   agentStat.ConnectionMedianLatencyMS,
+		})
 	}
 	return stats, nil
 }
@@ -5962,6 +6300,63 @@ func (q *FakeQuerier) GetWorkspaceBuildParameters(_ context.Context, workspaceBu
 		params = append(params, param)
 	}
 	return params, nil
+}
+
+func (q *FakeQuerier) GetWorkspaceBuildStatsByTemplates(ctx context.Context, since time.Time) ([]database.GetWorkspaceBuildStatsByTemplatesRow, error) {
+	q.mutex.RLock()
+	defer q.mutex.RUnlock()
+
+	templateStats := map[uuid.UUID]database.GetWorkspaceBuildStatsByTemplatesRow{}
+	for _, wb := range q.workspaceBuilds {
+		job, err := q.getProvisionerJobByIDNoLock(ctx, wb.JobID)
+		if err != nil {
+			return nil, xerrors.Errorf("get provisioner job by ID: %w", err)
+		}
+
+		if !job.CompletedAt.Valid {
+			continue
+		}
+
+		if wb.CreatedAt.Before(since) {
+			continue
+		}
+
+		w, err := q.getWorkspaceByIDNoLock(ctx, wb.WorkspaceID)
+		if err != nil {
+			return nil, xerrors.Errorf("get workspace by ID: %w", err)
+		}
+
+		if _, ok := templateStats[w.TemplateID]; !ok {
+			t, err := q.getTemplateByIDNoLock(ctx, w.TemplateID)
+			if err != nil {
+				return nil, xerrors.Errorf("get template by ID: %w", err)
+			}
+
+			templateStats[w.TemplateID] = database.GetWorkspaceBuildStatsByTemplatesRow{
+				TemplateID:             w.TemplateID,
+				TemplateName:           t.Name,
+				TemplateDisplayName:    t.DisplayName,
+				TemplateOrganizationID: w.OrganizationID,
+			}
+		}
+
+		s := templateStats[w.TemplateID]
+		s.TotalBuilds++
+		if job.JobStatus == database.ProvisionerJobStatusFailed {
+			s.FailedBuilds++
+		}
+		templateStats[w.TemplateID] = s
+	}
+
+	rows := make([]database.GetWorkspaceBuildStatsByTemplatesRow, 0, len(templateStats))
+	for _, ts := range templateStats {
+		rows = append(rows, ts)
+	}
+
+	sort.Slice(rows, func(i, j int) bool {
+		return rows[i].TemplateName < rows[j].TemplateName
+	})
+	return rows, nil
 }
 
 func (q *FakeQuerier) GetWorkspaceBuildsByWorkspaceID(_ context.Context,
@@ -7432,6 +7827,30 @@ func (q *FakeQuerier) InsertWorkspaceAgentMetadata(_ context.Context, arg databa
 	return nil
 }
 
+func (q *FakeQuerier) InsertWorkspaceAgentScriptTimings(_ context.Context, arg database.InsertWorkspaceAgentScriptTimingsParams) error {
+	err := validateDatabaseType(arg)
+	if err != nil {
+		return err
+	}
+
+	q.mutex.Lock()
+	defer q.mutex.Unlock()
+
+	q.workspaceAgentScriptTimings = append(q.workspaceAgentScriptTimings,
+		//nolint:gosimple // Stop the linter complaining about changing the type of `arg`.
+		database.WorkspaceAgentScriptTiming{
+			ScriptID:  arg.ScriptID,
+			StartedAt: arg.StartedAt,
+			EndedAt:   arg.EndedAt,
+			ExitCode:  arg.ExitCode,
+			Stage:     arg.Stage,
+			Status:    arg.Status,
+		},
+	)
+
+	return nil
+}
+
 func (q *FakeQuerier) InsertWorkspaceAgentScripts(_ context.Context, arg database.InsertWorkspaceAgentScriptsParams) ([]database.WorkspaceAgentScript, error) {
 	err := validateDatabaseType(arg)
 	if err != nil {
@@ -7446,6 +7865,7 @@ func (q *FakeQuerier) InsertWorkspaceAgentScripts(_ context.Context, arg databas
 		script := database.WorkspaceAgentScript{
 			LogSourceID:      source,
 			WorkspaceAgentID: arg.WorkspaceAgentID,
+			ID:               arg.ID[index],
 			LogPath:          arg.LogPath[index],
 			Script:           arg.Script[index],
 			Cron:             arg.Cron[index],
@@ -7497,6 +7917,7 @@ func (q *FakeQuerier) InsertWorkspaceAgentStats(_ context.Context, arg database.
 			SessionCountReconnectingPTY: arg.SessionCountReconnectingPTY[i],
 			SessionCountSSH:             arg.SessionCountSSH[i],
 			ConnectionMedianLatencyMS:   arg.ConnectionMedianLatencyMS[i],
+			Usage:                       arg.Usage[i],
 		}
 		q.workspaceAgentStats = append(q.workspaceAgentStats, stat)
 	}
@@ -9437,6 +9858,26 @@ func (q *FakeQuerier) UpsertLogoURL(_ context.Context, data string) error {
 	defer q.mutex.Unlock()
 
 	q.logoURL = data
+	return nil
+}
+
+func (q *FakeQuerier) UpsertNotificationReportGeneratorLog(_ context.Context, arg database.UpsertNotificationReportGeneratorLogParams) error {
+	err := validateDatabaseType(arg)
+	if err != nil {
+		return err
+	}
+
+	q.mutex.Lock()
+	defer q.mutex.Unlock()
+
+	for i, record := range q.notificationReportGeneratorLogs {
+		if arg.NotificationTemplateID == record.NotificationTemplateID {
+			q.notificationReportGeneratorLogs[i].LastGeneratedAt = arg.LastGeneratedAt
+			return nil
+		}
+	}
+
+	q.notificationReportGeneratorLogs = append(q.notificationReportGeneratorLogs, database.NotificationReportGeneratorLog(arg))
 	return nil
 }
 
