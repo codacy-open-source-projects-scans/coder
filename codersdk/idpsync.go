@@ -12,11 +12,10 @@ import (
 )
 
 type GroupSyncSettings struct {
-	// Field selects the claim field to be used as the created user's
-	// groups. If the group field is the empty string, then no group updates
-	// will ever come from the OIDC provider.
+	// Field is the name of the claim field that specifies what groups a user
+	// should be in. If empty, no groups will be synced.
 	Field string `json:"field"`
-	// Mapping maps from an OIDC group --> Coder group ID
+	// Mapping is a map from OIDC groups to Coder group IDs
 	Mapping map[string][]uuid.UUID `json:"mapping"`
 	// RegexFilter is a regular expression that filters the groups returned by
 	// the OIDC provider. Any group not matched by this regex will be ignored.
@@ -62,11 +61,10 @@ func (c *Client) PatchGroupIDPSyncSettings(ctx context.Context, orgID string, re
 }
 
 type RoleSyncSettings struct {
-	// Field selects the claim field to be used as the created user's
-	// groups. If the group field is the empty string, then no group updates
-	// will ever come from the OIDC provider.
+	// Field is the name of the claim field that specifies what organization roles
+	// a user should be given. If empty, no roles will be synced.
 	Field string `json:"field"`
-	// Mapping maps from an OIDC group --> Coder organization role
+	// Mapping is a map from OIDC groups to Coder organization roles.
 	Mapping map[string][]string `json:"mapping"`
 }
 
@@ -95,5 +93,73 @@ func (c *Client) PatchRoleIDPSyncSettings(ctx context.Context, orgID string, req
 		return RoleSyncSettings{}, ReadBodyAsError(res)
 	}
 	var resp RoleSyncSettings
+	return resp, json.NewDecoder(res.Body).Decode(&resp)
+}
+
+type OrganizationSyncSettings struct {
+	// Field selects the claim field to be used as the created user's
+	// organizations. If the field is the empty string, then no organization
+	// updates will ever come from the OIDC provider.
+	Field string `json:"field"`
+	// Mapping maps from an OIDC claim --> Coder organization uuid
+	Mapping map[string][]uuid.UUID `json:"mapping"`
+	// AssignDefault will ensure the default org is always included
+	// for every user, regardless of their claims. This preserves legacy behavior.
+	AssignDefault bool `json:"organization_assign_default"`
+}
+
+func (c *Client) OrganizationIDPSyncSettings(ctx context.Context) (OrganizationSyncSettings, error) {
+	res, err := c.Request(ctx, http.MethodGet, "/api/v2/settings/idpsync/organization", nil)
+	if err != nil {
+		return OrganizationSyncSettings{}, xerrors.Errorf("make request: %w", err)
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusOK {
+		return OrganizationSyncSettings{}, ReadBodyAsError(res)
+	}
+	var resp OrganizationSyncSettings
+	return resp, json.NewDecoder(res.Body).Decode(&resp)
+}
+
+func (c *Client) PatchOrganizationIDPSyncSettings(ctx context.Context, req OrganizationSyncSettings) (OrganizationSyncSettings, error) {
+	res, err := c.Request(ctx, http.MethodPatch, "/api/v2/settings/idpsync/organization", req)
+	if err != nil {
+		return OrganizationSyncSettings{}, xerrors.Errorf("make request: %w", err)
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusOK {
+		return OrganizationSyncSettings{}, ReadBodyAsError(res)
+	}
+	var resp OrganizationSyncSettings
+	return resp, json.NewDecoder(res.Body).Decode(&resp)
+}
+
+func (c *Client) GetAvailableIDPSyncFields(ctx context.Context) ([]string, error) {
+	res, err := c.Request(ctx, http.MethodGet, "/api/v2/settings/idpsync/available-fields", nil)
+	if err != nil {
+		return nil, xerrors.Errorf("make request: %w", err)
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusOK {
+		return nil, ReadBodyAsError(res)
+	}
+	var resp []string
+	return resp, json.NewDecoder(res.Body).Decode(&resp)
+}
+
+func (c *Client) GetOrganizationAvailableIDPSyncFields(ctx context.Context, orgID string) ([]string, error) {
+	res, err := c.Request(ctx, http.MethodGet, fmt.Sprintf("/api/v2/organizations/%s/settings/idpsync/available-fields", orgID), nil)
+	if err != nil {
+		return nil, xerrors.Errorf("make request: %w", err)
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusOK {
+		return nil, ReadBodyAsError(res)
+	}
+	var resp []string
 	return resp, json.NewDecoder(res.Body).Decode(&resp)
 }

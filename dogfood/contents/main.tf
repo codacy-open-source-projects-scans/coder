@@ -19,7 +19,8 @@ locals {
     "eu-helsinki"   = "tcp://reinhard-hel-cdr-dev.tailscale.svc.cluster.local:2375"
     "ap-sydney"     = "tcp://wolfgang-syd-cdr-dev.tailscale.svc.cluster.local:2375"
     "sa-saopaulo"   = "tcp://oberstein-sao-cdr-dev.tailscale.svc.cluster.local:2375"
-    "za-jnb"        = "tcp://greenhill-jnb-cdr-dev.tailscale.svc.cluster.local:2375"
+    "za-cpt"        = "tcp://schonkopf-cpt-cdr-dev.tailscale.svc.cluster.local:2375"
+    "ja-tokyo"      = "tcp://reuenthal-tokyo-cdr-dev.tailscale.svc.cluster.local:2375"
   }
 
   repo_base_dir  = data.coder_parameter.repo_base_dir.value == "~" ? "/home/coder" : replace(data.coder_parameter.repo_base_dir.value, "/^~\\//", "/home/coder/")
@@ -79,8 +80,13 @@ data "coder_parameter" "region" {
   }
   option {
     icon  = "/emojis/1f1ff-1f1e6.png"
-    name  = "Johannesburg"
-    value = "za-jnb"
+    name  = "Cape Town"
+    value = "za-cpt"
+  }
+  option {
+    icon  = "/emojis/1f1ef-1f1f5.png"
+    name  = "Tokyo"
+    value = "ja-tokyo"
   }
 }
 
@@ -96,22 +102,28 @@ data "coder_external_auth" "github" {
 
 data "coder_workspace" "me" {}
 data "coder_workspace_owner" "me" {}
+data "coder_workspace_tags" "tags" {
+  tags = {
+    "cluster" : "dogfood-v2"
+    "env" : "gke"
+  }
+}
 
 module "slackme" {
-  source           = "registry.coder.com/modules/slackme/coder"
+  source           = "dev.registry.coder.com/modules/slackme/coder"
   version          = ">= 1.0.0"
   agent_id         = coder_agent.dev.id
   auth_provider_id = "slack"
 }
 
 module "dotfiles" {
-  source   = "registry.coder.com/modules/dotfiles/coder"
+  source   = "dev.registry.coder.com/modules/dotfiles/coder"
   version  = ">= 1.0.0"
   agent_id = coder_agent.dev.id
 }
 
 module "git-clone" {
-  source   = "registry.coder.com/modules/git-clone/coder"
+  source   = "dev.registry.coder.com/modules/git-clone/coder"
   version  = ">= 1.0.0"
   agent_id = coder_agent.dev.id
   url      = "https://github.com/coder/coder"
@@ -119,13 +131,13 @@ module "git-clone" {
 }
 
 module "personalize" {
-  source   = "registry.coder.com/modules/personalize/coder"
+  source   = "dev.registry.coder.com/modules/personalize/coder"
   version  = ">= 1.0.0"
   agent_id = coder_agent.dev.id
 }
 
 module "code-server" {
-  source                  = "registry.coder.com/modules/code-server/coder"
+  source                  = "dev.registry.coder.com/modules/code-server/coder"
   version                 = ">= 1.0.0"
   agent_id                = coder_agent.dev.id
   folder                  = local.repo_dir
@@ -133,7 +145,7 @@ module "code-server" {
 }
 
 module "jetbrains_gateway" {
-  source         = "registry.coder.com/modules/jetbrains-gateway/coder"
+  source         = "dev.registry.coder.com/modules/jetbrains-gateway/coder"
   version        = ">= 1.0.0"
   agent_id       = coder_agent.dev.id
   agent_name     = "dev"
@@ -144,20 +156,20 @@ module "jetbrains_gateway" {
 }
 
 module "filebrowser" {
-  source     = "registry.coder.com/modules/filebrowser/coder"
+  source     = "dev.registry.coder.com/modules/filebrowser/coder"
   version    = ">= 1.0.0"
   agent_id   = coder_agent.dev.id
   agent_name = "dev"
 }
 
 module "coder-login" {
-  source   = "registry.coder.com/modules/coder-login/coder"
+  source   = "dev.registry.coder.com/modules/coder-login/coder"
   version  = ">= 1.0.0"
   agent_id = coder_agent.dev.id
 }
 
 module "cursor" {
-  source   = "registry.coder.com/modules/cursor/coder"
+  source   = "dev.registry.coder.com/modules/cursor/coder"
   version  = ">= 1.0.0"
   agent_id = coder_agent.dev.id
   folder   = local.repo_dir
@@ -275,6 +287,12 @@ resource "coder_agent" "dev" {
   EOT
 }
 
+# Add a cost so we get some quota usage in dev.coder.com
+resource "coder_metadata" "home_volume" {
+  resource_id = docker_volume.home_volume.id
+  daily_cost  = 1
+}
+
 resource "docker_volume" "home_volume" {
   name = "coder-${data.coder_workspace.me.id}-home"
   # Protect the volume from being deleted due to changes in attributes.
@@ -331,6 +349,9 @@ resource "docker_container" "workspace" {
   env = [
     "CODER_AGENT_TOKEN=${coder_agent.dev.token}",
     "USE_CAP_NET_ADMIN=true",
+    "CODER_PROC_PRIO_MGMT=1",
+    "CODER_PROC_OOM_SCORE=10",
+    "CODER_PROC_NICE_SCORE=1",
   ]
   host {
     host = "host.docker.internal"

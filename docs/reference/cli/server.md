@@ -321,7 +321,7 @@ When collecting agent stats, aggregate metrics by a given set of comma-separated
 | YAML        | <code>introspection.prometheus.collect_db_metrics</code> |
 | Default     | <code>false</code>                                       |
 
-Collect database metrics (may increase charges for metrics storage).
+Collect database query metrics (may increase charges for metrics storage). If set to false, a reduced set of database metrics are still collected.
 
 ### --pprof-enable
 
@@ -558,38 +558,6 @@ OIDC auth URL parameters to pass to the upstream provider.
 | Default     | <code>false</code>                       |
 
 Ignore the userinfo endpoint and only use the ID token for user information.
-
-### --oidc-organization-field
-
-|             |                                             |
-| ----------- | ------------------------------------------- |
-| Type        | <code>string</code>                         |
-| Environment | <code>$CODER_OIDC_ORGANIZATION_FIELD</code> |
-| YAML        | <code>oidc.organizationField</code>         |
-
-This field must be set if using the organization sync feature. Set to the claim to be used for organizations.
-
-### --oidc-organization-assign-default
-
-|             |                                                      |
-| ----------- | ---------------------------------------------------- |
-| Type        | <code>bool</code>                                    |
-| Environment | <code>$CODER_OIDC_ORGANIZATION_ASSIGN_DEFAULT</code> |
-| YAML        | <code>oidc.organizationAssignDefault</code>          |
-| Default     | <code>true</code>                                    |
-
-If set to true, users will always be added to the default organization. If organization sync is enabled, then the default org is always added to the user's set of expectedorganizations.
-
-### --oidc-organization-mapping
-
-|             |                                               |
-| ----------- | --------------------------------------------- |
-| Type        | <code>struct[map[string][]uuid.UUID]</code>   |
-| Environment | <code>$CODER_OIDC_ORGANIZATION_MAPPING</code> |
-| YAML        | <code>oidc.organizationMapping</code>         |
-| Default     | <code>{}</code>                               |
-
-A map of OIDC claims and the organizations in Coder it should map to. This is required because organization IDs must be used within Coder.
 
 ### --oidc-group-field
 
@@ -860,6 +828,16 @@ Output Stackdriver compatible logs to a given file.
 | Default     | <code>false</code>                                          |
 
 Allow administrators to enable Terraform debug output.
+
+### --additional-csp-policy
+
+|             |                                                  |
+| ----------- | ------------------------------------------------ |
+| Type        | <code>string-array</code>                        |
+| Environment | <code>$CODER_ADDITIONAL_CSP_POLICY</code>        |
+| YAML        | <code>networking.http.additionalCSPPolicy</code> |
+
+Coder configures a Content Security Policy (CSP) to protect against XSS attacks. This setting allows you to add additional CSP directives, which can open the attack surface of the deployment. Format matches the CSP directive format, e.g. --additional-csp-policy="script-src https://example.com".
 
 ### --dangerous-allow-path-app-sharing
 
@@ -1249,6 +1227,147 @@ Refresh interval for healthchecks.
 
 The threshold for the database health check. If the median latency of the database exceeds this threshold over 5 attempts, the database is considered unhealthy. The default value is 15ms.
 
+### --email-from
+
+|             |                                |
+| ----------- | ------------------------------ |
+| Type        | <code>string</code>            |
+| Environment | <code>$CODER_EMAIL_FROM</code> |
+| YAML        | <code>email.from</code>        |
+
+The sender's address to use.
+
+### --email-smarthost
+
+|             |                                     |
+| ----------- | ----------------------------------- |
+| Type        | <code>string</code>                 |
+| Environment | <code>$CODER_EMAIL_SMARTHOST</code> |
+| YAML        | <code>email.smarthost</code>        |
+
+The intermediary SMTP host through which emails are sent.
+
+### --email-hello
+
+|             |                                 |
+| ----------- | ------------------------------- |
+| Type        | <code>string</code>             |
+| Environment | <code>$CODER_EMAIL_HELLO</code> |
+| YAML        | <code>email.hello</code>        |
+| Default     | <code>localhost</code>          |
+
+The hostname identifying the SMTP server.
+
+### --email-force-tls
+
+|             |                                     |
+| ----------- | ----------------------------------- |
+| Type        | <code>bool</code>                   |
+| Environment | <code>$CODER_EMAIL_FORCE_TLS</code> |
+| YAML        | <code>email.forceTLS</code>         |
+| Default     | <code>false</code>                  |
+
+Force a TLS connection to the configured SMTP smarthost.
+
+### --email-auth-identity
+
+|             |                                         |
+| ----------- | --------------------------------------- |
+| Type        | <code>string</code>                     |
+| Environment | <code>$CODER_EMAIL_AUTH_IDENTITY</code> |
+| YAML        | <code>email.emailAuth.identity</code>   |
+
+Identity to use with PLAIN authentication.
+
+### --email-auth-username
+
+|             |                                         |
+| ----------- | --------------------------------------- |
+| Type        | <code>string</code>                     |
+| Environment | <code>$CODER_EMAIL_AUTH_USERNAME</code> |
+| YAML        | <code>email.emailAuth.username</code>   |
+
+Username to use with PLAIN/LOGIN authentication.
+
+### --email-auth-password
+
+|             |                                         |
+| ----------- | --------------------------------------- |
+| Type        | <code>string</code>                     |
+| Environment | <code>$CODER_EMAIL_AUTH_PASSWORD</code> |
+
+Password to use with PLAIN/LOGIN authentication.
+
+### --email-auth-password-file
+
+|             |                                              |
+| ----------- | -------------------------------------------- |
+| Type        | <code>string</code>                          |
+| Environment | <code>$CODER_EMAIL_AUTH_PASSWORD_FILE</code> |
+| YAML        | <code>email.emailAuth.passwordFile</code>    |
+
+File from which to load password for use with PLAIN/LOGIN authentication.
+
+### --email-tls-starttls
+
+|             |                                        |
+| ----------- | -------------------------------------- |
+| Type        | <code>bool</code>                      |
+| Environment | <code>$CODER_EMAIL_TLS_STARTTLS</code> |
+| YAML        | <code>email.emailTLS.startTLS</code>   |
+
+Enable STARTTLS to upgrade insecure SMTP connections using TLS.
+
+### --email-tls-server-name
+
+|             |                                          |
+| ----------- | ---------------------------------------- |
+| Type        | <code>string</code>                      |
+| Environment | <code>$CODER_EMAIL_TLS_SERVERNAME</code> |
+| YAML        | <code>email.emailTLS.serverName</code>   |
+
+Server name to verify against the target certificate.
+
+### --email-tls-skip-verify
+
+|             |                                                |
+| ----------- | ---------------------------------------------- |
+| Type        | <code>bool</code>                              |
+| Environment | <code>$CODER_EMAIL_TLS_SKIPVERIFY</code>       |
+| YAML        | <code>email.emailTLS.insecureSkipVerify</code> |
+
+Skip verification of the target server's certificate (insecure).
+
+### --email-tls-ca-cert-file
+
+|             |                                          |
+| ----------- | ---------------------------------------- |
+| Type        | <code>string</code>                      |
+| Environment | <code>$CODER_EMAIL_TLS_CACERTFILE</code> |
+| YAML        | <code>email.emailTLS.caCertFile</code>   |
+
+CA certificate file to use.
+
+### --email-tls-cert-file
+
+|             |                                        |
+| ----------- | -------------------------------------- |
+| Type        | <code>string</code>                    |
+| Environment | <code>$CODER_EMAIL_TLS_CERTFILE</code> |
+| YAML        | <code>email.emailTLS.certFile</code>   |
+
+Certificate file to use.
+
+### --email-tls-cert-key-file
+
+|             |                                           |
+| ----------- | ----------------------------------------- |
+| Type        | <code>string</code>                       |
+| Environment | <code>$CODER_EMAIL_TLS_CERTKEYFILE</code> |
+| YAML        | <code>email.emailTLS.certKeyFile</code>   |
+
+Certificate key file to use.
+
 ### --notifications-method
 
 |             |                                          |
@@ -1285,10 +1404,9 @@ The sender's address to use.
 
 |             |                                                   |
 | ----------- | ------------------------------------------------- |
-| Type        | <code>host:port</code>                            |
+| Type        | <code>string</code>                               |
 | Environment | <code>$CODER_NOTIFICATIONS_EMAIL_SMARTHOST</code> |
 | YAML        | <code>notifications.email.smarthost</code>        |
-| Default     | <code>localhost:587</code>                        |
 
 The intermediary SMTP host through which emails are sent.
 
@@ -1299,7 +1417,6 @@ The intermediary SMTP host through which emails are sent.
 | Type        | <code>string</code>                           |
 | Environment | <code>$CODER_NOTIFICATIONS_EMAIL_HELLO</code> |
 | YAML        | <code>notifications.email.hello</code>        |
-| Default     | <code>localhost</code>                        |
 
 The hostname identifying the SMTP server.
 
@@ -1310,7 +1427,6 @@ The hostname identifying the SMTP server.
 | Type        | <code>bool</code>                                 |
 | Environment | <code>$CODER_NOTIFICATIONS_EMAIL_FORCE_TLS</code> |
 | YAML        | <code>notifications.email.forceTLS</code>         |
-| Default     | <code>false</code>                                |
 
 Force a TLS connection to the configured SMTP smarthost.
 

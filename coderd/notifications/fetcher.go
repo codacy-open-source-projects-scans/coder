@@ -7,19 +7,15 @@ import (
 	"text/template"
 
 	"golang.org/x/xerrors"
-
-	"cdr.dev/slog"
 )
 
 func (n *notifier) fetchHelpers(ctx context.Context) (map[string]any, error) {
 	appName, err := n.fetchAppName(ctx)
 	if err != nil {
-		n.log.Error(ctx, "failed to fetch app name", slog.Error(err))
 		return nil, xerrors.Errorf("fetch app name: %w", err)
 	}
 	logoURL, err := n.fetchLogoURL(ctx)
 	if err != nil {
-		n.log.Error(ctx, "failed to fetch logo URL", slog.Error(err))
 		return nil, xerrors.Errorf("fetch logo URL: %w", err)
 	}
 
@@ -42,6 +38,10 @@ func (n *notifier) fetchAppName(ctx context.Context) (string, error) {
 		}
 		return "", xerrors.Errorf("get application name: %w", err)
 	}
+
+	if appName == "" {
+		appName = notificationsDefaultAppName
+	}
 	return appName, nil
 }
 
@@ -52,6 +52,10 @@ func (n *notifier) fetchLogoURL(ctx context.Context) (string, error) {
 			return notificationsDefaultLogoURL, nil
 		}
 		return "", xerrors.Errorf("get logo URL: %w", err)
+	}
+
+	if logoURL == "" {
+		logoURL = notificationsDefaultLogoURL
 	}
 	return logoURL, nil
 }

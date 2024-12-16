@@ -46,7 +46,7 @@ func TestDeploymentInsights(t *testing.T) {
 	require.NoError(t, err)
 
 	db, ps := dbtestutil.NewDB(t, dbtestutil.WithDumpOnFailure())
-	logger := slogtest.Make(t, &slogtest.Options{IgnoreErrors: false}).Leveled(slog.LevelDebug)
+	logger := testutil.Logger(t)
 	rollupEvents := make(chan dbrollup.Event)
 	client := coderdtest.New(t, &coderdtest.Options{
 		Database:                  db,
@@ -87,7 +87,7 @@ func TestDeploymentInsights(t *testing.T) {
 
 	conn, err := workspacesdk.New(client).
 		DialAgent(ctx, resources[0].Agents[0].ID, &workspacesdk.DialAgentOptions{
-			Logger: slogtest.Make(t, nil).Named("dialagent"),
+			Logger: testutil.Logger(t).Named("dialagent"),
 		})
 	require.NoError(t, err)
 	defer conn.Close()
@@ -127,7 +127,7 @@ func TestUserActivityInsights_SanityCheck(t *testing.T) {
 	t.Parallel()
 
 	db, ps := dbtestutil.NewDB(t)
-	logger := slogtest.Make(t, &slogtest.Options{IgnoreErrors: false}).Leveled(slog.LevelDebug)
+	logger := testutil.Logger(t)
 	client := coderdtest.New(t, &coderdtest.Options{
 		Database:                  db,
 		Pubsub:                    ps,
@@ -502,7 +502,7 @@ func TestTemplateInsights_Golden(t *testing.T) {
 	}
 
 	prepare := func(t *testing.T, templates []*testTemplate, users []*testUser, testData map[*testWorkspace]testDataGen) (*codersdk.Client, chan dbrollup.Event) {
-		logger := slogtest.Make(t, &slogtest.Options{IgnoreErrors: false}).Leveled(slog.LevelDebug)
+		logger := testutil.Logger(t)
 		db, ps := dbtestutil.NewDB(t)
 		events := make(chan dbrollup.Event)
 		client := coderdtest.New(t, &coderdtest.Options{
@@ -700,14 +700,13 @@ func TestTemplateInsights_Golden(t *testing.T) {
 					connectionCount = 0
 				}
 				for createdAt.Before(stat.endedAt) {
-					err = batcher.Add(createdAt, workspace.agentID, workspace.template.id, workspace.user.(*testUser).sdk.ID, workspace.id, &agentproto.Stats{
+					batcher.Add(createdAt, workspace.agentID, workspace.template.id, workspace.user.(*testUser).sdk.ID, workspace.id, &agentproto.Stats{
 						ConnectionCount:             connectionCount,
 						SessionCountVscode:          stat.sessionCountVSCode,
 						SessionCountJetbrains:       stat.sessionCountJetBrains,
 						SessionCountReconnectingPty: stat.sessionCountReconnectingPTY,
 						SessionCountSsh:             stat.sessionCountSSH,
 					}, false)
-					require.NoError(t, err, "want no error inserting agent stats")
 					createdAt = createdAt.Add(30 * time.Second)
 				}
 			}
@@ -1422,7 +1421,7 @@ func TestUserActivityInsights_Golden(t *testing.T) {
 	}
 
 	prepare := func(t *testing.T, templates []*testTemplate, users []*testUser, testData map[*testWorkspace]testDataGen) (*codersdk.Client, chan dbrollup.Event) {
-		logger := slogtest.Make(t, &slogtest.Options{IgnoreErrors: false}).Leveled(slog.LevelDebug)
+		logger := testutil.Logger(t)
 		db, ps := dbtestutil.NewDB(t)
 		events := make(chan dbrollup.Event)
 		client := coderdtest.New(t, &coderdtest.Options{
@@ -1599,14 +1598,13 @@ func TestUserActivityInsights_Golden(t *testing.T) {
 					connectionCount = 0
 				}
 				for createdAt.Before(stat.endedAt) {
-					err = batcher.Add(createdAt, workspace.agentID, workspace.template.id, workspace.user.(*testUser).sdk.ID, workspace.id, &agentproto.Stats{
+					batcher.Add(createdAt, workspace.agentID, workspace.template.id, workspace.user.(*testUser).sdk.ID, workspace.id, &agentproto.Stats{
 						ConnectionCount:             connectionCount,
 						SessionCountVscode:          stat.sessionCountVSCode,
 						SessionCountJetbrains:       stat.sessionCountJetBrains,
 						SessionCountReconnectingPty: stat.sessionCountReconnectingPTY,
 						SessionCountSsh:             stat.sessionCountSSH,
 					}, false)
-					require.NoError(t, err, "want no error inserting agent stats")
 					createdAt = createdAt.Add(30 * time.Second)
 				}
 			}

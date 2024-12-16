@@ -20,6 +20,8 @@ yarn-error.log
 # Allow VSCode recommendations and default settings in project root.
 !/.vscode/extensions.json
 !/.vscode/settings.json
+# Allow code snippets
+!/.vscode/*.code-snippets
 
 # Front-end ignore patterns.
 .next/
@@ -74,6 +76,9 @@ result
 
 # pnpm
 .pnpm-store/
+
+# Zed
+.zed_server
 # .prettierignore.include:
 # Helm templates contain variables that are invalid YAML and can't be formatted
 # by Prettier.

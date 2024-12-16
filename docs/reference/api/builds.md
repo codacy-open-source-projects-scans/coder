@@ -52,6 +52,11 @@ curl -X GET http://coder-server:8080/api/v2/users/{user}/workspace/{workspacenam
 		},
 		"worker_id": "ae5fa6f7-c55b-40c1-b40a-b36ac467652b"
 	},
+	"matched_provisioners": {
+		"available": 0,
+		"count": 0,
+		"most_recently_seen": "2019-08-24T14:15:22Z"
+	},
 	"max_deadline": "2019-08-24T14:15:22Z",
 	"reason": "initiator",
 	"resources": [
@@ -236,6 +241,11 @@ curl -X GET http://coder-server:8080/api/v2/workspacebuilds/{workspacebuild} \
 			"property2": "string"
 		},
 		"worker_id": "ae5fa6f7-c55b-40c1-b40a-b36ac467652b"
+	},
+	"matched_provisioners": {
+		"available": 0,
+		"count": 0,
+		"most_recently_seen": "2019-08-24T14:15:22Z"
 	},
 	"max_deadline": "2019-08-24T14:15:22Z",
 	"reason": "initiator",
@@ -856,6 +866,11 @@ curl -X GET http://coder-server:8080/api/v2/workspacebuilds/{workspacebuild}/sta
 		},
 		"worker_id": "ae5fa6f7-c55b-40c1-b40a-b36ac467652b"
 	},
+	"matched_provisioners": {
+		"available": 0,
+		"count": 0,
+		"most_recently_seen": "2019-08-24T14:15:22Z"
+	},
 	"max_deadline": "2019-08-24T14:15:22Z",
 	"reason": "initiator",
 	"resources": [
@@ -1016,14 +1031,25 @@ curl -X GET http://coder-server:8080/api/v2/workspacebuilds/{workspacebuild}/tim
 
 ```json
 {
+	"agent_connection_timings": [
+		{
+			"ended_at": "2019-08-24T14:15:22Z",
+			"stage": "init",
+			"started_at": "2019-08-24T14:15:22Z",
+			"workspace_agent_id": "string",
+			"workspace_agent_name": "string"
+		}
+	],
 	"agent_script_timings": [
 		{
 			"display_name": "string",
 			"ended_at": "2019-08-24T14:15:22Z",
 			"exit_code": 0,
-			"stage": "string",
+			"stage": "init",
 			"started_at": "2019-08-24T14:15:22Z",
-			"status": "string"
+			"status": "string",
+			"workspace_agent_id": "string",
+			"workspace_agent_name": "string"
 		}
 	],
 	"provisioner_timings": [
@@ -1033,7 +1059,7 @@ curl -X GET http://coder-server:8080/api/v2/workspacebuilds/{workspacebuild}/tim
 			"job_id": "453bd7d7-5355-4d6d-a38e-d9e7eb218c3f",
 			"resource": "string",
 			"source": "string",
-			"stage": "string",
+			"stage": "init",
 			"started_at": "2019-08-24T14:15:22Z"
 		}
 	]
@@ -1102,6 +1128,11 @@ curl -X GET http://coder-server:8080/api/v2/workspaces/{workspace}/builds \
 				"property2": "string"
 			},
 			"worker_id": "ae5fa6f7-c55b-40c1-b40a-b36ac467652b"
+		},
+		"matched_provisioners": {
+			"available": 0,
+			"count": 0,
+			"most_recently_seen": "2019-08-24T14:15:22Z"
 		},
 		"max_deadline": "2019-08-24T14:15:22Z",
 		"reason": "initiator",
@@ -1266,6 +1297,10 @@ Status Code **200**
 | `»» tags`                        | object                                                                                                 | false    |              |                                                                                                                                                                                                                                                |
 | `»»» [any property]`             | string                                                                                                 | false    |              |                                                                                                                                                                                                                                                |
 | `»» worker_id`                   | string(uuid)                                                                                           | false    |              |                                                                                                                                                                                                                                                |
+| `» matched_provisioners`         | [codersdk.MatchedProvisioners](schemas.md#codersdkmatchedprovisioners)                                 | false    |              |                                                                                                                                                                                                                                                |
+| `»» available`                   | integer                                                                                                | false    |              | Available is the number of provisioner daemons that are available to take jobs. This may be less than the count if some provisioners are busy or have been stopped.                                                                            |
+| `»» count`                       | integer                                                                                                | false    |              | Count is the number of provisioner daemons that matched the given tags. If the count is 0, it means no provisioner daemons matched the requested tags.                                                                                         |
+| `»» most_recently_seen`          | string(date-time)                                                                                      | false    |              | Most recently seen is the most recently seen time of the set of matched provisioners. If no provisioners matched, this field will be null.                                                                                                     |
 | `» max_deadline`                 | string(date-time)                                                                                      | false    |              |                                                                                                                                                                                                                                                |
 | `» reason`                       | [codersdk.BuildReason](schemas.md#codersdkbuildreason)                                                 | false    |              |                                                                                                                                                                                                                                                |
 | `» resources`                    | array                                                                                                  | false    |              |                                                                                                                                                                                                                                                |
@@ -1447,7 +1482,7 @@ curl -X POST http://coder-server:8080/api/v2/workspaces/{workspace}/builds \
 	],
 	"state": [0],
 	"template_version_id": "0ba39c92-1f1b-4c32-aa3e-9925d7713eb1",
-	"transition": "create"
+	"transition": "start"
 }
 ```
 
@@ -1488,6 +1523,11 @@ curl -X POST http://coder-server:8080/api/v2/workspaces/{workspace}/builds \
 			"property2": "string"
 		},
 		"worker_id": "ae5fa6f7-c55b-40c1-b40a-b36ac467652b"
+	},
+	"matched_provisioners": {
+		"available": 0,
+		"count": 0,
+		"most_recently_seen": "2019-08-24T14:15:22Z"
 	},
 	"max_deadline": "2019-08-24T14:15:22Z",
 	"reason": "initiator",

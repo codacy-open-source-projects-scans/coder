@@ -29,11 +29,13 @@ import (
 	"github.com/coder/coder/v2/coderd/notifications"
 	"github.com/coder/coder/v2/coderd/rbac"
 	"github.com/coder/coder/v2/coderd/rbac/policy"
+	"github.com/coder/coder/v2/coderd/schedule"
 	"github.com/coder/coder/v2/coderd/schedule/cron"
 	"github.com/coder/coder/v2/coderd/searchquery"
 	"github.com/coder/coder/v2/coderd/telemetry"
 	"github.com/coder/coder/v2/coderd/util/ptr"
 	"github.com/coder/coder/v2/coderd/wsbuilder"
+	"github.com/coder/coder/v2/coderd/wspubsub"
 	"github.com/coder/coder/v2/codersdk"
 	"github.com/coder/coder/v2/codersdk/agentsdk"
 )
@@ -553,6 +555,14 @@ func createWorkspace(
 		return
 	}
 
+	nextStartAt := sql.NullTime{}
+	if dbAutostartSchedule.Valid {
+		next, err := schedule.NextAllowedAutostart(dbtime.Now(), dbAutostartSchedule.String, templateSchedule)
+		if err == nil {
+			nextStartAt = sql.NullTime{Valid: true, Time: dbtime.Time(next.UTC())}
+		}
+	}
+
 	dbTTL, err := validWorkspaceTTLMillis(req.TTLMillis, templateSchedule.DefaultTTL)
 	if err != nil {
 		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
@@ -592,8 +602,7 @@ func createWorkspace(
 			}},
 		})
 		return
-	}
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	} else if !errors.Is(err, sql.ErrNoRows) {
 		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
 			Message: fmt.Sprintf("Internal error fetching workspace by name %q.", req.Name),
 			Detail:  err.Error(),
@@ -602,8 +611,9 @@ func createWorkspace(
 	}
 
 	var (
-		provisionerJob *database.ProvisionerJob
-		workspaceBuild *database.WorkspaceBuild
+		provisionerJob     *database.ProvisionerJob
+		workspaceBuild     *database.WorkspaceBuild
+		provisionerDaemons []database.GetEligibleProvisionerDaemonsByProvisionerJobIDsRow
 	)
 	err = api.Database.InTx(func(db database.Store) error {
 		now := dbtime.Now()
@@ -617,6 +627,7 @@ func createWorkspace(
 			TemplateID:        template.ID,
 			Name:              req.Name,
 			AutostartSchedule: dbAutostartSchedule,
+			NextStartAt:       nextStartAt,
 			Ttl:               dbTTL,
 			// The workspaces page will sort by last used at, and it's useful to
 			// have the newly created workspace at the top of the list!
@@ -644,7 +655,7 @@ func createWorkspace(
 			builder = builder.VersionID(req.TemplateVersionID)
 		}
 
-		workspaceBuild, provisionerJob, err = builder.Build(
+		workspaceBuild, provisionerJob, provisionerDaemons, err = builder.Build(
 			ctx,
 			db,
 			func(action policy.Action, object rbac.Objecter) bool {
@@ -654,6 +665,7 @@ func createWorkspace(
 		)
 		return err
 	}, nil)
+
 	var bldErr wsbuilder.BuildError
 	if xerrors.As(err, &bldErr) {
 		httpapi.Write(ctx, rw, bldErr.Status, codersdk.Response{
@@ -674,6 +686,7 @@ func createWorkspace(
 		// Client probably doesn't care about this error, so just log it.
 		api.Logger.Error(ctx, "failed to post provisioner job to pubsub", slog.Error(err))
 	}
+
 	auditReq.New = workspace.WorkspaceTable()
 
 	api.Telemetry.Report(&telemetry.Snapshot{
@@ -695,6 +708,7 @@ func createWorkspace(
 		[]database.WorkspaceAgentScript{},
 		[]database.WorkspaceAgentLogSource{},
 		database.TemplateVersion{},
+		provisionerDaemons,
 	)
 	if err != nil {
 		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
@@ -806,7 +820,11 @@ func (api *API) patchWorkspace(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	api.publishWorkspaceUpdate(ctx, workspace.ID)
+	api.publishWorkspaceUpdate(ctx, workspace.OwnerID, wspubsub.WorkspaceEvent{
+		Kind:        wspubsub.WorkspaceEventKindMetadataUpdate,
+		WorkspaceID: workspace.ID,
+	})
+
 	aReq.New = newWorkspace
 
 	rw.WriteHeader(http.StatusNoContent)
@@ -868,9 +886,18 @@ func (api *API) putWorkspaceAutostart(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	nextStartAt := sql.NullTime{}
+	if dbSched.Valid {
+		next, err := schedule.NextAllowedAutostart(dbtime.Now(), dbSched.String, templateSchedule)
+		if err == nil {
+			nextStartAt = sql.NullTime{Valid: true, Time: dbtime.Time(next.UTC())}
+		}
+	}
+
 	err = api.Database.UpdateWorkspaceAutostart(ctx, database.UpdateWorkspaceAutostartParams{
 		ID:                workspace.ID,
 		AutostartSchedule: dbSched,
+		NextStartAt:       nextStartAt,
 	})
 	if err != nil {
 		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
@@ -1051,7 +1078,8 @@ func (api *API) putWorkspaceDormant(rw http.ResponseWriter, r *http.Request) {
 		if initiatorErr == nil && tmplErr == nil {
 			dormantTime := dbtime.Now().Add(time.Duration(tmpl.TimeTilDormant))
 			_, err = api.NotificationsEnqueuer.Enqueue(
-				ctx,
+				// nolint:gocritic // Need notifier actor to enqueue notifications
+				dbauthz.AsNotifier(ctx),
 				newWorkspace.OwnerID,
 				notifications.TemplateWorkspaceDormant,
 				map[string]string{
@@ -1216,7 +1244,11 @@ func (api *API) putExtendWorkspace(rw http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		api.Logger.Info(ctx, "extending workspace", slog.Error(err))
 	}
-	api.publishWorkspaceUpdate(ctx, workspace.ID)
+
+	api.publishWorkspaceUpdate(ctx, workspace.OwnerID, wspubsub.WorkspaceEvent{
+		Kind:        wspubsub.WorkspaceEventKindMetadataUpdate,
+		WorkspaceID: workspace.ID,
+	})
 	httpapi.Write(ctx, rw, code, resp)
 }
 
@@ -1667,7 +1699,17 @@ func (api *API) watchWorkspace(rw http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	cancelWorkspaceSubscribe, err := api.Pubsub.Subscribe(codersdk.WorkspaceNotifyChannel(workspace.ID), sendUpdate)
+	cancelWorkspaceSubscribe, err := api.Pubsub.SubscribeWithErr(wspubsub.WorkspaceEventChannel(workspace.OwnerID),
+		wspubsub.HandleWorkspaceEvent(
+			func(ctx context.Context, payload wspubsub.WorkspaceEvent, err error) {
+				if err != nil {
+					return
+				}
+				if payload.WorkspaceID != workspace.ID {
+					return
+				}
+				sendUpdate(ctx, nil)
+			}))
 	if err != nil {
 		_ = sendEvent(ctx, codersdk.ServerSentEvent{
 			Type: codersdk.ServerSentEventTypeError,
@@ -1796,6 +1838,7 @@ func (api *API) workspaceData(ctx context.Context, workspaces []database.Workspa
 		data.scripts,
 		data.logSources,
 		data.templateVersions,
+		data.provisionerDaemons,
 	)
 	if err != nil {
 		return workspaceData{}, xerrors.Errorf("convert workspace builds: %w", err)
@@ -1875,6 +1918,11 @@ func convertWorkspace(
 		deletingAt = &workspace.DeletingAt.Time
 	}
 
+	var nextStartAt *time.Time
+	if workspace.NextStartAt.Valid {
+		nextStartAt = &workspace.NextStartAt.Time
+	}
+
 	failingAgents := []uuid.UUID{}
 	for _, resource := range workspaceBuild.Resources {
 		for _, agent := range resource.Agents {
@@ -1925,6 +1973,7 @@ func convertWorkspace(
 		AutomaticUpdates: codersdk.AutomaticUpdates(workspace.AutomaticUpdates),
 		AllowRenames:     allowRenames,
 		Favorite:         requesterFavorite,
+		NextStartAt:      nextStartAt,
 	}, nil
 }
 
@@ -2006,11 +2055,24 @@ func validWorkspaceSchedule(s *string) (sql.NullString, error) {
 	}, nil
 }
 
-func (api *API) publishWorkspaceUpdate(ctx context.Context, workspaceID uuid.UUID) {
-	err := api.Pubsub.Publish(codersdk.WorkspaceNotifyChannel(workspaceID), []byte{})
+func (api *API) publishWorkspaceUpdate(ctx context.Context, ownerID uuid.UUID, event wspubsub.WorkspaceEvent) {
+	err := event.Validate()
+	if err != nil {
+		api.Logger.Warn(ctx, "invalid workspace update event",
+			slog.F("workspace_id", event.WorkspaceID),
+			slog.F("event_kind", event.Kind), slog.Error(err))
+		return
+	}
+	msg, err := json.Marshal(event)
+	if err != nil {
+		api.Logger.Warn(ctx, "failed to marshal workspace update",
+			slog.F("workspace_id", event.WorkspaceID), slog.Error(err))
+		return
+	}
+	err = api.Pubsub.Publish(wspubsub.WorkspaceEventChannel(ownerID), msg)
 	if err != nil {
 		api.Logger.Warn(ctx, "failed to publish workspace update",
-			slog.F("workspace_id", workspaceID), slog.Error(err))
+			slog.F("workspace_id", event.WorkspaceID), slog.Error(err))
 	}
 }
 

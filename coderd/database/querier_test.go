@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"cdr.dev/slog/sloggers/slogtest"
@@ -24,7 +25,10 @@ import (
 	"github.com/coder/coder/v2/coderd/database/dbtestutil"
 	"github.com/coder/coder/v2/coderd/database/dbtime"
 	"github.com/coder/coder/v2/coderd/database/migrations"
+	"github.com/coder/coder/v2/coderd/httpmw"
 	"github.com/coder/coder/v2/coderd/rbac"
+	"github.com/coder/coder/v2/coderd/rbac/policy"
+	"github.com/coder/coder/v2/provisionersdk"
 	"github.com/coder/coder/v2/testutil"
 )
 
@@ -206,6 +210,145 @@ func TestGetDeploymentWorkspaceAgentUsageStats(t *testing.T) {
 		require.Equal(t, int64(0), stats.SessionCountSSH)
 		require.Equal(t, int64(0), stats.SessionCountReconnectingPTY)
 		require.Equal(t, int64(0), stats.SessionCountJetBrains)
+	})
+}
+
+func TestGetEligibleProvisionerDaemonsByProvisionerJobIDs(t *testing.T) {
+	t.Parallel()
+
+	t.Run("NoJobsReturnsEmpty", func(t *testing.T) {
+		t.Parallel()
+		db, _ := dbtestutil.NewDB(t)
+		daemons, err := db.GetEligibleProvisionerDaemonsByProvisionerJobIDs(context.Background(), []uuid.UUID{})
+		require.NoError(t, err)
+		require.Empty(t, daemons)
+	})
+
+	t.Run("MatchesProvisionerType", func(t *testing.T) {
+		t.Parallel()
+		db, _ := dbtestutil.NewDB(t)
+		org := dbgen.Organization(t, db, database.Organization{})
+
+		job := dbgen.ProvisionerJob(t, db, nil, database.ProvisionerJob{
+			OrganizationID: org.ID,
+			Type:           database.ProvisionerJobTypeWorkspaceBuild,
+			Provisioner:    database.ProvisionerTypeEcho,
+			Tags: database.StringMap{
+				provisionersdk.TagScope: provisionersdk.ScopeOrganization,
+			},
+		})
+
+		matchingDaemon := dbgen.ProvisionerDaemon(t, db, database.ProvisionerDaemon{
+			Name:           "matching-daemon",
+			OrganizationID: org.ID,
+			Provisioners:   []database.ProvisionerType{database.ProvisionerTypeEcho},
+			Tags: database.StringMap{
+				provisionersdk.TagScope: provisionersdk.ScopeOrganization,
+			},
+		})
+
+		dbgen.ProvisionerDaemon(t, db, database.ProvisionerDaemon{
+			Name:           "non-matching-daemon",
+			OrganizationID: org.ID,
+			Provisioners:   []database.ProvisionerType{database.ProvisionerTypeTerraform},
+			Tags: database.StringMap{
+				provisionersdk.TagScope: provisionersdk.ScopeOrganization,
+			},
+		})
+
+		daemons, err := db.GetEligibleProvisionerDaemonsByProvisionerJobIDs(context.Background(), []uuid.UUID{job.ID})
+		require.NoError(t, err)
+		require.Len(t, daemons, 1)
+		require.Equal(t, matchingDaemon.ID, daemons[0].ProvisionerDaemon.ID)
+	})
+
+	t.Run("MatchesOrganizationScope", func(t *testing.T) {
+		t.Parallel()
+		db, _ := dbtestutil.NewDB(t)
+		org := dbgen.Organization(t, db, database.Organization{})
+
+		job := dbgen.ProvisionerJob(t, db, nil, database.ProvisionerJob{
+			OrganizationID: org.ID,
+			Type:           database.ProvisionerJobTypeWorkspaceBuild,
+			Provisioner:    database.ProvisionerTypeEcho,
+			Tags: database.StringMap{
+				provisionersdk.TagScope: provisionersdk.ScopeOrganization,
+				provisionersdk.TagOwner: "",
+			},
+		})
+
+		orgDaemon := dbgen.ProvisionerDaemon(t, db, database.ProvisionerDaemon{
+			Name:           "org-daemon",
+			OrganizationID: org.ID,
+			Provisioners:   []database.ProvisionerType{database.ProvisionerTypeEcho},
+			Tags: database.StringMap{
+				provisionersdk.TagScope: provisionersdk.ScopeOrganization,
+				provisionersdk.TagOwner: "",
+			},
+		})
+
+		dbgen.ProvisionerDaemon(t, db, database.ProvisionerDaemon{
+			Name:           "user-daemon",
+			OrganizationID: org.ID,
+			Provisioners:   []database.ProvisionerType{database.ProvisionerTypeEcho},
+			Tags: database.StringMap{
+				provisionersdk.TagScope: provisionersdk.ScopeUser,
+			},
+		})
+
+		daemons, err := db.GetEligibleProvisionerDaemonsByProvisionerJobIDs(context.Background(), []uuid.UUID{job.ID})
+		require.NoError(t, err)
+		require.Len(t, daemons, 1)
+		require.Equal(t, orgDaemon.ID, daemons[0].ProvisionerDaemon.ID)
+	})
+
+	t.Run("MatchesMultipleProvisioners", func(t *testing.T) {
+		t.Parallel()
+		db, _ := dbtestutil.NewDB(t)
+		org := dbgen.Organization(t, db, database.Organization{})
+
+		job := dbgen.ProvisionerJob(t, db, nil, database.ProvisionerJob{
+			OrganizationID: org.ID,
+			Type:           database.ProvisionerJobTypeWorkspaceBuild,
+			Provisioner:    database.ProvisionerTypeEcho,
+			Tags: database.StringMap{
+				provisionersdk.TagScope: provisionersdk.ScopeOrganization,
+			},
+		})
+
+		daemon1 := dbgen.ProvisionerDaemon(t, db, database.ProvisionerDaemon{
+			Name:           "daemon-1",
+			OrganizationID: org.ID,
+			Provisioners:   []database.ProvisionerType{database.ProvisionerTypeEcho},
+			Tags: database.StringMap{
+				provisionersdk.TagScope: provisionersdk.ScopeOrganization,
+			},
+		})
+
+		daemon2 := dbgen.ProvisionerDaemon(t, db, database.ProvisionerDaemon{
+			Name:           "daemon-2",
+			OrganizationID: org.ID,
+			Provisioners:   []database.ProvisionerType{database.ProvisionerTypeEcho},
+			Tags: database.StringMap{
+				provisionersdk.TagScope: provisionersdk.ScopeOrganization,
+			},
+		})
+
+		dbgen.ProvisionerDaemon(t, db, database.ProvisionerDaemon{
+			Name:           "daemon-3",
+			OrganizationID: org.ID,
+			Provisioners:   []database.ProvisionerType{database.ProvisionerTypeTerraform},
+			Tags: database.StringMap{
+				provisionersdk.TagScope: provisionersdk.ScopeOrganization,
+			},
+		})
+
+		daemons, err := db.GetEligibleProvisionerDaemonsByProvisionerJobIDs(context.Background(), []uuid.UUID{job.ID})
+		require.NoError(t, err)
+		require.Len(t, daemons, 2)
+
+		daemonIDs := []uuid.UUID{daemons[0].ProvisionerDaemon.ID, daemons[1].ProvisionerDaemon.ID}
+		require.ElementsMatch(t, []uuid.UUID{daemon1.ID, daemon2.ID}, daemonIDs)
 	})
 }
 
@@ -612,6 +755,131 @@ func TestGetWorkspaceAgentUsageStatsAndLabels(t *testing.T) {
 	})
 }
 
+func TestGetAuthorizedWorkspacesAndAgentsByOwnerID(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.SkipNow()
+	}
+
+	sqlDB := testSQLDB(t)
+	err := migrations.Up(sqlDB)
+	require.NoError(t, err)
+	db := database.New(sqlDB)
+	authorizer := rbac.NewStrictCachingAuthorizer(prometheus.NewRegistry())
+
+	org := dbgen.Organization(t, db, database.Organization{})
+	owner := dbgen.User(t, db, database.User{
+		RBACRoles: []string{rbac.RoleOwner().String()},
+	})
+	user := dbgen.User(t, db, database.User{})
+	tpl := dbgen.Template(t, db, database.Template{
+		OrganizationID: org.ID,
+		CreatedBy:      owner.ID,
+	})
+
+	pendingID := uuid.New()
+	createTemplateVersion(t, db, tpl, tvArgs{
+		Status:          database.ProvisionerJobStatusPending,
+		CreateWorkspace: true,
+		WorkspaceID:     pendingID,
+		CreateAgent:     true,
+	})
+	failedID := uuid.New()
+	createTemplateVersion(t, db, tpl, tvArgs{
+		Status:          database.ProvisionerJobStatusFailed,
+		CreateWorkspace: true,
+		CreateAgent:     true,
+		WorkspaceID:     failedID,
+	})
+	succeededID := uuid.New()
+	createTemplateVersion(t, db, tpl, tvArgs{
+		Status:              database.ProvisionerJobStatusSucceeded,
+		WorkspaceTransition: database.WorkspaceTransitionStart,
+		CreateWorkspace:     true,
+		WorkspaceID:         succeededID,
+		CreateAgent:         true,
+		ExtraAgents:         1,
+		ExtraBuilds:         2,
+	})
+	deletedID := uuid.New()
+	createTemplateVersion(t, db, tpl, tvArgs{
+		Status:              database.ProvisionerJobStatusSucceeded,
+		WorkspaceTransition: database.WorkspaceTransitionDelete,
+		CreateWorkspace:     true,
+		WorkspaceID:         deletedID,
+		CreateAgent:         false,
+	})
+
+	ownerCheckFn := func(ownerRows []database.GetWorkspacesAndAgentsByOwnerIDRow) {
+		require.Len(t, ownerRows, 4)
+		for _, row := range ownerRows {
+			switch row.ID {
+			case pendingID:
+				require.Len(t, row.Agents, 1)
+				require.Equal(t, database.ProvisionerJobStatusPending, row.JobStatus)
+			case failedID:
+				require.Len(t, row.Agents, 1)
+				require.Equal(t, database.ProvisionerJobStatusFailed, row.JobStatus)
+			case succeededID:
+				require.Len(t, row.Agents, 2)
+				require.Equal(t, database.ProvisionerJobStatusSucceeded, row.JobStatus)
+				require.Equal(t, database.WorkspaceTransitionStart, row.Transition)
+			case deletedID:
+				require.Len(t, row.Agents, 0)
+				require.Equal(t, database.ProvisionerJobStatusSucceeded, row.JobStatus)
+				require.Equal(t, database.WorkspaceTransitionDelete, row.Transition)
+			default:
+				t.Fatalf("unexpected workspace ID: %s", row.ID)
+			}
+		}
+	}
+	t.Run("sqlQuerier", func(t *testing.T) {
+		t.Parallel()
+		ctx := testutil.Context(t, testutil.WaitMedium)
+
+		userSubject, _, err := httpmw.UserRBACSubject(ctx, db, user.ID, rbac.ExpandableScope(rbac.ScopeAll))
+		require.NoError(t, err)
+		preparedUser, err := authorizer.Prepare(ctx, userSubject, policy.ActionRead, rbac.ResourceWorkspace.Type)
+		require.NoError(t, err)
+		userCtx := dbauthz.As(ctx, userSubject)
+		userRows, err := db.GetAuthorizedWorkspacesAndAgentsByOwnerID(userCtx, owner.ID, preparedUser)
+		require.NoError(t, err)
+		require.Len(t, userRows, 0)
+
+		ownerSubject, _, err := httpmw.UserRBACSubject(ctx, db, owner.ID, rbac.ExpandableScope(rbac.ScopeAll))
+		require.NoError(t, err)
+		preparedOwner, err := authorizer.Prepare(ctx, ownerSubject, policy.ActionRead, rbac.ResourceWorkspace.Type)
+		require.NoError(t, err)
+		ownerCtx := dbauthz.As(ctx, ownerSubject)
+		ownerRows, err := db.GetAuthorizedWorkspacesAndAgentsByOwnerID(ownerCtx, owner.ID, preparedOwner)
+		require.NoError(t, err)
+		ownerCheckFn(ownerRows)
+	})
+
+	t.Run("dbauthz", func(t *testing.T) {
+		t.Parallel()
+		ctx := testutil.Context(t, testutil.WaitMedium)
+
+		authzdb := dbauthz.New(db, authorizer, slogtest.Make(t, &slogtest.Options{}), coderdtest.AccessControlStorePointer())
+
+		userSubject, _, err := httpmw.UserRBACSubject(ctx, authzdb, user.ID, rbac.ExpandableScope(rbac.ScopeAll))
+		require.NoError(t, err)
+		userCtx := dbauthz.As(ctx, userSubject)
+
+		ownerSubject, _, err := httpmw.UserRBACSubject(ctx, authzdb, owner.ID, rbac.ExpandableScope(rbac.ScopeAll))
+		require.NoError(t, err)
+		ownerCtx := dbauthz.As(ctx, ownerSubject)
+
+		userRows, err := authzdb.GetWorkspacesAndAgentsByOwnerID(userCtx, owner.ID)
+		require.NoError(t, err)
+		require.Len(t, userRows, 0)
+
+		ownerRows, err := authzdb.GetWorkspacesAndAgentsByOwnerID(ownerCtx, owner.ID)
+		require.NoError(t, err)
+		ownerCheckFn(ownerRows)
+	})
+}
+
 func TestInsertWorkspaceAgentLogs(t *testing.T) {
 	t.Parallel()
 	if testing.Short() {
@@ -893,7 +1161,7 @@ func TestQueuePosition(t *testing.T) {
 			UUID:  uuid.New(),
 			Valid: true,
 		},
-		Tags: json.RawMessage("{}"),
+		ProvisionerTags: json.RawMessage("{}"),
 	})
 	require.NoError(t, err)
 	require.Equal(t, jobs[0].ID, job.ID)
@@ -1537,7 +1805,11 @@ type tvArgs struct {
 	Status database.ProvisionerJobStatus
 	// CreateWorkspace is true if we should create a workspace for the template version
 	CreateWorkspace     bool
+	WorkspaceID         uuid.UUID
+	CreateAgent         bool
 	WorkspaceTransition database.WorkspaceTransition
+	ExtraAgents         int
+	ExtraBuilds         int
 }
 
 // createTemplateVersion is a helper function to create a version with its dependencies.
@@ -1554,6 +1826,84 @@ func createTemplateVersion(t testing.TB, db database.Store, tpl database.Templat
 		CreatedBy:      tpl.CreatedBy,
 	})
 
+	latestJob := database.ProvisionerJob{
+		ID:             version.JobID,
+		Error:          sql.NullString{},
+		OrganizationID: tpl.OrganizationID,
+		InitiatorID:    tpl.CreatedBy,
+		Type:           database.ProvisionerJobTypeTemplateVersionImport,
+	}
+	setJobStatus(t, args.Status, &latestJob)
+	dbgen.ProvisionerJob(t, db, nil, latestJob)
+	if args.CreateWorkspace {
+		wrk := dbgen.Workspace(t, db, database.WorkspaceTable{
+			ID:             args.WorkspaceID,
+			CreatedAt:      time.Time{},
+			UpdatedAt:      time.Time{},
+			OwnerID:        tpl.CreatedBy,
+			OrganizationID: tpl.OrganizationID,
+			TemplateID:     tpl.ID,
+		})
+		trans := database.WorkspaceTransitionStart
+		if args.WorkspaceTransition != "" {
+			trans = args.WorkspaceTransition
+		}
+		latestJob = database.ProvisionerJob{
+			Type:           database.ProvisionerJobTypeWorkspaceBuild,
+			InitiatorID:    tpl.CreatedBy,
+			OrganizationID: tpl.OrganizationID,
+		}
+		setJobStatus(t, args.Status, &latestJob)
+		latestJob = dbgen.ProvisionerJob(t, db, nil, latestJob)
+		latestResource := dbgen.WorkspaceResource(t, db, database.WorkspaceResource{
+			JobID: latestJob.ID,
+		})
+		dbgen.WorkspaceBuild(t, db, database.WorkspaceBuild{
+			WorkspaceID:       wrk.ID,
+			TemplateVersionID: version.ID,
+			BuildNumber:       1,
+			Transition:        trans,
+			InitiatorID:       tpl.CreatedBy,
+			JobID:             latestJob.ID,
+		})
+		for i := 0; i < args.ExtraBuilds; i++ {
+			latestJob = database.ProvisionerJob{
+				Type:           database.ProvisionerJobTypeWorkspaceBuild,
+				InitiatorID:    tpl.CreatedBy,
+				OrganizationID: tpl.OrganizationID,
+			}
+			setJobStatus(t, args.Status, &latestJob)
+			latestJob = dbgen.ProvisionerJob(t, db, nil, latestJob)
+			latestResource = dbgen.WorkspaceResource(t, db, database.WorkspaceResource{
+				JobID: latestJob.ID,
+			})
+			dbgen.WorkspaceBuild(t, db, database.WorkspaceBuild{
+				WorkspaceID:       wrk.ID,
+				TemplateVersionID: version.ID,
+				BuildNumber:       int32(i) + 2,
+				Transition:        trans,
+				InitiatorID:       tpl.CreatedBy,
+				JobID:             latestJob.ID,
+			})
+		}
+
+		if args.CreateAgent {
+			dbgen.WorkspaceAgent(t, db, database.WorkspaceAgent{
+				ResourceID: latestResource.ID,
+			})
+		}
+		for i := 0; i < args.ExtraAgents; i++ {
+			dbgen.WorkspaceAgent(t, db, database.WorkspaceAgent{
+				ResourceID: latestResource.ID,
+			})
+		}
+	}
+	return version
+}
+
+func setJobStatus(t testing.TB, status database.ProvisionerJobStatus, j *database.ProvisionerJob) {
+	t.Helper()
+
 	earlier := sql.NullTime{
 		Time:  dbtime.Now().Add(time.Second * -30),
 		Valid: true,
@@ -1562,17 +1912,7 @@ func createTemplateVersion(t testing.TB, db database.Store, tpl database.Templat
 		Time:  dbtime.Now(),
 		Valid: true,
 	}
-	j := database.ProvisionerJob{
-		ID:             version.JobID,
-		CreatedAt:      earlier.Time,
-		UpdatedAt:      earlier.Time,
-		Error:          sql.NullString{},
-		OrganizationID: tpl.OrganizationID,
-		InitiatorID:    tpl.CreatedBy,
-		Type:           database.ProvisionerJobTypeTemplateVersionImport,
-	}
-
-	switch args.Status {
+	switch status {
 	case database.ProvisionerJobStatusRunning:
 		j.StartedAt = earlier
 	case database.ProvisionerJobStatusPending:
@@ -1591,38 +1931,8 @@ func createTemplateVersion(t testing.TB, db database.Store, tpl database.Templat
 		j.StartedAt = earlier
 		j.CompletedAt = now
 	default:
-		t.Fatalf("invalid status: %s", args.Status)
+		t.Fatalf("invalid status: %s", status)
 	}
-
-	dbgen.ProvisionerJob(t, db, nil, j)
-	if args.CreateWorkspace {
-		wrk := dbgen.Workspace(t, db, database.WorkspaceTable{
-			CreatedAt:      time.Time{},
-			UpdatedAt:      time.Time{},
-			OwnerID:        tpl.CreatedBy,
-			OrganizationID: tpl.OrganizationID,
-			TemplateID:     tpl.ID,
-		})
-		trans := database.WorkspaceTransitionStart
-		if args.WorkspaceTransition != "" {
-			trans = args.WorkspaceTransition
-		}
-		buildJob := dbgen.ProvisionerJob(t, db, nil, database.ProvisionerJob{
-			Type:           database.ProvisionerJobTypeWorkspaceBuild,
-			CompletedAt:    now,
-			InitiatorID:    tpl.CreatedBy,
-			OrganizationID: tpl.OrganizationID,
-		})
-		dbgen.WorkspaceBuild(t, db, database.WorkspaceBuild{
-			WorkspaceID:       wrk.ID,
-			TemplateVersionID: version.ID,
-			BuildNumber:       1,
-			Transition:        trans,
-			InitiatorID:       tpl.CreatedBy,
-			JobID:             buildJob.ID,
-		})
-	}
-	return version
 }
 
 func TestArchiveVersions(t *testing.T) {
@@ -1726,6 +2036,126 @@ func TestExpectOne(t *testing.T) {
 		_, err = database.ExpectOne(db.GetOrganizations(ctx, database.GetOrganizationsParams{}))
 		require.ErrorContains(t, err, "too many rows returned")
 	})
+}
+
+func TestGetProvisionerJobsByIDsWithQueuePosition(t *testing.T) {
+	t.Parallel()
+	if !dbtestutil.WillUsePostgres() {
+		t.SkipNow()
+	}
+
+	db, _ := dbtestutil.NewDB(t)
+	now := dbtime.Now()
+	ctx := testutil.Context(t, testutil.WaitShort)
+
+	// Given the following provisioner jobs:
+	allJobs := []database.ProvisionerJob{
+		// Pending. This will be the last in the queue because
+		// it was created most recently.
+		dbgen.ProvisionerJob(t, db, nil, database.ProvisionerJob{
+			CreatedAt:   now.Add(-time.Minute),
+			StartedAt:   sql.NullTime{},
+			CanceledAt:  sql.NullTime{},
+			CompletedAt: sql.NullTime{},
+			Error:       sql.NullString{},
+		}),
+
+		// Another pending. This will come first in the queue
+		// because it was created before the previous job.
+		dbgen.ProvisionerJob(t, db, nil, database.ProvisionerJob{
+			CreatedAt:   now.Add(-2 * time.Minute),
+			StartedAt:   sql.NullTime{},
+			CanceledAt:  sql.NullTime{},
+			CompletedAt: sql.NullTime{},
+			Error:       sql.NullString{},
+		}),
+
+		// Running
+		dbgen.ProvisionerJob(t, db, nil, database.ProvisionerJob{
+			CreatedAt:   now.Add(-3 * time.Minute),
+			StartedAt:   sql.NullTime{Valid: true, Time: now},
+			CanceledAt:  sql.NullTime{},
+			CompletedAt: sql.NullTime{},
+			Error:       sql.NullString{},
+		}),
+
+		// Succeeded
+		dbgen.ProvisionerJob(t, db, nil, database.ProvisionerJob{
+			CreatedAt:   now.Add(-4 * time.Minute),
+			StartedAt:   sql.NullTime{Valid: true, Time: now},
+			CanceledAt:  sql.NullTime{},
+			CompletedAt: sql.NullTime{Valid: true, Time: now},
+			Error:       sql.NullString{},
+		}),
+
+		// Canceling
+		dbgen.ProvisionerJob(t, db, nil, database.ProvisionerJob{
+			CreatedAt:   now.Add(-5 * time.Minute),
+			StartedAt:   sql.NullTime{},
+			CanceledAt:  sql.NullTime{Valid: true, Time: now},
+			CompletedAt: sql.NullTime{},
+			Error:       sql.NullString{},
+		}),
+
+		// Canceled
+		dbgen.ProvisionerJob(t, db, nil, database.ProvisionerJob{
+			CreatedAt:   now.Add(-6 * time.Minute),
+			StartedAt:   sql.NullTime{},
+			CanceledAt:  sql.NullTime{Valid: true, Time: now},
+			CompletedAt: sql.NullTime{Valid: true, Time: now},
+			Error:       sql.NullString{},
+		}),
+
+		// Failed
+		dbgen.ProvisionerJob(t, db, nil, database.ProvisionerJob{
+			CreatedAt:   now.Add(-7 * time.Minute),
+			StartedAt:   sql.NullTime{},
+			CanceledAt:  sql.NullTime{},
+			CompletedAt: sql.NullTime{},
+			Error:       sql.NullString{String: "failed", Valid: true},
+		}),
+	}
+
+	// Assert invariant: the jobs are in the expected order
+	require.Len(t, allJobs, 7, "expected 7 jobs")
+	for idx, status := range []database.ProvisionerJobStatus{
+		database.ProvisionerJobStatusPending,
+		database.ProvisionerJobStatusPending,
+		database.ProvisionerJobStatusRunning,
+		database.ProvisionerJobStatusSucceeded,
+		database.ProvisionerJobStatusCanceling,
+		database.ProvisionerJobStatusCanceled,
+		database.ProvisionerJobStatusFailed,
+	} {
+		require.Equal(t, status, allJobs[idx].JobStatus, "expected job %d to have status %s", idx, status)
+	}
+
+	var jobIDs []uuid.UUID
+	for _, job := range allJobs {
+		jobIDs = append(jobIDs, job.ID)
+	}
+
+	// When: we fetch the jobs by their IDs
+	actualJobs, err := db.GetProvisionerJobsByIDsWithQueuePosition(ctx, jobIDs)
+	require.NoError(t, err)
+	require.Len(t, actualJobs, len(allJobs), "should return all jobs")
+
+	// Then: the jobs should be returned in the correct order (by IDs in the input slice)
+	for idx, job := range actualJobs {
+		assert.EqualValues(t, allJobs[idx], job.ProvisionerJob)
+	}
+
+	// Then: the queue size should be set correctly
+	for _, job := range actualJobs {
+		assert.EqualValues(t, job.QueueSize, 2, "should have queue size 2")
+	}
+
+	// Then: the queue position should be set correctly:
+	var queuePositions []int64
+	for _, job := range actualJobs {
+		queuePositions = append(queuePositions, job.QueuePosition)
+	}
+	assert.EqualValues(t, []int64{2, 1, 0, 0, 0, 0, 0}, queuePositions, "expected queue positions to be set correctly")
 }
 
 func TestGroupRemovalTrigger(t *testing.T) {

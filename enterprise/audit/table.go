@@ -127,6 +127,7 @@ var auditableResourcesTypes = map[any]map[string]Action{
 		"created_by_avatar_url":   ActionIgnore,
 		"created_by_username":     ActionIgnore,
 		"archived":                ActionTrack,
+		"source_example_id":       ActionIgnore, // Never changes.
 	},
 	&database.User{}: {
 		"id":                           ActionTrack,
@@ -147,7 +148,6 @@ var auditableResourcesTypes = map[any]map[string]Action{
 		"github_com_user_id":           ActionIgnore,
 		"hashed_one_time_passcode":     ActionIgnore,
 		"one_time_passcode_expires_at": ActionTrack,
-		"must_reset_password":          ActionTrack,
 	},
 	&database.WorkspaceTable{}: {
 		"id":                 ActionTrack,
@@ -165,6 +165,7 @@ var auditableResourcesTypes = map[any]map[string]Action{
 		"deleting_at":        ActionTrack,
 		"automatic_updates":  ActionTrack,
 		"favorite":           ActionTrack,
+		"next_start_at":      ActionTrack,
 	},
 	&database.WorkspaceBuild{}: {
 		"id":                      ActionIgnore,

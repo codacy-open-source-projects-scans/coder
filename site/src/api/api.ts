@@ -682,12 +682,20 @@ class ApiMethods {
 
 	/**
 	 * @param organization Can be the organization's ID or name
+	 * @param tags to filter provisioner daemons by.
 	 */
 	getProvisionerDaemonsByOrganization = async (
 		organization: string,
+		tags?: Record<string, string>,
 	): Promise<TypesGen.ProvisionerDaemon[]> => {
+		const params = new URLSearchParams();
+
+		if (tags) {
+			params.append("tags", JSON.stringify(tags));
+		}
+
 		const response = await this.axios.get<TypesGen.ProvisionerDaemon[]>(
-			`/api/v2/organizations/${organization}/provisionerdaemons`,
+			`/api/v2/organizations/${organization}/provisionerdaemons?${params.toString()}`,
 		);
 		return response.data;
 	};
@@ -700,6 +708,24 @@ class ApiMethods {
 	): Promise<TypesGen.ProvisionerKeyDaemons[]> => {
 		const response = await this.axios.get<TypesGen.ProvisionerKeyDaemons[]>(
 			`/api/v2/organizations/${organization}/provisionerkeys/daemons`,
+		);
+		return response.data;
+	};
+
+	getOrganizationIdpSyncSettings =
+		async (): Promise<TypesGen.OrganizationSyncSettings> => {
+			const response = await this.axios.get<TypesGen.OrganizationSyncSettings>(
+				"/api/v2/settings/idpsync/organization",
+			);
+			return response.data;
+		};
+
+	patchOrganizationIdpSyncSettings = async (
+		data: TypesGen.OrganizationSyncSettings,
+	) => {
+		const response = await this.axios.patch<TypesGen.Response>(
+			"/api/v2/settings/idpsync/organization",
+			data,
 		);
 		return response.data;
 	};
@@ -1322,6 +1348,15 @@ class ApiMethods {
 		await this.axios.put(`/api/v2/users/${userId}/password`, updatePassword);
 	};
 
+	validateUserPassword = async (
+		password: string,
+	): Promise<TypesGen.ValidateUserPasswordResponse> => {
+		const response = await this.axios.post("/api/v2/users/validate-password", {
+			password,
+		});
+		return response.data;
+	};
+
 	getRoles = async (): Promise<Array<TypesGen.AssignableRoles>> => {
 		const response = await this.axios.get<TypesGen.AssignableRoles[]>(
 			"/api/v2/users/roles",
@@ -1703,15 +1738,20 @@ class ApiMethods {
 			name: "",
 			add_users: [userId],
 			remove_users: [],
+			display_name: null,
+			avatar_url: null,
+			quota_allowance: null,
 		});
 	};
 
 	removeMember = async (groupId: string, userId: string) => {
 		return this.patchGroup(groupId, {
 			name: "",
-			display_name: "",
 			add_users: [],
 			remove_users: [userId],
+			display_name: null,
+			avatar_url: null,
+			quota_allowance: null,
 		});
 	};
 
@@ -1868,7 +1908,7 @@ class ApiMethods {
 
 	uploadFile = async (file: File): Promise<TypesGen.UploadResponse> => {
 		const response = await this.axios.post("/api/v2/files", file, {
-			headers: { "Content-Type": "application/x-tar" },
+			headers: { "Content-Type": file.type },
 		});
 
 		return response.data;

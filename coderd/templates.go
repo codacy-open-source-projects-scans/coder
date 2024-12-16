@@ -140,7 +140,8 @@ func (api *API) notifyTemplateDeleted(ctx context.Context, template database.Tem
 		templateNameLabel = template.Name
 	}
 
-	if _, err := api.NotificationsEnqueuer.Enqueue(ctx, receiverID, notifications.TemplateTemplateDeleted,
+	// nolint:gocritic // Need notifier actor to enqueue notifications
+	if _, err := api.NotificationsEnqueuer.Enqueue(dbauthz.AsNotifier(ctx), receiverID, notifications.TemplateTemplateDeleted,
 		map[string]string{
 			"name":      templateNameLabel,
 			"initiator": initiator.Username,
@@ -467,7 +468,7 @@ func (api *API) postTemplateByOrganization(rw http.ResponseWriter, r *http.Reque
 		templateVersionAudit.New = newTemplateVersion
 
 		return nil
-	}, nil)
+	}, database.DefaultTXOptions().WithID("postTemplate"))
 	if err != nil {
 		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
 			Message: "Internal error inserting template.",
@@ -841,7 +842,17 @@ func (api *API) patchTemplateMeta(rw http.ResponseWriter, r *http.Request) {
 		return nil
 	}, nil)
 	if err != nil {
-		httpapi.InternalServerError(rw, err)
+		if database.IsUniqueViolation(err, database.UniqueTemplatesOrganizationIDNameIndex) {
+			httpapi.Write(ctx, rw, http.StatusConflict, codersdk.Response{
+				Message: fmt.Sprintf("Template with name %q already exists.", req.Name),
+				Validations: []codersdk.ValidationError{{
+					Field:  "name",
+					Detail: "This value is already in use and should be unique.",
+				}},
+			})
+		} else {
+			httpapi.InternalServerError(rw, err)
+		}
 		return
 	}
 
@@ -878,8 +889,8 @@ func (api *API) notifyUsersOfTemplateDeprecation(ctx context.Context, template d
 
 	for userID := range users {
 		_, err = api.NotificationsEnqueuer.Enqueue(
-			//nolint:gocritic // We need the system auth context to be able to send the deprecation notification.
-			dbauthz.AsSystemRestricted(ctx),
+			//nolint:gocritic // We need the notifier auth context to be able to send the deprecation notification.
+			dbauthz.AsNotifier(ctx),
 			userID,
 			notifications.TemplateTemplateDeprecated,
 			map[string]string{

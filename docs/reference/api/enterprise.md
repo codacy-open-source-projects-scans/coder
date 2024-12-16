@@ -1480,9 +1480,10 @@ curl -X GET http://coder-server:8080/api/v2/organizations/{organization}/provisi
 
 ### Parameters
 
-| Name           | In   | Type         | Required | Description     |
-| -------------- | ---- | ------------ | -------- | --------------- |
-| `organization` | path | string(uuid) | true     | Organization ID |
+| Name           | In    | Type         | Required | Description                                                                        |
+| -------------- | ----- | ------------ | -------- | ---------------------------------------------------------------------------------- |
+| `organization` | path  | string(uuid) | true     | Organization ID                                                                    |
+| `tags`         | query | object       | false    | Provisioner tags to filter by (JSON of the form {'tag1':'value1','tag2':'value2'}) |
 
 ### Example responses
 
@@ -1777,6 +1778,43 @@ curl -X DELETE http://coder-server:8080/api/v2/organizations/{organization}/prov
 
 To perform this operation, you must be authenticated. [Learn more](authentication.md).
 
+## Get the available organization idp sync claim fields
+
+### Code samples
+
+```shell
+# Example request using curl
+curl -X GET http://coder-server:8080/api/v2/organizations/{organization}/settings/idpsync/available-fields \
+  -H 'Accept: application/json' \
+  -H 'Coder-Session-Token: API_KEY'
+```
+
+`GET /organizations/{organization}/settings/idpsync/available-fields`
+
+### Parameters
+
+| Name           | In   | Type         | Required | Description     |
+| -------------- | ---- | ------------ | -------- | --------------- |
+| `organization` | path | string(uuid) | true     | Organization ID |
+
+### Example responses
+
+> 200 Response
+
+```json
+["string"]
+```
+
+### Responses
+
+| Status | Meaning                                                 | Description | Schema          |
+| ------ | ------------------------------------------------------- | ----------- | --------------- |
+| 200    | [OK](https://tools.ietf.org/html/rfc7231#section-6.3.1) | OK          | array of string |
+
+<h3 id="get-the-available-organization-idp-sync-claim-fields-responseschema">Response Schema</h3>
+
+To perform this operation, you must be authenticated. [Learn more](authentication.md).
+
 ## Get group IdP Sync settings by organization
 
 ### Code samples
@@ -1831,17 +1869,37 @@ To perform this operation, you must be authenticated. [Learn more](authenticatio
 ```shell
 # Example request using curl
 curl -X PATCH http://coder-server:8080/api/v2/organizations/{organization}/settings/idpsync/groups \
+  -H 'Content-Type: application/json' \
   -H 'Accept: application/json' \
   -H 'Coder-Session-Token: API_KEY'
 ```
 
 `PATCH /organizations/{organization}/settings/idpsync/groups`
 
+> Body parameter
+
+```json
+{
+	"auto_create_missing_groups": true,
+	"field": "string",
+	"legacy_group_name_mapping": {
+		"property1": "string",
+		"property2": "string"
+	},
+	"mapping": {
+		"property1": ["string"],
+		"property2": ["string"]
+	},
+	"regex_filter": {}
+}
+```
+
 ### Parameters
 
-| Name           | In   | Type         | Required | Description     |
-| -------------- | ---- | ------------ | -------- | --------------- |
-| `organization` | path | string(uuid) | true     | Organization ID |
+| Name           | In   | Type                                                               | Required | Description     |
+| -------------- | ---- | ------------------------------------------------------------------ | -------- | --------------- |
+| `organization` | path | string(uuid)                                                       | true     | Organization ID |
+| `body`         | body | [codersdk.GroupSyncSettings](schemas.md#codersdkgroupsyncsettings) | true     | New settings    |
 
 ### Example responses
 
@@ -1919,17 +1977,31 @@ To perform this operation, you must be authenticated. [Learn more](authenticatio
 ```shell
 # Example request using curl
 curl -X PATCH http://coder-server:8080/api/v2/organizations/{organization}/settings/idpsync/roles \
+  -H 'Content-Type: application/json' \
   -H 'Accept: application/json' \
   -H 'Coder-Session-Token: API_KEY'
 ```
 
 `PATCH /organizations/{organization}/settings/idpsync/roles`
 
+> Body parameter
+
+```json
+{
+	"field": "string",
+	"mapping": {
+		"property1": ["string"],
+		"property2": ["string"]
+	}
+}
+```
+
 ### Parameters
 
-| Name           | In   | Type         | Required | Description     |
-| -------------- | ---- | ------------ | -------- | --------------- |
-| `organization` | path | string(uuid) | true     | Organization ID |
+| Name           | In   | Type                                                             | Required | Description     |
+| -------------- | ---- | ---------------------------------------------------------------- | -------- | --------------- |
+| `organization` | path | string(uuid)                                                     | true     | Organization ID |
+| `body`         | body | [codersdk.RoleSyncSettings](schemas.md#codersdkrolesyncsettings) | true     | New settings    |
 
 ### Example responses
 
@@ -1950,6 +2022,49 @@ curl -X PATCH http://coder-server:8080/api/v2/organizations/{organization}/setti
 | Status | Meaning                                                 | Description | Schema                                                           |
 | ------ | ------------------------------------------------------- | ----------- | ---------------------------------------------------------------- |
 | 200    | [OK](https://tools.ietf.org/html/rfc7231#section-6.3.1) | OK          | [codersdk.RoleSyncSettings](schemas.md#codersdkrolesyncsettings) |
+
+To perform this operation, you must be authenticated. [Learn more](authentication.md).
+
+## Fetch provisioner key details
+
+### Code samples
+
+```shell
+# Example request using curl
+curl -X GET http://coder-server:8080/api/v2/provisionerkeys/{provisionerkey} \
+  -H 'Accept: application/json'
+```
+
+`GET /provisionerkeys/{provisionerkey}`
+
+### Parameters
+
+| Name             | In   | Type   | Required | Description     |
+| ---------------- | ---- | ------ | -------- | --------------- |
+| `provisionerkey` | path | string | true     | Provisioner Key |
+
+### Example responses
+
+> 200 Response
+
+```json
+{
+	"created_at": "2019-08-24T14:15:22Z",
+	"id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
+	"name": "string",
+	"organization": "452c1a86-a0af-475b-b03f-724878b0f387",
+	"tags": {
+		"property1": "string",
+		"property2": "string"
+	}
+}
+```
+
+### Responses
+
+| Status | Meaning                                                 | Description | Schema                                                       |
+| ------ | ------------------------------------------------------- | ----------- | ------------------------------------------------------------ |
+| 200    | [OK](https://tools.ietf.org/html/rfc7231#section-6.3.1) | OK          | [codersdk.ProvisionerKey](schemas.md#codersdkprovisionerkey) |
 
 To perform this operation, you must be authenticated. [Learn more](authentication.md).
 
@@ -2007,6 +2122,24 @@ Status Code **200**
 
 To perform this operation, you must be authenticated. [Learn more](authentication.md).
 
+## SCIM 2.0: Service Provider Config
+
+### Code samples
+
+```shell
+# Example request using curl
+curl -X GET http://coder-server:8080/api/v2/scim/v2/ServiceProviderConfig
+
+```
+
+`GET /scim/v2/ServiceProviderConfig`
+
+### Responses
+
+| Status | Meaning                                                 | Description | Schema |
+| ------ | ------------------------------------------------------- | ----------- | ------ |
+| 200    | [OK](https://tools.ietf.org/html/rfc7231#section-6.3.1) | OK          |        |
+
 ## SCIM 2.0: Get users
 
 ### Code samples
@@ -2014,7 +2147,7 @@ To perform this operation, you must be authenticated. [Learn more](authenticatio
 ```shell
 # Example request using curl
 curl -X GET http://coder-server:8080/api/v2/scim/v2/Users \
-  -H 'Coder-Session-Token: API_KEY'
+  -H 'Authorizaiton: API_KEY'
 ```
 
 `GET /scim/v2/Users`
@@ -2036,7 +2169,7 @@ To perform this operation, you must be authenticated. [Learn more](authenticatio
 curl -X POST http://coder-server:8080/api/v2/scim/v2/Users \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json' \
-  -H 'Coder-Session-Token: API_KEY'
+  -H 'Authorizaiton: API_KEY'
 ```
 
 `POST /scim/v2/Users`
@@ -2118,7 +2251,7 @@ To perform this operation, you must be authenticated. [Learn more](authenticatio
 ```shell
 # Example request using curl
 curl -X GET http://coder-server:8080/api/v2/scim/v2/Users/{id} \
-  -H 'Coder-Session-Token: API_KEY'
+  -H 'Authorizaiton: API_KEY'
 ```
 
 `GET /scim/v2/Users/{id}`
@@ -2137,6 +2270,90 @@ curl -X GET http://coder-server:8080/api/v2/scim/v2/Users/{id} \
 
 To perform this operation, you must be authenticated. [Learn more](authentication.md).
 
+## SCIM 2.0: Replace user account
+
+### Code samples
+
+```shell
+# Example request using curl
+curl -X PUT http://coder-server:8080/api/v2/scim/v2/Users/{id} \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/scim+json' \
+  -H 'Authorizaiton: API_KEY'
+```
+
+`PUT /scim/v2/Users/{id}`
+
+> Body parameter
+
+```json
+{
+	"active": true,
+	"emails": [
+		{
+			"display": "string",
+			"primary": true,
+			"type": "string",
+			"value": "user@example.com"
+		}
+	],
+	"groups": [null],
+	"id": "string",
+	"meta": {
+		"resourceType": "string"
+	},
+	"name": {
+		"familyName": "string",
+		"givenName": "string"
+	},
+	"schemas": ["string"],
+	"userName": "string"
+}
+```
+
+### Parameters
+
+| Name   | In   | Type                                         | Required | Description          |
+| ------ | ---- | -------------------------------------------- | -------- | -------------------- |
+| `id`   | path | string(uuid)                                 | true     | User ID              |
+| `body` | body | [coderd.SCIMUser](schemas.md#coderdscimuser) | true     | Replace user request |
+
+### Example responses
+
+> 200 Response
+
+```json
+{
+	"avatar_url": "http://example.com",
+	"created_at": "2019-08-24T14:15:22Z",
+	"email": "user@example.com",
+	"id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
+	"last_seen_at": "2019-08-24T14:15:22Z",
+	"login_type": "",
+	"name": "string",
+	"organization_ids": ["497f6eca-6276-4993-bfeb-53cbbbba6f08"],
+	"roles": [
+		{
+			"display_name": "string",
+			"name": "string",
+			"organization_id": "string"
+		}
+	],
+	"status": "active",
+	"theme_preference": "string",
+	"updated_at": "2019-08-24T14:15:22Z",
+	"username": "string"
+}
+```
+
+### Responses
+
+| Status | Meaning                                                 | Description | Schema                                   |
+| ------ | ------------------------------------------------------- | ----------- | ---------------------------------------- |
+| 200    | [OK](https://tools.ietf.org/html/rfc7231#section-6.3.1) | OK          | [codersdk.User](schemas.md#codersdkuser) |
+
+To perform this operation, you must be authenticated. [Learn more](authentication.md).
+
 ## SCIM 2.0: Update user account
 
 ### Code samples
@@ -2146,7 +2363,7 @@ To perform this operation, you must be authenticated. [Learn more](authenticatio
 curl -X PATCH http://coder-server:8080/api/v2/scim/v2/Users/{id} \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/scim+json' \
-  -H 'Coder-Session-Token: API_KEY'
+  -H 'Authorizaiton: API_KEY'
 ```
 
 `PATCH /scim/v2/Users/{id}`
@@ -2218,6 +2435,135 @@ curl -X PATCH http://coder-server:8080/api/v2/scim/v2/Users/{id} \
 | Status | Meaning                                                 | Description | Schema                                   |
 | ------ | ------------------------------------------------------- | ----------- | ---------------------------------------- |
 | 200    | [OK](https://tools.ietf.org/html/rfc7231#section-6.3.1) | OK          | [codersdk.User](schemas.md#codersdkuser) |
+
+To perform this operation, you must be authenticated. [Learn more](authentication.md).
+
+## Get the available idp sync claim fields
+
+### Code samples
+
+```shell
+# Example request using curl
+curl -X GET http://coder-server:8080/api/v2/settings/idpsync/available-fields \
+  -H 'Accept: application/json' \
+  -H 'Coder-Session-Token: API_KEY'
+```
+
+`GET /settings/idpsync/available-fields`
+
+### Parameters
+
+| Name           | In   | Type         | Required | Description     |
+| -------------- | ---- | ------------ | -------- | --------------- |
+| `organization` | path | string(uuid) | true     | Organization ID |
+
+### Example responses
+
+> 200 Response
+
+```json
+["string"]
+```
+
+### Responses
+
+| Status | Meaning                                                 | Description | Schema          |
+| ------ | ------------------------------------------------------- | ----------- | --------------- |
+| 200    | [OK](https://tools.ietf.org/html/rfc7231#section-6.3.1) | OK          | array of string |
+
+<h3 id="get-the-available-idp-sync-claim-fields-responseschema">Response Schema</h3>
+
+To perform this operation, you must be authenticated. [Learn more](authentication.md).
+
+## Get organization IdP Sync settings
+
+### Code samples
+
+```shell
+# Example request using curl
+curl -X GET http://coder-server:8080/api/v2/settings/idpsync/organization \
+  -H 'Accept: application/json' \
+  -H 'Coder-Session-Token: API_KEY'
+```
+
+`GET /settings/idpsync/organization`
+
+### Example responses
+
+> 200 Response
+
+```json
+{
+	"field": "string",
+	"mapping": {
+		"property1": ["string"],
+		"property2": ["string"]
+	},
+	"organization_assign_default": true
+}
+```
+
+### Responses
+
+| Status | Meaning                                                 | Description | Schema                                                                           |
+| ------ | ------------------------------------------------------- | ----------- | -------------------------------------------------------------------------------- |
+| 200    | [OK](https://tools.ietf.org/html/rfc7231#section-6.3.1) | OK          | [codersdk.OrganizationSyncSettings](schemas.md#codersdkorganizationsyncsettings) |
+
+To perform this operation, you must be authenticated. [Learn more](authentication.md).
+
+## Update organization IdP Sync settings
+
+### Code samples
+
+```shell
+# Example request using curl
+curl -X PATCH http://coder-server:8080/api/v2/settings/idpsync/organization \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json' \
+  -H 'Coder-Session-Token: API_KEY'
+```
+
+`PATCH /settings/idpsync/organization`
+
+> Body parameter
+
+```json
+{
+	"field": "string",
+	"mapping": {
+		"property1": ["string"],
+		"property2": ["string"]
+	},
+	"organization_assign_default": true
+}
+```
+
+### Parameters
+
+| Name   | In   | Type                                                                             | Required | Description  |
+| ------ | ---- | -------------------------------------------------------------------------------- | -------- | ------------ |
+| `body` | body | [codersdk.OrganizationSyncSettings](schemas.md#codersdkorganizationsyncsettings) | true     | New settings |
+
+### Example responses
+
+> 200 Response
+
+```json
+{
+	"field": "string",
+	"mapping": {
+		"property1": ["string"],
+		"property2": ["string"]
+	},
+	"organization_assign_default": true
+}
+```
+
+### Responses
+
+| Status | Meaning                                                 | Description | Schema                                                                           |
+| ------ | ------------------------------------------------------- | ----------- | -------------------------------------------------------------------------------- |
+| 200    | [OK](https://tools.ietf.org/html/rfc7231#section-6.3.1) | OK          | [codersdk.OrganizationSyncSettings](schemas.md#codersdkorganizationsyncsettings) |
 
 To perform this operation, you must be authenticated. [Learn more](authentication.md).
 

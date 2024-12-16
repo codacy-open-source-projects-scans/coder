@@ -152,7 +152,10 @@ func TestDBAuthzRecursive(t *testing.T) {
 		for i := 2; i < method.Type.NumIn(); i++ {
 			ins = append(ins, reflect.New(method.Type.In(i)).Elem())
 		}
-		if method.Name == "InTx" || method.Name == "Ping" || method.Name == "Wrappers" {
+		if method.Name == "InTx" ||
+			method.Name == "Ping" ||
+			method.Name == "Wrappers" ||
+			method.Name == "PGLocks" {
 			continue
 		}
 		// Log the name of the last method, so if there is a panic, it is
@@ -623,6 +626,26 @@ func (s *MethodTestSuite) TestLicense() {
 }
 
 func (s *MethodTestSuite) TestOrganization() {
+	s.Run("Deployment/OIDCClaimFields", s.Subtest(func(db database.Store, check *expects) {
+		check.Args(uuid.Nil).Asserts(rbac.ResourceIdpsyncSettings, policy.ActionRead).Returns([]string{})
+	}))
+	s.Run("Organization/OIDCClaimFields", s.Subtest(func(db database.Store, check *expects) {
+		id := uuid.New()
+		check.Args(id).Asserts(rbac.ResourceIdpsyncSettings.InOrg(id), policy.ActionRead).Returns([]string{})
+	}))
+	s.Run("Deployment/OIDCClaimFieldValues", s.Subtest(func(db database.Store, check *expects) {
+		check.Args(database.OIDCClaimFieldValuesParams{
+			ClaimField:     "claim-field",
+			OrganizationID: uuid.Nil,
+		}).Asserts(rbac.ResourceIdpsyncSettings, policy.ActionRead).Returns([]string{})
+	}))
+	s.Run("Organization/OIDCClaimFieldValues", s.Subtest(func(db database.Store, check *expects) {
+		id := uuid.New()
+		check.Args(database.OIDCClaimFieldValuesParams{
+			ClaimField:     "claim-field",
+			OrganizationID: id,
+		}).Asserts(rbac.ResourceIdpsyncSettings.InOrg(id), policy.ActionRead).Returns([]string{})
+	}))
 	s.Run("ByOrganization/GetGroups", s.Subtest(func(db database.Store, check *expects) {
 		o := dbgen.Organization(s.T(), db, database.Organization{})
 		a := dbgen.Group(s.T(), db, database.Group{OrganizationID: o.ID})
@@ -994,6 +1017,12 @@ func (s *MethodTestSuite) TestTemplate() {
 			TemplateID: t1.ID,
 		}).Asserts(t1, policy.ActionUpdate)
 	}))
+	s.Run("UpdateWorkspacesTTLByTemplateID", s.Subtest(func(db database.Store, check *expects) {
+		t1 := dbgen.Template(s.T(), db, database.Template{})
+		check.Args(database.UpdateWorkspacesTTLByTemplateIDParams{
+			TemplateID: t1.ID,
+		}).Asserts(t1, policy.ActionUpdate)
+	}))
 	s.Run("UpdateTemplateActiveVersionByID", s.Subtest(func(db database.Store, check *expects) {
 		t1 := dbgen.Template(s.T(), db, database.Template{
 			ActiveVersionID: uuid.New(),
@@ -1259,6 +1288,16 @@ func (s *MethodTestSuite) TestUser() {
 			UserID:     u.ID,
 		}).Asserts(u, policy.ActionUpdatePersonal)
 	}))
+	s.Run("UpdateExternalAuthLinkRefreshToken", s.Subtest(func(db database.Store, check *expects) {
+		link := dbgen.ExternalAuthLink(s.T(), db, database.ExternalAuthLink{})
+		check.Args(database.UpdateExternalAuthLinkRefreshTokenParams{
+			OAuthRefreshToken:      "",
+			OAuthRefreshTokenKeyID: "",
+			ProviderID:             link.ProviderID,
+			UserID:                 link.UserID,
+			UpdatedAt:              link.UpdatedAt,
+		}).Asserts(rbac.ResourceUserObject(link.UserID), policy.ActionUpdatePersonal)
+	}))
 	s.Run("UpdateExternalAuthLink", s.Subtest(func(db database.Store, check *expects) {
 		link := dbgen.ExternalAuthLink(s.T(), db, database.ExternalAuthLink{})
 		check.Args(database.UpdateExternalAuthLinkParams{
@@ -1278,7 +1317,7 @@ func (s *MethodTestSuite) TestUser() {
 			OAuthExpiry:       link.OAuthExpiry,
 			UserID:            link.UserID,
 			LoginType:         link.LoginType,
-			DebugContext:      json.RawMessage("{}"),
+			Claims:            database.UserLinkClaims{},
 		}).Asserts(rbac.ResourceUserObject(link.UserID), policy.ActionUpdatePersonal).Returns(link)
 	}))
 	s.Run("UpdateUserRoles", s.Subtest(func(db database.Store, check *expects) {
@@ -1469,6 +1508,24 @@ func (s *MethodTestSuite) TestWorkspace() {
 		_ = dbgen.Workspace(s.T(), db, database.WorkspaceTable{})
 		// No asserts here because SQLFilter.
 		check.Args(database.GetWorkspacesParams{}, emptyPreparedAuthorized{}).Asserts()
+	}))
+	s.Run("GetWorkspacesAndAgentsByOwnerID", s.Subtest(func(db database.Store, check *expects) {
+		ws := dbgen.Workspace(s.T(), db, database.WorkspaceTable{})
+		build := dbgen.WorkspaceBuild(s.T(), db, database.WorkspaceBuild{WorkspaceID: ws.ID, JobID: uuid.New()})
+		_ = dbgen.ProvisionerJob(s.T(), db, nil, database.ProvisionerJob{ID: build.JobID, Type: database.ProvisionerJobTypeWorkspaceBuild})
+		res := dbgen.WorkspaceResource(s.T(), db, database.WorkspaceResource{JobID: build.JobID})
+		_ = dbgen.WorkspaceAgent(s.T(), db, database.WorkspaceAgent{ResourceID: res.ID})
+		// No asserts here because SQLFilter.
+		check.Args(ws.OwnerID).Asserts()
+	}))
+	s.Run("GetAuthorizedWorkspacesAndAgentsByOwnerID", s.Subtest(func(db database.Store, check *expects) {
+		ws := dbgen.Workspace(s.T(), db, database.WorkspaceTable{})
+		build := dbgen.WorkspaceBuild(s.T(), db, database.WorkspaceBuild{WorkspaceID: ws.ID, JobID: uuid.New()})
+		_ = dbgen.ProvisionerJob(s.T(), db, nil, database.ProvisionerJob{ID: build.JobID, Type: database.ProvisionerJobTypeWorkspaceBuild})
+		res := dbgen.WorkspaceResource(s.T(), db, database.WorkspaceResource{JobID: build.JobID})
+		_ = dbgen.WorkspaceAgent(s.T(), db, database.WorkspaceAgent{ResourceID: res.ID})
+		// No asserts here because SQLFilter.
+		check.Args(ws.OwnerID, emptyPreparedAuthorized{}).Asserts()
 	}))
 	s.Run("GetLatestWorkspaceBuildByWorkspaceID", s.Subtest(func(db database.Store, check *expects) {
 		ws := dbgen.Workspace(s.T(), db, database.WorkspaceTable{})
@@ -1859,6 +1916,19 @@ func (s *MethodTestSuite) TestWorkspace() {
 			ID: ws.ID,
 		}).Asserts(ws, policy.ActionUpdate).Returns()
 	}))
+	s.Run("UpdateWorkspaceNextStartAt", s.Subtest(func(db database.Store, check *expects) {
+		ws := dbgen.Workspace(s.T(), db, database.WorkspaceTable{})
+		check.Args(database.UpdateWorkspaceNextStartAtParams{
+			ID:          ws.ID,
+			NextStartAt: sql.NullTime{Valid: true, Time: dbtime.Now()},
+		}).Asserts(ws, policy.ActionUpdate)
+	}))
+	s.Run("BatchUpdateWorkspaceNextStartAt", s.Subtest(func(db database.Store, check *expects) {
+		check.Args(database.BatchUpdateWorkspaceNextStartAtParams{
+			IDs:          []uuid.UUID{uuid.New()},
+			NextStartAts: []time.Time{dbtime.Now()},
+		}).Asserts(rbac.ResourceWorkspace.All(), policy.ActionUpdate)
+	}))
 	s.Run("BatchUpdateWorkspaceLastUsedAt", s.Subtest(func(db database.Store, check *expects) {
 		ws1 := dbgen.Workspace(s.T(), db, database.WorkspaceTable{})
 		ws2 := dbgen.Workspace(s.T(), db, database.WorkspaceTable{})
@@ -2045,9 +2115,32 @@ func (s *MethodTestSuite) TestExtraMethods() {
 			}),
 		})
 		s.NoError(err, "insert provisioner daemon")
-		ds, err := db.GetProvisionerDaemonsByOrganization(context.Background(), org.ID)
+		ds, err := db.GetProvisionerDaemonsByOrganization(context.Background(), database.GetProvisionerDaemonsByOrganizationParams{OrganizationID: org.ID})
 		s.NoError(err, "get provisioner daemon by org")
-		check.Args(org.ID).Asserts(d, policy.ActionRead).Returns(ds)
+		check.Args(database.GetProvisionerDaemonsByOrganizationParams{OrganizationID: org.ID}).Asserts(d, policy.ActionRead).Returns(ds)
+	}))
+	s.Run("GetEligibleProvisionerDaemonsByProvisionerJobIDs", s.Subtest(func(db database.Store, check *expects) {
+		org := dbgen.Organization(s.T(), db, database.Organization{})
+		tags := database.StringMap(map[string]string{
+			provisionersdk.TagScope: provisionersdk.ScopeOrganization,
+		})
+		j, err := db.InsertProvisionerJob(context.Background(), database.InsertProvisionerJobParams{
+			OrganizationID: org.ID,
+			Type:           database.ProvisionerJobTypeWorkspaceBuild,
+			Tags:           tags,
+			Provisioner:    database.ProvisionerTypeEcho,
+			StorageMethod:  database.ProvisionerStorageMethodFile,
+		})
+		s.NoError(err, "insert provisioner job")
+		d, err := db.UpsertProvisionerDaemon(context.Background(), database.UpsertProvisionerDaemonParams{
+			OrganizationID: org.ID,
+			Tags:           tags,
+			Provisioners:   []database.ProvisionerType{database.ProvisionerTypeEcho},
+		})
+		s.NoError(err, "insert provisioner daemon")
+		ds, err := db.GetEligibleProvisionerDaemonsByProvisionerJobIDs(context.Background(), []uuid.UUID{j.ID})
+		s.NoError(err, "get provisioner daemon by org")
+		check.Args(uuid.UUIDs{j.ID}).Asserts(d, policy.ActionRead).Returns(ds)
 	}))
 	s.Run("DeleteOldProvisionerDaemons", s.Subtest(func(db database.Store, check *expects) {
 		_, err := db.UpsertProvisionerDaemon(context.Background(), database.UpsertProvisionerDaemonParams{
@@ -2243,13 +2336,13 @@ func (s *MethodTestSuite) TestCryptoKeys() {
 	}))
 	s.Run("InsertCryptoKey", s.Subtest(func(db database.Store, check *expects) {
 		check.Args(database.InsertCryptoKeyParams{
-			Feature: database.CryptoKeyFeatureWorkspaceApps,
+			Feature: database.CryptoKeyFeatureWorkspaceAppsAPIKey,
 		}).
 			Asserts(rbac.ResourceCryptoKey, policy.ActionCreate)
 	}))
 	s.Run("DeleteCryptoKey", s.Subtest(func(db database.Store, check *expects) {
 		key := dbgen.CryptoKey(s.T(), db, database.CryptoKey{
-			Feature:  database.CryptoKeyFeatureWorkspaceApps,
+			Feature:  database.CryptoKeyFeatureWorkspaceAppsAPIKey,
 			Sequence: 4,
 		})
 		check.Args(database.DeleteCryptoKeyParams{
@@ -2259,7 +2352,7 @@ func (s *MethodTestSuite) TestCryptoKeys() {
 	}))
 	s.Run("GetCryptoKeyByFeatureAndSequence", s.Subtest(func(db database.Store, check *expects) {
 		key := dbgen.CryptoKey(s.T(), db, database.CryptoKey{
-			Feature:  database.CryptoKeyFeatureWorkspaceApps,
+			Feature:  database.CryptoKeyFeatureWorkspaceAppsAPIKey,
 			Sequence: 4,
 		})
 		check.Args(database.GetCryptoKeyByFeatureAndSequenceParams{
@@ -2269,14 +2362,14 @@ func (s *MethodTestSuite) TestCryptoKeys() {
 	}))
 	s.Run("GetLatestCryptoKeyByFeature", s.Subtest(func(db database.Store, check *expects) {
 		dbgen.CryptoKey(s.T(), db, database.CryptoKey{
-			Feature:  database.CryptoKeyFeatureWorkspaceApps,
+			Feature:  database.CryptoKeyFeatureWorkspaceAppsAPIKey,
 			Sequence: 4,
 		})
-		check.Args(database.CryptoKeyFeatureWorkspaceApps).Asserts(rbac.ResourceCryptoKey, policy.ActionRead)
+		check.Args(database.CryptoKeyFeatureWorkspaceAppsAPIKey).Asserts(rbac.ResourceCryptoKey, policy.ActionRead)
 	}))
 	s.Run("UpdateCryptoKeyDeletesAt", s.Subtest(func(db database.Store, check *expects) {
 		key := dbgen.CryptoKey(s.T(), db, database.CryptoKey{
-			Feature:  database.CryptoKeyFeatureWorkspaceApps,
+			Feature:  database.CryptoKeyFeatureWorkspaceAppsAPIKey,
 			Sequence: 4,
 		})
 		check.Args(database.UpdateCryptoKeyDeletesAtParams{
@@ -2286,7 +2379,7 @@ func (s *MethodTestSuite) TestCryptoKeys() {
 		}).Asserts(rbac.ResourceCryptoKey, policy.ActionUpdate)
 	}))
 	s.Run("GetCryptoKeysByFeature", s.Subtest(func(db database.Store, check *expects) {
-		check.Args(database.CryptoKeyFeatureWorkspaceApps).
+		check.Args(database.CryptoKeyFeatureWorkspaceAppsAPIKey).
 			Asserts(rbac.ResourceCryptoKey, policy.ActionRead)
 	}))
 }
@@ -2539,7 +2632,7 @@ func (s *MethodTestSuite) TestSystemFunctions() {
 		j := dbgen.ProvisionerJob(s.T(), db, nil, database.ProvisionerJob{
 			StartedAt: sql.NullTime{Valid: false},
 		})
-		check.Args(database.AcquireProvisionerJobParams{OrganizationID: j.OrganizationID, Types: []database.ProvisionerType{j.Provisioner}, Tags: must(json.Marshal(j.Tags))}).
+		check.Args(database.AcquireProvisionerJobParams{OrganizationID: j.OrganizationID, Types: []database.ProvisionerType{j.Provisioner}, ProvisionerTags: must(json.Marshal(j.Tags))}).
 			Asserts( /*rbac.ResourceSystem, policy.ActionUpdate*/ )
 	}))
 	s.Run("UpdateProvisionerJobWithCompleteByID", s.Subtest(func(db database.Store, check *expects) {
@@ -2735,6 +2828,9 @@ func (s *MethodTestSuite) TestSystemFunctions() {
 	s.Run("GetTemplateAverageBuildTime", s.Subtest(func(db database.Store, check *expects) {
 		check.Args(database.GetTemplateAverageBuildTimeParams{}).Asserts(rbac.ResourceSystem, policy.ActionRead)
 	}))
+	s.Run("GetWorkspacesByTemplateID", s.Subtest(func(db database.Store, check *expects) {
+		check.Args(uuid.Nil).Asserts(rbac.ResourceSystem, policy.ActionRead)
+	}))
 	s.Run("GetWorkspacesEligibleForTransition", s.Subtest(func(db database.Store, check *expects) {
 		check.Args(time.Time{}).Asserts()
 	}))
@@ -2873,55 +2969,65 @@ func (s *MethodTestSuite) TestSystemFunctions() {
 		})
 		rows := []database.GetWorkspaceAgentScriptTimingsByBuildIDRow{
 			{
-				StartedAt:   timing.StartedAt,
-				EndedAt:     timing.EndedAt,
-				Stage:       timing.Stage,
-				ScriptID:    timing.ScriptID,
-				ExitCode:    timing.ExitCode,
-				Status:      timing.Status,
-				DisplayName: script.DisplayName,
+				StartedAt:          timing.StartedAt,
+				EndedAt:            timing.EndedAt,
+				Stage:              timing.Stage,
+				ScriptID:           timing.ScriptID,
+				ExitCode:           timing.ExitCode,
+				Status:             timing.Status,
+				DisplayName:        script.DisplayName,
+				WorkspaceAgentID:   agent.ID,
+				WorkspaceAgentName: agent.Name,
 			},
 		}
 		check.Args(build.ID).Asserts(rbac.ResourceSystem, policy.ActionRead).Returns(rows)
+	}))
+	s.Run("InsertWorkspaceModule", s.Subtest(func(db database.Store, check *expects) {
+		j := dbgen.ProvisionerJob(s.T(), db, nil, database.ProvisionerJob{
+			Type: database.ProvisionerJobTypeWorkspaceBuild,
+		})
+		check.Args(database.InsertWorkspaceModuleParams{
+			JobID:      j.ID,
+			Transition: database.WorkspaceTransitionStart,
+		}).Asserts(rbac.ResourceSystem, policy.ActionCreate)
+	}))
+	s.Run("GetWorkspaceModulesByJobID", s.Subtest(func(db database.Store, check *expects) {
+		check.Args(uuid.New()).Asserts(rbac.ResourceSystem, policy.ActionRead)
+	}))
+	s.Run("GetWorkspaceModulesCreatedAfter", s.Subtest(func(db database.Store, check *expects) {
+		check.Args(dbtime.Now()).Asserts(rbac.ResourceSystem, policy.ActionRead)
 	}))
 }
 
 func (s *MethodTestSuite) TestNotifications() {
 	// System functions
-	s.Run("AcquireNotificationMessages", s.Subtest(func(db database.Store, check *expects) {
-		// TODO: update this test once we have a specific role for notifications
-		check.Args(database.AcquireNotificationMessagesParams{}).Asserts(rbac.ResourceSystem, policy.ActionUpdate)
+	s.Run("AcquireNotificationMessages", s.Subtest(func(_ database.Store, check *expects) {
+		check.Args(database.AcquireNotificationMessagesParams{}).Asserts(rbac.ResourceNotificationMessage, policy.ActionUpdate)
 	}))
-	s.Run("BulkMarkNotificationMessagesFailed", s.Subtest(func(db database.Store, check *expects) {
-		// TODO: update this test once we have a specific role for notifications
-		check.Args(database.BulkMarkNotificationMessagesFailedParams{}).Asserts(rbac.ResourceSystem, policy.ActionUpdate)
+	s.Run("BulkMarkNotificationMessagesFailed", s.Subtest(func(_ database.Store, check *expects) {
+		check.Args(database.BulkMarkNotificationMessagesFailedParams{}).Asserts(rbac.ResourceNotificationMessage, policy.ActionUpdate)
 	}))
-	s.Run("BulkMarkNotificationMessagesSent", s.Subtest(func(db database.Store, check *expects) {
-		// TODO: update this test once we have a specific role for notifications
-		check.Args(database.BulkMarkNotificationMessagesSentParams{}).Asserts(rbac.ResourceSystem, policy.ActionUpdate)
+	s.Run("BulkMarkNotificationMessagesSent", s.Subtest(func(_ database.Store, check *expects) {
+		check.Args(database.BulkMarkNotificationMessagesSentParams{}).Asserts(rbac.ResourceNotificationMessage, policy.ActionUpdate)
 	}))
-	s.Run("DeleteOldNotificationMessages", s.Subtest(func(db database.Store, check *expects) {
-		// TODO: update this test once we have a specific role for notifications
-		check.Args().Asserts(rbac.ResourceSystem, policy.ActionDelete)
+	s.Run("DeleteOldNotificationMessages", s.Subtest(func(_ database.Store, check *expects) {
+		check.Args().Asserts(rbac.ResourceNotificationMessage, policy.ActionDelete)
 	}))
-	s.Run("EnqueueNotificationMessage", s.Subtest(func(db database.Store, check *expects) {
-		// TODO: update this test once we have a specific role for notifications
+	s.Run("EnqueueNotificationMessage", s.Subtest(func(_ database.Store, check *expects) {
 		check.Args(database.EnqueueNotificationMessageParams{
 			Method:  database.NotificationMethodWebhook,
 			Payload: []byte("{}"),
-		}).Asserts(rbac.ResourceSystem, policy.ActionCreate)
+		}).Asserts(rbac.ResourceNotificationMessage, policy.ActionCreate)
 	}))
 	s.Run("FetchNewMessageMetadata", s.Subtest(func(db database.Store, check *expects) {
-		// TODO: update this test once we have a specific role for notifications
 		u := dbgen.User(s.T(), db, database.User{})
-		check.Args(database.FetchNewMessageMetadataParams{UserID: u.ID}).Asserts(rbac.ResourceSystem, policy.ActionRead)
+		check.Args(database.FetchNewMessageMetadataParams{UserID: u.ID}).Asserts(rbac.ResourceNotificationMessage, policy.ActionRead)
 	}))
-	s.Run("GetNotificationMessagesByStatus", s.Subtest(func(db database.Store, check *expects) {
-		// TODO: update this test once we have a specific role for notifications
+	s.Run("GetNotificationMessagesByStatus", s.Subtest(func(_ database.Store, check *expects) {
 		check.Args(database.GetNotificationMessagesByStatusParams{
 			Status: database.NotificationMessageStatusLeased,
 			Limit:  10,
-		}).Asserts(rbac.ResourceSystem, policy.ActionRead)
+		}).Asserts(rbac.ResourceNotificationMessage, policy.ActionRead)
 	}))
 
 	// Notification templates

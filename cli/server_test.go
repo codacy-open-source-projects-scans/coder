@@ -38,8 +38,6 @@ import (
 	"tailscale.com/derp/derphttp"
 	"tailscale.com/types/key"
 
-	"cdr.dev/slog/sloggers/slogtest"
-
 	"github.com/coder/coder/v2/cli"
 	"github.com/coder/coder/v2/cli/clitest"
 	"github.com/coder/coder/v2/cli/config"
@@ -1598,9 +1596,8 @@ func TestServer_Production(t *testing.T) {
 		// Skip on non-Linux because it spawns a PostgreSQL instance.
 		t.SkipNow()
 	}
-	connectionURL, closeFunc, err := dbtestutil.Open()
+	connectionURL, err := dbtestutil.Open(t)
 	require.NoError(t, err)
-	defer closeFunc()
 
 	// Postgres + race detector + CI = slow.
 	ctx, cancelFunc := context.WithTimeout(context.Background(), testutil.WaitSuperLong*3)
@@ -1619,6 +1616,39 @@ func TestServer_Production(t *testing.T) {
 
 	_, err = client.CreateFirstUser(ctx, coderdtest.FirstUserParams)
 	require.NoError(t, err)
+}
+
+//nolint:tparallel,paralleltest // This test sets environment variables.
+func TestServer_TelemetryDisable(t *testing.T) {
+	// Set the default telemetry to true (normally disabled in tests).
+	t.Setenv("CODER_TEST_TELEMETRY_DEFAULT_ENABLE", "true")
+
+	//nolint:paralleltest // No need to reinitialise the variable tt (Go version).
+	for _, tt := range []struct {
+		key  string
+		val  string
+		want bool
+	}{
+		{"", "", true},
+		{"CODER_TELEMETRY_ENABLE", "true", true},
+		{"CODER_TELEMETRY_ENABLE", "false", false},
+		{"CODER_TELEMETRY", "true", true},
+		{"CODER_TELEMETRY", "false", false},
+	} {
+		t.Run(fmt.Sprintf("%s=%s", tt.key, tt.val), func(t *testing.T) {
+			t.Parallel()
+			var b bytes.Buffer
+			inv, _ := clitest.New(t, "server", "--write-config")
+			inv.Stdout = &b
+			inv.Environ.Set(tt.key, tt.val)
+			clitest.Run(t, inv)
+
+			var dv codersdk.DeploymentValues
+			err := yaml.Unmarshal(b.Bytes(), &dv)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, dv.Telemetry.Enable.Value())
+		})
+	}
 }
 
 //nolint:tparallel,paralleltest // This test cannot be run in parallel due to signal handling.
@@ -1801,11 +1831,10 @@ func TestConnectToPostgres(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitShort)
 	t.Cleanup(cancel)
 
-	log := slogtest.Make(t, nil)
+	log := testutil.Logger(t)
 
-	dbURL, closeFunc, err := dbtestutil.Open()
+	dbURL, err := dbtestutil.Open(t)
 	require.NoError(t, err)
-	t.Cleanup(closeFunc)
 
 	sqlDB, err := cli.ConnectToPostgres(ctx, log, "postgres", dbURL)
 	require.NoError(t, err)

@@ -8,12 +8,12 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
-	"cdr.dev/slog/sloggers/slogtest"
-
 	agentproto "github.com/coder/coder/v2/agent/proto"
 	"github.com/coder/coder/v2/coderd/agentapi"
 	"github.com/coder/coder/v2/coderd/database"
 	"github.com/coder/coder/v2/coderd/database/dbmock"
+	"github.com/coder/coder/v2/coderd/wspubsub"
+	"github.com/coder/coder/v2/testutil"
 )
 
 func TestBatchUpdateAppHealths(t *testing.T) {
@@ -61,8 +61,8 @@ func TestBatchUpdateAppHealths(t *testing.T) {
 				return agent, nil
 			},
 			Database: dbM,
-			Log:      slogtest.Make(t, nil),
-			PublishWorkspaceUpdateFn: func(ctx context.Context, wa *database.WorkspaceAgent) error {
+			Log:      testutil.Logger(t),
+			PublishWorkspaceUpdateFn: func(ctx context.Context, wa *database.WorkspaceAgent, kind wspubsub.WorkspaceEventKind) error {
 				publishCalled = true
 				return nil
 			},
@@ -99,8 +99,8 @@ func TestBatchUpdateAppHealths(t *testing.T) {
 				return agent, nil
 			},
 			Database: dbM,
-			Log:      slogtest.Make(t, nil),
-			PublishWorkspaceUpdateFn: func(ctx context.Context, wa *database.WorkspaceAgent) error {
+			Log:      testutil.Logger(t),
+			PublishWorkspaceUpdateFn: func(ctx context.Context, wa *database.WorkspaceAgent, kind wspubsub.WorkspaceEventKind) error {
 				publishCalled = true
 				return nil
 			},
@@ -138,8 +138,8 @@ func TestBatchUpdateAppHealths(t *testing.T) {
 				return agent, nil
 			},
 			Database: dbM,
-			Log:      slogtest.Make(t, nil),
-			PublishWorkspaceUpdateFn: func(ctx context.Context, wa *database.WorkspaceAgent) error {
+			Log:      testutil.Logger(t),
+			PublishWorkspaceUpdateFn: func(ctx context.Context, wa *database.WorkspaceAgent, kind wspubsub.WorkspaceEventKind) error {
 				publishCalled = true
 				return nil
 			},
@@ -173,7 +173,7 @@ func TestBatchUpdateAppHealths(t *testing.T) {
 				return agent, nil
 			},
 			Database:                 dbM,
-			Log:                      slogtest.Make(t, nil),
+			Log:                      testutil.Logger(t),
 			PublishWorkspaceUpdateFn: nil,
 		}
 
@@ -202,7 +202,7 @@ func TestBatchUpdateAppHealths(t *testing.T) {
 				return agent, nil
 			},
 			Database:                 dbM,
-			Log:                      slogtest.Make(t, nil),
+			Log:                      testutil.Logger(t),
 			PublishWorkspaceUpdateFn: nil,
 		}
 
@@ -232,7 +232,7 @@ func TestBatchUpdateAppHealths(t *testing.T) {
 				return agent, nil
 			},
 			Database:                 dbM,
-			Log:                      slogtest.Make(t, nil),
+			Log:                      testutil.Logger(t),
 			PublishWorkspaceUpdateFn: nil,
 		}
 

@@ -34,11 +34,10 @@ import (
 )
 
 var (
-	ValidationNoFromAddressErr   = xerrors.New("no 'from' address defined")
-	ValidationNoToAddressErr     = xerrors.New("no 'to' address(es) defined")
-	ValidationNoSmarthostHostErr = xerrors.New("smarthost 'host' is not defined, or is invalid")
-	ValidationNoSmarthostPortErr = xerrors.New("smarthost 'port' is not defined, or is invalid")
-	ValidationNoHelloErr         = xerrors.New("'hello' not defined")
+	ValidationNoFromAddressErr = xerrors.New("'from' address not defined")
+	ValidationNoToAddressErr   = xerrors.New("'to' address(es) not defined")
+	ValidationNoSmarthostErr   = xerrors.New("'smarthost' address not defined")
+	ValidationNoHelloErr       = xerrors.New("'hello' not defined")
 
 	//go:embed smtp/html.gotmpl
 	htmlTemplate string
@@ -453,7 +452,7 @@ func (s *SMTPHandler) auth(ctx context.Context, mechs string) (sasl.Client, erro
 				continue
 			}
 			if password == "" {
-				errs = multierror.Append(errs, xerrors.New("cannot use PLAIN auth, password not defined (see CODER_NOTIFICATIONS_EMAIL_AUTH_PASSWORD)"))
+				errs = multierror.Append(errs, xerrors.New("cannot use PLAIN auth, password not defined (see CODER_EMAIL_AUTH_PASSWORD)"))
 				continue
 			}
 
@@ -475,7 +474,7 @@ func (s *SMTPHandler) auth(ctx context.Context, mechs string) (sasl.Client, erro
 				continue
 			}
 			if password == "" {
-				errs = multierror.Append(errs, xerrors.New("cannot use LOGIN auth, password not defined (see CODER_NOTIFICATIONS_EMAIL_AUTH_PASSWORD)"))
+				errs = multierror.Append(errs, xerrors.New("cannot use LOGIN auth, password not defined (see CODER_EMAIL_AUTH_PASSWORD)"))
 				continue
 			}
 
@@ -521,15 +520,14 @@ func (s *SMTPHandler) validateToAddrs(to string) ([]string, error) {
 // Does not allow overriding.
 // nolint:revive // documented.
 func (s *SMTPHandler) smarthost() (string, string, error) {
-	host := s.cfg.Smarthost.Host
-	port := s.cfg.Smarthost.Port
-
-	// We don't validate the contents themselves; this will be done by the underlying SMTP library.
-	if host == "" {
-		return "", "", ValidationNoSmarthostHostErr
+	smarthost := strings.TrimSpace(string(s.cfg.Smarthost))
+	if smarthost == "" {
+		return "", "", ValidationNoSmarthostErr
 	}
-	if port == "" {
-		return "", "", ValidationNoSmarthostPortErr
+
+	host, port, err := net.SplitHostPort(string(s.cfg.Smarthost))
+	if err != nil {
+		return "", "", xerrors.Errorf("split host port: %w", err)
 	}
 
 	return host, port, nil

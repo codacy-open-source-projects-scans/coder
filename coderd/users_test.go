@@ -11,6 +11,7 @@ import (
 	"github.com/coder/coder/v2/coderd"
 	"github.com/coder/coder/v2/coderd/coderdtest/oidctest"
 	"github.com/coder/coder/v2/coderd/notifications"
+	"github.com/coder/coder/v2/coderd/notifications/notificationstest"
 	"github.com/coder/coder/v2/coderd/rbac/policy"
 	"github.com/coder/serpent"
 
@@ -30,6 +31,7 @@ import (
 	"github.com/coder/coder/v2/coderd/database/dbgen"
 	"github.com/coder/coder/v2/coderd/database/dbtime"
 	"github.com/coder/coder/v2/coderd/rbac"
+	"github.com/coder/coder/v2/coderd/util/ptr"
 	"github.com/coder/coder/v2/coderd/util/slice"
 	"github.com/coder/coder/v2/codersdk"
 	"github.com/coder/coder/v2/testutil"
@@ -382,13 +384,13 @@ func TestNotifyUserStatusChanged(t *testing.T) {
 		UserID     uuid.UUID
 	}
 
-	verifyNotificationDispatched := func(notifyEnq *testutil.FakeNotificationsEnqueuer, expectedNotifications []expectedNotification, member codersdk.User, label string) {
-		require.Equal(t, len(expectedNotifications), len(notifyEnq.Sent))
+	verifyNotificationDispatched := func(notifyEnq *notificationstest.FakeEnqueuer, expectedNotifications []expectedNotification, member codersdk.User, label string) {
+		require.Equal(t, len(expectedNotifications), len(notifyEnq.Sent()))
 
-		// Validate that each expected notification is present in notifyEnq.Sent
+		// Validate that each expected notification is present in notifyEnq.Sent()
 		for _, expected := range expectedNotifications {
 			found := false
-			for _, sent := range notifyEnq.Sent {
+			for _, sent := range notifyEnq.Sent() {
 				if sent.TemplateID == expected.TemplateID &&
 					sent.UserID == expected.UserID &&
 					slices.Contains(sent.Targets, member.ID) &&
@@ -404,7 +406,7 @@ func TestNotifyUserStatusChanged(t *testing.T) {
 	t.Run("Account suspended", func(t *testing.T) {
 		t.Parallel()
 
-		notifyEnq := &testutil.FakeNotificationsEnqueuer{}
+		notifyEnq := &notificationstest.FakeEnqueuer{}
 		adminClient := coderdtest.New(t, &coderdtest.Options{
 			NotificationsEnqueuer: notifyEnq,
 		})
@@ -441,7 +443,7 @@ func TestNotifyUserStatusChanged(t *testing.T) {
 		t.Parallel()
 
 		// given
-		notifyEnq := &testutil.FakeNotificationsEnqueuer{}
+		notifyEnq := &notificationstest.FakeEnqueuer{}
 		adminClient := coderdtest.New(t, &coderdtest.Options{
 			NotificationsEnqueuer: notifyEnq,
 		})
@@ -485,7 +487,7 @@ func TestNotifyDeletedUser(t *testing.T) {
 		t.Parallel()
 
 		// given
-		notifyEnq := &testutil.FakeNotificationsEnqueuer{}
+		notifyEnq := &notificationstest.FakeEnqueuer{}
 		adminClient := coderdtest.New(t, &coderdtest.Options{
 			NotificationsEnqueuer: notifyEnq,
 		})
@@ -510,21 +512,21 @@ func TestNotifyDeletedUser(t *testing.T) {
 		require.NoError(t, err)
 
 		// then
-		require.Len(t, notifyEnq.Sent, 2)
-		// notifyEnq.Sent[0] is create account event
-		require.Equal(t, notifications.TemplateUserAccountDeleted, notifyEnq.Sent[1].TemplateID)
-		require.Equal(t, firstUser.ID, notifyEnq.Sent[1].UserID)
-		require.Contains(t, notifyEnq.Sent[1].Targets, user.ID)
-		require.Equal(t, user.Username, notifyEnq.Sent[1].Labels["deleted_account_name"])
-		require.Equal(t, user.Name, notifyEnq.Sent[1].Labels["deleted_account_user_name"])
-		require.Equal(t, firstUser.Name, notifyEnq.Sent[1].Labels["initiator"])
+		require.Len(t, notifyEnq.Sent(), 2)
+		// notifyEnq.Sent()[0] is create account event
+		require.Equal(t, notifications.TemplateUserAccountDeleted, notifyEnq.Sent()[1].TemplateID)
+		require.Equal(t, firstUser.ID, notifyEnq.Sent()[1].UserID)
+		require.Contains(t, notifyEnq.Sent()[1].Targets, user.ID)
+		require.Equal(t, user.Username, notifyEnq.Sent()[1].Labels["deleted_account_name"])
+		require.Equal(t, user.Name, notifyEnq.Sent()[1].Labels["deleted_account_user_name"])
+		require.Equal(t, firstUser.Name, notifyEnq.Sent()[1].Labels["initiator"])
 	})
 
 	t.Run("UserAdminNotified", func(t *testing.T) {
 		t.Parallel()
 
 		// given
-		notifyEnq := &testutil.FakeNotificationsEnqueuer{}
+		notifyEnq := &notificationstest.FakeEnqueuer{}
 		adminClient := coderdtest.New(t, &coderdtest.Options{
 			NotificationsEnqueuer: notifyEnq,
 		})
@@ -548,22 +550,23 @@ func TestNotifyDeletedUser(t *testing.T) {
 		require.NoError(t, err)
 
 		// then
-		require.Len(t, notifyEnq.Sent, 5)
-		// notifyEnq.Sent[0]: "User admin" account created, "owner" notified
-		// notifyEnq.Sent[1]: "Member" account created, "owner" notified
-		// notifyEnq.Sent[2]: "Member" account created, "user admin" notified
+		sent := notifyEnq.Sent()
+		require.Len(t, sent, 5)
+		// sent[0]: "User admin" account created, "owner" notified
+		// sent[1]: "Member" account created, "owner" notified
+		// sent[2]: "Member" account created, "user admin" notified
 
 		// "Member" account deleted, "owner" notified
-		require.Equal(t, notifications.TemplateUserAccountDeleted, notifyEnq.Sent[3].TemplateID)
-		require.Equal(t, firstUser.UserID, notifyEnq.Sent[3].UserID)
-		require.Contains(t, notifyEnq.Sent[3].Targets, member.ID)
-		require.Equal(t, member.Username, notifyEnq.Sent[3].Labels["deleted_account_name"])
+		require.Equal(t, notifications.TemplateUserAccountDeleted, sent[3].TemplateID)
+		require.Equal(t, firstUser.UserID, sent[3].UserID)
+		require.Contains(t, sent[3].Targets, member.ID)
+		require.Equal(t, member.Username, sent[3].Labels["deleted_account_name"])
 
 		// "Member" account deleted, "user admin" notified
-		require.Equal(t, notifications.TemplateUserAccountDeleted, notifyEnq.Sent[4].TemplateID)
-		require.Equal(t, userAdmin.ID, notifyEnq.Sent[4].UserID)
-		require.Contains(t, notifyEnq.Sent[4].Targets, member.ID)
-		require.Equal(t, member.Username, notifyEnq.Sent[4].Labels["deleted_account_name"])
+		require.Equal(t, notifications.TemplateUserAccountDeleted, sent[4].TemplateID)
+		require.Equal(t, userAdmin.ID, sent[4].UserID)
+		require.Contains(t, sent[4].Targets, member.ID)
+		require.Equal(t, member.Username, sent[4].Labels["deleted_account_name"])
 	})
 }
 
@@ -695,6 +698,41 @@ func TestPostUsers(t *testing.T) {
 		})
 		require.NoError(t, err)
 
+		// User should default to dormant.
+		require.Equal(t, codersdk.UserStatusDormant, user.Status)
+
+		require.Len(t, auditor.AuditLogs(), numLogs)
+		require.Equal(t, database.AuditActionCreate, auditor.AuditLogs()[numLogs-1].Action)
+		require.Equal(t, database.AuditActionLogin, auditor.AuditLogs()[numLogs-2].Action)
+
+		require.Len(t, user.OrganizationIDs, 1)
+		assert.Equal(t, firstUser.OrganizationID, user.OrganizationIDs[0])
+	})
+
+	t.Run("CreateWithStatus", func(t *testing.T) {
+		t.Parallel()
+		auditor := audit.NewMock()
+		client := coderdtest.New(t, &coderdtest.Options{Auditor: auditor})
+		numLogs := len(auditor.AuditLogs())
+
+		firstUser := coderdtest.CreateFirstUser(t, client)
+		numLogs++ // add an audit log for user create
+		numLogs++ // add an audit log for login
+
+		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitLong)
+		defer cancel()
+
+		user, err := client.CreateUserWithOrgs(ctx, codersdk.CreateUserRequestWithOrgs{
+			OrganizationIDs: []uuid.UUID{firstUser.OrganizationID},
+			Email:           "another@user.org",
+			Username:        "someone-else",
+			Password:        "SomeSecurePassword!",
+			UserStatus:      ptr.Ref(codersdk.UserStatusActive),
+		})
+		require.NoError(t, err)
+
+		require.Equal(t, codersdk.UserStatusActive, user.Status)
+
 		require.Len(t, auditor.AuditLogs(), numLogs)
 		require.Equal(t, database.AuditActionCreate, auditor.AuditLogs()[numLogs-1].Action)
 		require.Equal(t, database.AuditActionLogin, auditor.AuditLogs()[numLogs-2].Action)
@@ -799,7 +837,7 @@ func TestNotifyCreatedUser(t *testing.T) {
 		t.Parallel()
 
 		// given
-		notifyEnq := &testutil.FakeNotificationsEnqueuer{}
+		notifyEnq := &notificationstest.FakeEnqueuer{}
 		adminClient := coderdtest.New(t, &coderdtest.Options{
 			NotificationsEnqueuer: notifyEnq,
 		})
@@ -818,18 +856,18 @@ func TestNotifyCreatedUser(t *testing.T) {
 		require.NoError(t, err)
 
 		// then
-		require.Len(t, notifyEnq.Sent, 1)
-		require.Equal(t, notifications.TemplateUserAccountCreated, notifyEnq.Sent[0].TemplateID)
-		require.Equal(t, firstUser.UserID, notifyEnq.Sent[0].UserID)
-		require.Contains(t, notifyEnq.Sent[0].Targets, user.ID)
-		require.Equal(t, user.Username, notifyEnq.Sent[0].Labels["created_account_name"])
+		require.Len(t, notifyEnq.Sent(), 1)
+		require.Equal(t, notifications.TemplateUserAccountCreated, notifyEnq.Sent()[0].TemplateID)
+		require.Equal(t, firstUser.UserID, notifyEnq.Sent()[0].UserID)
+		require.Contains(t, notifyEnq.Sent()[0].Targets, user.ID)
+		require.Equal(t, user.Username, notifyEnq.Sent()[0].Labels["created_account_name"])
 	})
 
 	t.Run("UserAdminNotified", func(t *testing.T) {
 		t.Parallel()
 
 		// given
-		notifyEnq := &testutil.FakeNotificationsEnqueuer{}
+		notifyEnq := &notificationstest.FakeEnqueuer{}
 		adminClient := coderdtest.New(t, &coderdtest.Options{
 			NotificationsEnqueuer: notifyEnq,
 		})
@@ -863,25 +901,26 @@ func TestNotifyCreatedUser(t *testing.T) {
 		require.NoError(t, err)
 
 		// then
-		require.Len(t, notifyEnq.Sent, 3)
+		sent := notifyEnq.Sent()
+		require.Len(t, sent, 3)
 
 		// "User admin" account created, "owner" notified
-		require.Equal(t, notifications.TemplateUserAccountCreated, notifyEnq.Sent[0].TemplateID)
-		require.Equal(t, firstUser.UserID, notifyEnq.Sent[0].UserID)
-		require.Contains(t, notifyEnq.Sent[0].Targets, userAdmin.ID)
-		require.Equal(t, userAdmin.Username, notifyEnq.Sent[0].Labels["created_account_name"])
+		require.Equal(t, notifications.TemplateUserAccountCreated, sent[0].TemplateID)
+		require.Equal(t, firstUser.UserID, sent[0].UserID)
+		require.Contains(t, sent[0].Targets, userAdmin.ID)
+		require.Equal(t, userAdmin.Username, sent[0].Labels["created_account_name"])
 
 		// "Member" account created, "owner" notified
-		require.Equal(t, notifications.TemplateUserAccountCreated, notifyEnq.Sent[1].TemplateID)
-		require.Equal(t, firstUser.UserID, notifyEnq.Sent[1].UserID)
-		require.Contains(t, notifyEnq.Sent[1].Targets, member.ID)
-		require.Equal(t, member.Username, notifyEnq.Sent[1].Labels["created_account_name"])
+		require.Equal(t, notifications.TemplateUserAccountCreated, sent[1].TemplateID)
+		require.Equal(t, firstUser.UserID, sent[1].UserID)
+		require.Contains(t, sent[1].Targets, member.ID)
+		require.Equal(t, member.Username, sent[1].Labels["created_account_name"])
 
 		// "Member" account created, "user admin" notified
-		require.Equal(t, notifications.TemplateUserAccountCreated, notifyEnq.Sent[1].TemplateID)
-		require.Equal(t, userAdmin.ID, notifyEnq.Sent[2].UserID)
-		require.Contains(t, notifyEnq.Sent[2].Targets, member.ID)
-		require.Equal(t, member.Username, notifyEnq.Sent[2].Labels["created_account_name"])
+		require.Equal(t, notifications.TemplateUserAccountCreated, sent[1].TemplateID)
+		require.Equal(t, userAdmin.ID, sent[2].UserID)
+		require.Contains(t, sent[2].Targets, member.ID)
+		require.Equal(t, member.Username, sent[2].Labels["created_account_name"])
 	})
 }
 
@@ -966,22 +1005,24 @@ func TestUpdateUserProfile(t *testing.T) {
 		firstUser := coderdtest.CreateFirstUser(t, client)
 		numLogs++ // add an audit log for login
 
-		memberClient, memberUser := coderdtest.CreateAnotherUser(t, client, firstUser.OrganizationID)
+		memberClient, _ := coderdtest.CreateAnotherUser(t, client, firstUser.OrganizationID)
 		numLogs++ // add an audit log for user creation
 
 		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitLong)
 		defer cancel()
 
+		newUsername := coderdtest.RandomUsername(t)
+		newName := coderdtest.RandomName(t)
 		userProfile, err := memberClient.UpdateUserProfile(ctx, codersdk.Me, codersdk.UpdateUserProfileRequest{
-			Username: memberUser.Username + "1",
-			Name:     memberUser.Name + "1",
+			Username: newUsername,
+			Name:     newName,
 		})
 		numLogs++ // add an audit log for user update
 		numLogs++ // add an audit log for API key creation
 
 		require.NoError(t, err)
-		require.Equal(t, memberUser.Username+"1", userProfile.Username)
-		require.Equal(t, memberUser.Name+"1", userProfile.Name)
+		require.Equal(t, newUsername, userProfile.Username)
+		require.Equal(t, newName, userProfile.Name)
 
 		require.Len(t, auditor.AuditLogs(), numLogs)
 		require.Equal(t, database.AuditActionWrite, auditor.AuditLogs()[numLogs-1].Action)
@@ -1181,6 +1222,24 @@ func TestUpdateUserPassword(t *testing.T) {
 
 		require.Len(t, auditor.AuditLogs(), numLogs)
 		require.Equal(t, database.AuditActionWrite, auditor.AuditLogs()[numLogs-1].Action)
+	})
+
+	t.Run("ValidateUserPassword", func(t *testing.T) {
+		t.Parallel()
+		auditor := audit.NewMock()
+		client := coderdtest.New(t, &coderdtest.Options{Auditor: auditor})
+
+		_ = coderdtest.CreateFirstUser(t, client)
+
+		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitLong)
+		defer cancel()
+
+		resp, err := client.ValidateUserPassword(ctx, codersdk.ValidateUserPasswordRequest{
+			Password: "MySecurePassword!",
+		})
+
+		require.NoError(t, err, "users shoud be able to validate complexity of a potential new password")
+		require.True(t, resp.Valid)
 	})
 
 	t.Run("ChangingPasswordDeletesKeys", func(t *testing.T) {

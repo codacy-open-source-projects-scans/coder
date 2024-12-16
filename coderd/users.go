@@ -28,6 +28,7 @@ import (
 	"github.com/coder/coder/v2/coderd/searchquery"
 	"github.com/coder/coder/v2/coderd/telemetry"
 	"github.com/coder/coder/v2/coderd/userpassword"
+	"github.com/coder/coder/v2/coderd/util/ptr"
 	"github.com/coder/coder/v2/coderd/util/slice"
 	"github.com/coder/coder/v2/codersdk"
 )
@@ -69,8 +70,7 @@ func (api *API) userDebugOIDC(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// This will encode properly because it is a json.RawMessage.
-	httpapi.Write(ctx, rw, http.StatusOK, link.DebugContext)
+	httpapi.Write(ctx, rw, http.StatusOK, link.Claims)
 }
 
 // Returns whether the initial user has been created or not.
@@ -188,10 +188,13 @@ func (api *API) postFirstUser(rw http.ResponseWriter, r *http.Request) {
 	//nolint:gocritic // needed to create first user
 	user, err := api.CreateUser(dbauthz.AsSystemRestricted(ctx), api.Database, CreateUserRequest{
 		CreateUserRequestWithOrgs: codersdk.CreateUserRequestWithOrgs{
-			Email:           createUser.Email,
-			Username:        createUser.Username,
-			Name:            createUser.Name,
-			Password:        createUser.Password,
+			Email:    createUser.Email,
+			Username: createUser.Username,
+			Name:     createUser.Name,
+			Password: createUser.Password,
+			// There's no reason to create the first user as dormant, since you have
+			// to login immediately anyways.
+			UserStatus:      ptr.Ref(codersdk.UserStatusActive),
 			OrganizationIDs: []uuid.UUID{defaultOrg.ID},
 		},
 		LoginType:          database.LoginTypePassword,
@@ -600,7 +603,8 @@ func (api *API) deleteUser(rw http.ResponseWriter, r *http.Request) {
 	}
 
 	for _, u := range userAdmins {
-		if _, err := api.NotificationsEnqueuer.Enqueue(ctx, u.ID, notifications.TemplateUserAccountDeleted,
+		// nolint: gocritic // Need notifier actor to enqueue notifications
+		if _, err := api.NotificationsEnqueuer.Enqueue(dbauthz.AsNotifier(ctx), u.ID, notifications.TemplateUserAccountDeleted,
 			map[string]string{
 				"deleted_account_name":      user.Username,
 				"deleted_account_user_name": user.Name,
@@ -942,14 +946,16 @@ func (api *API) notifyUserStatusChanged(ctx context.Context, actingUserName stri
 
 	// Send notifications to user admins and affected user
 	for _, u := range userAdmins {
-		if _, err := api.NotificationsEnqueuer.Enqueue(ctx, u.ID, adminTemplateID,
+		// nolint:gocritic // Need notifier actor to enqueue notifications
+		if _, err := api.NotificationsEnqueuer.Enqueue(dbauthz.AsNotifier(ctx), u.ID, adminTemplateID,
 			labels, "api-put-user-status",
 			targetUser.ID,
 		); err != nil {
 			api.Logger.Warn(ctx, "unable to notify about changed user's status", slog.F("affected_user", targetUser.Username), slog.Error(err))
 		}
 	}
-	if _, err := api.NotificationsEnqueuer.Enqueue(ctx, targetUser.ID, personalTemplateID,
+	// nolint:gocritic // Need notifier actor to enqueue notifications
+	if _, err := api.NotificationsEnqueuer.Enqueue(dbauthz.AsNotifier(ctx), targetUser.ID, personalTemplateID,
 		labels, "api-put-user-status",
 		targetUser.ID,
 	); err != nil {
@@ -1343,6 +1349,10 @@ func (api *API) CreateUser(ctx context.Context, store database.Store, req Create
 	err := store.InTx(func(tx database.Store) error {
 		orgRoles := make([]string, 0)
 
+		status := ""
+		if req.UserStatus != nil {
+			status = string(*req.UserStatus)
+		}
 		params := database.InsertUserParams{
 			ID:             uuid.New(),
 			Email:          req.Email,
@@ -1354,6 +1364,7 @@ func (api *API) CreateUser(ctx context.Context, store database.Store, req Create
 			// All new users are defaulted to members of the site.
 			RBACRoles: []string{},
 			LoginType: req.LoginType,
+			Status:    status,
 		}
 		// If a user signs up with OAuth, they can have no password!
 		if req.Password != "" {
@@ -1411,7 +1422,8 @@ func (api *API) CreateUser(ctx context.Context, store database.Store, req Create
 	}
 
 	for _, u := range userAdmins {
-		if _, err := api.NotificationsEnqueuer.Enqueue(ctx, u.ID, notifications.TemplateUserAccountCreated,
+		// nolint:gocritic // Need notifier actor to enqueue notifications
+		if _, err := api.NotificationsEnqueuer.Enqueue(dbauthz.AsNotifier(ctx), u.ID, notifications.TemplateUserAccountCreated,
 			map[string]string{
 				"created_account_name":      user.Username,
 				"created_account_user_name": user.Name,
