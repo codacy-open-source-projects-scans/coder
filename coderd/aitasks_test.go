@@ -2,15 +2,12 @@ package coderd_test
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
-	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
@@ -159,12 +156,13 @@ func TestTasks(t *testing.T) {
 		t.Parallel()
 
 		var (
-			client, db = coderdtest.NewWithDatabase(t, &coderdtest.Options{IncludeProvisionerDaemon: true})
-			ctx        = testutil.Context(t, testutil.WaitLong)
-			user       = coderdtest.CreateFirstUser(t, client)
-			template   = createAITemplate(t, client, user)
-			wantPrompt = "review my code"
-			exp        = codersdk.NewExperimentalClient(client)
+			client, db     = coderdtest.NewWithDatabase(t, &coderdtest.Options{IncludeProvisionerDaemon: true})
+			ctx            = testutil.Context(t, testutil.WaitLong)
+			user           = coderdtest.CreateFirstUser(t, client)
+			anotherUser, _ = coderdtest.CreateAnotherUser(t, client, user.OrganizationID)
+			template       = createAITemplate(t, client, user)
+			wantPrompt     = "review my code"
+			exp            = codersdk.NewExperimentalClient(client)
 		)
 
 		task, err := exp.CreateTask(ctx, "me", codersdk.CreateTaskRequest{
@@ -213,6 +211,24 @@ func TestTasks(t *testing.T) {
 		assert.Equal(t, agentID, updated.WorkspaceAgentID.UUID, "workspace agent id should match")
 		assert.Equal(t, taskAppID, updated.WorkspaceAppID.UUID, "workspace app id should match")
 		assert.NotEmpty(t, updated.WorkspaceStatus, "task status should not be empty")
+
+		// Fetch the task by name and verify the same result
+		byName, err := exp.TaskByOwnerAndName(ctx, codersdk.Me, task.Name)
+		require.NoError(t, err)
+		require.Equal(t, byName, updated)
+
+		// Another member user should not be able to fetch the task
+		otherClient := codersdk.NewExperimentalClient(anotherUser)
+		_, err = otherClient.TaskByID(ctx, task.ID)
+		require.Error(t, err, "fetching task should fail by ID for another member user")
+		var sdkErr *codersdk.Error
+		require.ErrorAs(t, err, &sdkErr)
+		require.Equal(t, http.StatusNotFound, sdkErr.StatusCode())
+		// Also test by name
+		_, err = otherClient.TaskByOwnerAndName(ctx, task.OwnerName, task.Name)
+		require.Error(t, err, "fetching task should fail by name for another member user")
+		require.ErrorAs(t, err, &sdkErr)
+		require.Equal(t, http.StatusNotFound, sdkErr.StatusCode())
 
 		// Stop the workspace
 		coderdtest.MustTransitionWorkspace(t, client, task.WorkspaceID.UUID, codersdk.WorkspaceTransitionStart, codersdk.WorkspaceTransitionStop)
@@ -657,7 +673,7 @@ func TestTasks(t *testing.T) {
 		coderdtest.AwaitWorkspaceBuildJobCompleted(t, client, ws.LatestBuild.ID)
 
 		// Fetch the task by ID via experimental API and verify fields.
-		task, err = exp.TaskByID(ctx, task.ID)
+		task, err = exp.TaskByIdentifier(ctx, task.ID.String())
 		require.NoError(t, err)
 		require.NotZero(t, task.WorkspaceBuildNumber)
 		require.True(t, task.WorkspaceAgentID.Valid)
@@ -1325,31 +1341,31 @@ func TestTasksNotification(t *testing.T) {
 			// Given: a workspace build with an agent containing an App
 			workspaceAgentAppID := uuid.New()
 			workspaceBuildID := uuid.New()
-			workspaceBuildSeed := database.WorkspaceBuild{
-				ID: workspaceBuildID,
-			}
-			if tc.isAITask {
-				workspaceBuildSeed = database.WorkspaceBuild{
-					ID: workspaceBuildID,
-					// AI Task configuration
-					HasAITask:          sql.NullBool{Bool: true, Valid: true},
-					AITaskSidebarAppID: uuid.NullUUID{UUID: workspaceAgentAppID, Valid: true},
-				}
-			}
-			workspaceBuild := dbfake.WorkspaceBuild(t, db, database.WorkspaceTable{
+			workspaceBuilder := dbfake.WorkspaceBuild(t, db, database.WorkspaceTable{
 				OrganizationID: ownerUser.OrganizationID,
 				OwnerID:        memberUser.ID,
-			}).Seed(workspaceBuildSeed).Params(database.WorkspaceBuildParameter{
-				WorkspaceBuildID: workspaceBuildID,
-				Name:             codersdk.AITaskPromptParameterName,
-				Value:            tc.taskPrompt,
-			}).WithAgent(func(agent []*proto.Agent) []*proto.Agent {
-				agent[0].Apps = []*proto.App{{
-					Id:   workspaceAgentAppID.String(),
-					Slug: "ccw",
-				}}
-				return agent
-			}).Do()
+			}).Seed(database.WorkspaceBuild{
+				ID: workspaceBuildID,
+			})
+			if tc.isAITask {
+				workspaceBuilder = workspaceBuilder.
+					WithTask(database.TaskTable{
+						Prompt: tc.taskPrompt,
+					}, &proto.App{
+						Id:   workspaceAgentAppID.String(),
+						Slug: "ccw",
+					})
+			} else {
+				workspaceBuilder = workspaceBuilder.
+					WithAgent(func(agent []*proto.Agent) []*proto.Agent {
+						agent[0].Apps = []*proto.App{{
+							Id:   workspaceAgentAppID.String(),
+							Slug: "ccw",
+						}}
+						return agent
+					})
+			}
+			workspaceBuild := workspaceBuilder.Do()
 
 			// Given: the workspace agent app has previous statuses
 			agentClient := agentsdk.New(client.URL, agentsdk.WithFixedToken(workspaceBuild.AgentToken))
@@ -1390,13 +1406,7 @@ func TestTasksNotification(t *testing.T) {
 				require.Len(t, sent, 1)
 				require.Equal(t, memberUser.ID, sent[0].UserID)
 				require.Len(t, sent[0].Labels, 2)
-				// NOTE: len(string) is the number of bytes in the string, not the number of runes.
-				require.LessOrEqual(t, utf8.RuneCountInString(sent[0].Labels["task"]), 160)
-				if len(tc.taskPrompt) > 160 {
-					require.Contains(t, tc.taskPrompt, strings.TrimSuffix(sent[0].Labels["task"], "…"))
-				} else {
-					require.Equal(t, tc.taskPrompt, sent[0].Labels["task"])
-				}
+				require.Equal(t, workspaceBuild.Task.Name, sent[0].Labels["task"])
 				require.Equal(t, workspace.Name, sent[0].Labels["workspace"])
 			} else {
 				// Then: No notification is sent
