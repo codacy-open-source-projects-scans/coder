@@ -96,10 +96,10 @@ const docTemplate = `{
                     "application/json"
                 ],
                 "tags": [
-                    "AIBridge"
+                    "AI Bridge"
                 ],
-                "summary": "List AIBridge interceptions",
-                "operationId": "list-aibridge-interceptions",
+                "summary": "List AI Bridge interceptions",
+                "operationId": "list-ai-bridge-interceptions",
                 "parameters": [
                     {
                         "type": "string",
@@ -228,8 +228,7 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
-                        "format": "uuid",
-                        "description": "Task ID",
+                        "description": "Task ID, or task name",
                         "name": "task",
                         "in": "path",
                         "required": true
@@ -265,8 +264,7 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
-                        "format": "uuid",
-                        "description": "Task ID",
+                        "description": "Task ID, or task name",
                         "name": "task",
                         "in": "path",
                         "required": true
@@ -275,6 +273,50 @@ const docTemplate = `{
                 "responses": {
                     "202": {
                         "description": "Task deletion initiated"
+                    }
+                }
+            }
+        },
+        "/api/experimental/tasks/{user}/{task}/input": {
+            "patch": {
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "tags": [
+                    "Experimental"
+                ],
+                "summary": "Update AI task input",
+                "operationId": "update-task-input",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Username, user ID, or 'me' for the authenticated user",
+                        "name": "user",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Task ID, or task name",
+                        "name": "task",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Update task input request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.UpdateTaskInputRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
                     }
                 }
             }
@@ -301,8 +343,7 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
-                        "format": "uuid",
-                        "description": "Task ID",
+                        "description": "Task ID, or task name",
                         "name": "task",
                         "in": "path",
                         "required": true
@@ -340,8 +381,7 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
-                        "format": "uuid",
-                        "description": "Task ID",
+                        "description": "Task ID, or task name",
                         "name": "task",
                         "in": "path",
                         "required": true
@@ -13237,6 +13277,9 @@ const docTemplate = `{
         "codersdk.CreateTaskRequest": {
             "type": "object",
             "properties": {
+                "display_name": {
+                    "type": "string"
+                },
                 "input": {
                     "type": "string"
                 },
@@ -17836,6 +17879,9 @@ const docTemplate = `{
                 "current_state": {
                     "$ref": "#/definitions/codersdk.TaskStateEntry"
                 },
+                "display_name": {
+                    "type": "string"
+                },
                 "id": {
                     "type": "string",
                     "format": "uuid"
@@ -19022,6 +19068,14 @@ const docTemplate = `{
                     "items": {
                         "type": "string"
                     }
+                }
+            }
+        },
+        "codersdk.UpdateTaskInputRequest": {
+            "type": "object",
+            "properties": {
+                "input": {
+                    "type": "string"
                 }
             }
         },
