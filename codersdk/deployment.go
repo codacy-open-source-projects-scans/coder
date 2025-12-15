@@ -80,6 +80,7 @@ const (
 	FeatureWorkspaceProxy             FeatureName = "workspace_proxy"
 	FeatureExternalTokenEncryption    FeatureName = "external_token_encryption"
 	FeatureWorkspaceBatchActions      FeatureName = "workspace_batch_actions"
+	FeatureTaskBatchActions           FeatureName = "task_batch_actions"
 	FeatureAccessControl              FeatureName = "access_control"
 	FeatureControlSharedPorts         FeatureName = "control_shared_ports"
 	FeatureCustomRoles                FeatureName = "custom_roles"
@@ -111,6 +112,7 @@ var (
 		FeatureUserRoleManagement,
 		FeatureExternalTokenEncryption,
 		FeatureWorkspaceBatchActions,
+		FeatureTaskBatchActions,
 		FeatureAccessControl,
 		FeatureControlSharedPorts,
 		FeatureCustomRoles,
@@ -157,6 +159,7 @@ func (n FeatureName) AlwaysEnable() bool {
 		FeatureExternalProvisionerDaemons: true,
 		FeatureAppearance:                 true,
 		FeatureWorkspaceBatchActions:      true,
+		FeatureTaskBatchActions:           true,
 		FeatureHighAvailability:           true,
 		FeatureCustomRoles:                true,
 		FeatureMultipleOrganizations:      true,
@@ -492,12 +495,14 @@ type DeploymentValues struct {
 	SSHConfig                       SSHConfig                            `json:"config_ssh,omitempty" typescript:",notnull"`
 	WgtunnelHost                    serpent.String                       `json:"wgtunnel_host,omitempty" typescript:",notnull"`
 	DisableOwnerWorkspaceExec       serpent.Bool                         `json:"disable_owner_workspace_exec,omitempty" typescript:",notnull"`
+	DisableWorkspaceSharing         serpent.Bool                         `json:"disable_workspace_sharing,omitempty" typescript:",notnull"`
 	ProxyHealthStatusInterval       serpent.Duration                     `json:"proxy_health_status_interval,omitempty" typescript:",notnull"`
 	EnableTerraformDebugMode        serpent.Bool                         `json:"enable_terraform_debug_mode,omitempty" typescript:",notnull"`
 	UserQuietHoursSchedule          UserQuietHoursScheduleConfig         `json:"user_quiet_hours_schedule,omitempty" typescript:",notnull"`
 	WebTerminalRenderer             serpent.String                       `json:"web_terminal_renderer,omitempty" typescript:",notnull"`
 	AllowWorkspaceRenames           serpent.Bool                         `json:"allow_workspace_renames,omitempty" typescript:",notnull"`
 	Healthcheck                     HealthcheckConfig                    `json:"healthcheck,omitempty" typescript:",notnull"`
+	Retention                       RetentionConfig                      `json:"retention,omitempty" typescript:",notnull"`
 	CLIUpgradeMessage               serpent.String                       `json:"cli_upgrade_message,omitempty" typescript:",notnull"`
 	TermsOfServiceURL               serpent.String                       `json:"terms_of_service_url,omitempty" typescript:",notnull"`
 	Notifications                   NotificationsConfig                  `json:"notifications,omitempty" typescript:",notnull"`
@@ -506,6 +511,7 @@ type DeploymentValues struct {
 	Prebuilds                       PrebuildsConfig                      `json:"workspace_prebuilds,omitempty" typescript:",notnull"`
 	HideAITasks                     serpent.Bool                         `json:"hide_ai_tasks,omitempty" typescript:",notnull"`
 	AI                              AIConfig                             `json:"ai,omitempty"`
+	TemplateInsights                TemplateInsightsConfig               `json:"template_insights,omitempty" typescript:",notnull"`
 
 	Config      serpent.YAMLConfigPath `json:"config,omitempty" typescript:",notnull"`
 	WriteConfig serpent.Bool           `json:"write_config,omitempty" typescript:",notnull"`
@@ -603,6 +609,10 @@ type DERPConfig struct {
 	ForceWebSockets serpent.Bool   `json:"force_websockets" typescript:",notnull"`
 	URL             serpent.String `json:"url" typescript:",notnull"`
 	Path            serpent.String `json:"path" typescript:",notnull"`
+}
+
+type TemplateInsightsConfig struct {
+	Enable serpent.Bool `json:"enable" typescript:",notnull"`
 }
 
 type PrometheusConfig struct {
@@ -808,6 +818,28 @@ type UserQuietHoursScheduleConfig struct {
 type HealthcheckConfig struct {
 	Refresh           serpent.Duration `json:"refresh" typescript:",notnull"`
 	ThresholdDatabase serpent.Duration `json:"threshold_database" typescript:",notnull"`
+}
+
+// RetentionConfig contains configuration for data retention policies.
+// These settings control how long various types of data are retained in the database
+// before being automatically purged. Setting a value to 0 disables retention for that
+// data type (data is kept indefinitely).
+type RetentionConfig struct {
+	// AuditLogs controls how long audit log entries are retained.
+	// Set to 0 to disable (keep indefinitely).
+	AuditLogs serpent.Duration `json:"audit_logs" typescript:",notnull"`
+	// ConnectionLogs controls how long connection log entries are retained.
+	// Set to 0 to disable (keep indefinitely).
+	ConnectionLogs serpent.Duration `json:"connection_logs" typescript:",notnull"`
+	// APIKeys controls how long expired API keys are retained before being deleted.
+	// Keys are only deleted if they have been expired for at least this duration.
+	// Defaults to 7 days to preserve existing behavior.
+	APIKeys serpent.Duration `json:"api_keys" typescript:",notnull"`
+	// WorkspaceAgentLogs controls how long workspace agent logs are retained.
+	// Logs are deleted if the agent hasn't connected within this period.
+	// Logs from the latest build are always retained regardless of age.
+	// Defaults to 7 days to preserve existing behavior.
+	WorkspaceAgentLogs serpent.Duration `json:"workspace_agent_logs" typescript:",notnull"`
 }
 
 type NotificationsConfig struct {
@@ -1053,6 +1085,11 @@ func (c *DeploymentValues) Options() serpent.OptionSet {
 			Name:   "pprof",
 			YAML:   "pprof",
 		}
+		deploymentGroupIntrospectionTemplateInsights = serpent.Group{
+			Parent: &deploymentGroupIntrospection,
+			Name:   "Template Insights",
+			YAML:   "templateInsights",
+		}
 		deploymentGroupIntrospectionPrometheus = serpent.Group{
 			Parent: &deploymentGroupIntrospection,
 			Name:   "Prometheus",
@@ -1176,6 +1213,11 @@ func (c *DeploymentValues) Options() serpent.OptionSet {
 		deploymentGroupAIBridge = serpent.Group{
 			Name: "AI Bridge",
 			YAML: "aibridge",
+		}
+		deploymentGroupRetention = serpent.Group{
+			Name:        "Retention",
+			Description: "Configure data retention policies for various database tables. Retention policies automatically purge old data to reduce database size and improve performance. Setting a retention duration to 0 disables automatic purging for that data type.",
+			YAML:        "retention",
 		}
 	)
 
@@ -1668,6 +1710,16 @@ func (c *DeploymentValues) Options() serpent.OptionSet {
 			Value:       &c.DERP.Config.Path,
 			Group:       &deploymentGroupNetworkingDERP,
 			YAML:        "configPath",
+		},
+		{
+			Name:        "Enable Template Insights",
+			Description: "Enable the collection and display of template insights along with the associated API endpoints. This will also enable aggregating these insights into daily active users, application usage, and transmission rates for overall deployment stats. When disabled, these values will be zero, which will also affect what the bottom deployment overview bar displays. Disabling will also prevent Prometheus collection of these values.",
+			Flag:        "template-insights-enable",
+			Env:         "CODER_TEMPLATE_INSIGHTS_ENABLE",
+			Default:     "true",
+			Value:       &c.TemplateInsights.Enable,
+			Group:       &deploymentGroupIntrospectionTemplateInsights,
+			YAML:        "enable",
 		},
 		// TODO: support Git Auth settings.
 		// Prometheus settings
@@ -2698,6 +2750,15 @@ func (c *DeploymentValues) Options() serpent.OptionSet {
 			Annotations: serpent.Annotations{}.Mark(annotationExternalProxies, "true"),
 		},
 		{
+			Name:        "Disable Workspace Sharing",
+			Description: `Disable workspace sharing (requires the "workspace-sharing" experiment to be enabled). Workspace ACL checking is disabled and only owners can have ssh, apps and terminal access to workspaces. Access based on the 'owner' role is also allowed unless disabled via --disable-owner-workspace-access.`,
+			Flag:        "disable-workspace-sharing",
+			Env:         "CODER_DISABLE_WORKSPACE_SHARING",
+
+			Value: &c.DisableWorkspaceSharing,
+			YAML:  "disableWorkspaceSharing",
+		},
+		{
 			Name:        "Session Duration",
 			Description: "The token expiry duration for browser sessions. Sessions may last longer if they are actively making requests, but this functionality can be disabled via --disable-session-expiry-refresh.",
 			Flag:        "session-duration",
@@ -3267,7 +3328,7 @@ Write out the current server config as YAML to stdout.`,
 			Value:       &c.AI.BridgeConfig.OpenAI.Key,
 			Default:     "",
 			Group:       &deploymentGroupAIBridge,
-			YAML:        "openai_key",
+			Annotations: serpent.Annotations{}.Mark(annotationSecretKey, "true"),
 		},
 		{
 			Name:        "AI Bridge Anthropic Base URL",
@@ -3287,7 +3348,7 @@ Write out the current server config as YAML to stdout.`,
 			Value:       &c.AI.BridgeConfig.Anthropic.Key,
 			Default:     "",
 			Group:       &deploymentGroupAIBridge,
-			YAML:        "anthropic_key",
+			Annotations: serpent.Annotations{}.Mark(annotationSecretKey, "true"),
 		},
 		{
 			Name:        "AI Bridge Bedrock Region",
@@ -3307,7 +3368,7 @@ Write out the current server config as YAML to stdout.`,
 			Value:       &c.AI.BridgeConfig.Bedrock.AccessKey,
 			Default:     "",
 			Group:       &deploymentGroupAIBridge,
-			YAML:        "bedrock_access_key",
+			Annotations: serpent.Annotations{}.Mark(annotationSecretKey, "true"),
 		},
 		{
 			Name:        "AI Bridge Bedrock Access Key Secret",
@@ -3317,7 +3378,7 @@ Write out the current server config as YAML to stdout.`,
 			Value:       &c.AI.BridgeConfig.Bedrock.AccessKeySecret,
 			Default:     "",
 			Group:       &deploymentGroupAIBridge,
-			YAML:        "bedrock_access_key_secret",
+			Annotations: serpent.Annotations{}.Mark(annotationSecretKey, "true"),
 		},
 		{
 			Name:        "AI Bridge Bedrock Model",
@@ -3361,6 +3422,71 @@ Write out the current server config as YAML to stdout.`,
 			Annotations: serpent.Annotations{}.Mark(annotationFormatDuration, "true"),
 		},
 		{
+			Name:        "AI Bridge Max Concurrency",
+			Description: "Maximum number of concurrent AI Bridge requests per replica. Set to 0 to disable (unlimited).",
+			Flag:        "aibridge-max-concurrency",
+			Env:         "CODER_AIBRIDGE_MAX_CONCURRENCY",
+			Value:       &c.AI.BridgeConfig.MaxConcurrency,
+			Default:     "0",
+			Group:       &deploymentGroupAIBridge,
+			YAML:        "maxConcurrency",
+		},
+		{
+			Name:        "AI Bridge Rate Limit",
+			Description: "Maximum number of AI Bridge requests per second per replica. Set to 0 to disable (unlimited).",
+			Flag:        "aibridge-rate-limit",
+			Env:         "CODER_AIBRIDGE_RATE_LIMIT",
+			Value:       &c.AI.BridgeConfig.RateLimit,
+			Default:     "0",
+			Group:       &deploymentGroupAIBridge,
+			YAML:        "rateLimit",
+		},
+		// Retention settings
+		{
+			Name:        "Audit Logs Retention",
+			Description: "How long audit log entries are retained. Set to 0 to disable (keep indefinitely). We advise keeping audit logs for at least a year, and in accordance with your compliance requirements.",
+			Flag:        "audit-logs-retention",
+			Env:         "CODER_AUDIT_LOGS_RETENTION",
+			Value:       &c.Retention.AuditLogs,
+			Default:     "0",
+			Group:       &deploymentGroupRetention,
+			YAML:        "audit_logs",
+			Annotations: serpent.Annotations{}.Mark(annotationFormatDuration, "true"),
+		},
+		{
+			Name:        "Connection Logs Retention",
+			Description: "How long connection log entries are retained. Set to 0 to disable (keep indefinitely).",
+			Flag:        "connection-logs-retention",
+			Env:         "CODER_CONNECTION_LOGS_RETENTION",
+			Value:       &c.Retention.ConnectionLogs,
+			Default:     "0",
+			Group:       &deploymentGroupRetention,
+			YAML:        "connection_logs",
+			Annotations: serpent.Annotations{}.Mark(annotationFormatDuration, "true"),
+		},
+		{
+			Name:        "API Keys Retention",
+			Description: "How long expired API keys are retained before being deleted. Keeping expired keys allows the backend to return a more helpful error when a user tries to use an expired key. Set to 0 to disable automatic deletion of expired keys.",
+			Flag:        "api-keys-retention",
+			Env:         "CODER_API_KEYS_RETENTION",
+			Value:       &c.Retention.APIKeys,
+			Default:     "7d",
+			Group:       &deploymentGroupRetention,
+			YAML:        "api_keys",
+			Annotations: serpent.Annotations{}.Mark(annotationFormatDuration, "true"),
+		},
+		{
+			Name:        "Workspace Agent Logs Retention",
+			Description: "How long workspace agent logs are retained. Logs from non-latest builds are deleted if the agent hasn't connected within this period. Logs from the latest build are always retained. Set to 0 to disable automatic deletion.",
+			Flag:        "workspace-agent-logs-retention",
+			Env:         "CODER_WORKSPACE_AGENT_LOGS_RETENTION",
+			Value:       &c.Retention.WorkspaceAgentLogs,
+			Default:     "7d",
+			Group:       &deploymentGroupRetention,
+			YAML:        "workspace_agent_logs",
+			Annotations: serpent.Annotations{}.Mark(annotationFormatDuration, "true"),
+		},
+		{
 			Name: "Enable Authorization Recordings",
 			Description: "All api requests will have a header including all authorization calls made during the request. " +
 				"This is used for debugging purposes and only available for dev builds.",
@@ -3385,6 +3511,8 @@ type AIBridgeConfig struct {
 	Bedrock             AIBridgeBedrockConfig   `json:"bedrock" typescript:",notnull"`
 	InjectCoderMCPTools serpent.Bool            `json:"inject_coder_mcp_tools" typescript:",notnull"`
 	Retention           serpent.Duration        `json:"retention" typescript:",notnull"`
+	MaxConcurrency      serpent.Int64           `json:"max_concurrency" typescript:",notnull"`
+	RateLimit           serpent.Int64           `json:"rate_limit" typescript:",notnull"`
 }
 
 type AIBridgeOpenAIConfig struct {

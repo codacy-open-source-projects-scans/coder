@@ -1290,8 +1290,14 @@ const docTemplate = `{
                     }
                 ],
                 "responses": {
+                    "200": {
+                        "description": "Returns existing file if duplicate",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.UploadResponse"
+                        }
+                    },
                     "201": {
-                        "description": "Created",
+                        "description": "Returns newly created file",
                         "schema": {
                             "$ref": "#/definitions/codersdk.UploadResponse"
                         }
@@ -1800,7 +1806,7 @@ const docTemplate = `{
                     "application/json"
                 ],
                 "tags": [
-                    "Organizations"
+                    "Enterprise"
                 ],
                 "summary": "Add new license",
                 "operationId": "add-new-license",
@@ -1836,7 +1842,7 @@ const docTemplate = `{
                     "application/json"
                 ],
                 "tags": [
-                    "Organizations"
+                    "Enterprise"
                 ],
                 "summary": "Update license entitlements",
                 "operationId": "update-license-entitlements",
@@ -8387,6 +8393,84 @@ const docTemplate = `{
                 }
             }
         },
+        "/users/{user}/preferences": {
+            "get": {
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Users"
+                ],
+                "summary": "Get user preference settings",
+                "operationId": "get-user-preference-settings",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "User ID, name, or me",
+                        "name": "user",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.UserPreferenceSettings"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Users"
+                ],
+                "summary": "Update user preference settings",
+                "operationId": "update-user-preference-settings",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "User ID, name, or me",
+                        "name": "user",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "New preference settings",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.UpdateUserPreferenceSettingsRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.UserPreferenceSettings"
+                        }
+                    }
+                }
+            }
+        },
         "/users/{user}/profile": {
             "put": {
                 "security": [
@@ -11799,8 +11883,14 @@ const docTemplate = `{
                 "inject_coder_mcp_tools": {
                     "type": "boolean"
                 },
+                "max_concurrency": {
+                    "type": "integer"
+                },
                 "openai": {
                     "$ref": "#/definitions/codersdk.AIBridgeOpenAIConfig"
+                },
+                "rate_limit": {
+                    "type": "integer"
                 },
                 "retention": {
                     "type": "integer"
@@ -14130,6 +14220,9 @@ const docTemplate = `{
                 "disable_path_apps": {
                     "type": "boolean"
                 },
+                "disable_workspace_sharing": {
+                    "type": "boolean"
+                },
                 "docs_url": {
                     "$ref": "#/definitions/serpent.URL"
                 },
@@ -14224,6 +14317,9 @@ const docTemplate = `{
                 "redirect_to_access_url": {
                     "type": "boolean"
                 },
+                "retention": {
+                    "$ref": "#/definitions/codersdk.RetentionConfig"
+                },
                 "scim_api_key": {
                     "type": "string"
                 },
@@ -14250,6 +14346,9 @@ const docTemplate = `{
                 },
                 "telemetry": {
                     "$ref": "#/definitions/codersdk.TelemetryConfig"
+                },
+                "template_insights": {
+                    "$ref": "#/definitions/codersdk.TemplateInsightsConfig"
                 },
                 "terms_of_service_url": {
                     "type": "string"
@@ -17650,6 +17749,27 @@ const docTemplate = `{
                 }
             }
         },
+        "codersdk.RetentionConfig": {
+            "type": "object",
+            "properties": {
+                "api_keys": {
+                    "description": "APIKeys controls how long expired API keys are retained before being deleted.\nKeys are only deleted if they have been expired for at least this duration.\nDefaults to 7 days to preserve existing behavior.",
+                    "type": "integer"
+                },
+                "audit_logs": {
+                    "description": "AuditLogs controls how long audit log entries are retained.\nSet to 0 to disable (keep indefinitely).",
+                    "type": "integer"
+                },
+                "connection_logs": {
+                    "description": "ConnectionLogs controls how long connection log entries are retained.\nSet to 0 to disable (keep indefinitely).",
+                    "type": "integer"
+                },
+                "workspace_agent_logs": {
+                    "description": "WorkspaceAgentLogs controls how long workspace agent logs are retained.\nLogs are deleted if the agent hasn't connected within this period.\nLogs from the latest build are always retained regardless of age.\nDefaults to 7 days to preserve existing behavior.",
+                    "type": "integer"
+                }
+            }
+        },
         "codersdk.Role": {
             "type": "object",
             "properties": {
@@ -18479,6 +18599,14 @@ const docTemplate = `{
                 }
             }
         },
+        "codersdk.TemplateInsightsConfig": {
+            "type": "object",
+            "properties": {
+                "enable": {
+                    "type": "boolean"
+                }
+            }
+        },
         "codersdk.TemplateInsightsIntervalReport": {
             "type": "object",
             "properties": {
@@ -19254,6 +19382,14 @@ const docTemplate = `{
                 }
             }
         },
+        "codersdk.UpdateUserPreferenceSettingsRequest": {
+            "type": "object",
+            "properties": {
+                "task_notification_alert_dismissed": {
+                    "type": "boolean"
+                }
+            }
+        },
         "codersdk.UpdateUserProfileRequest": {
             "type": "object",
             "required": [
@@ -19636,6 +19772,14 @@ const docTemplate = `{
                 },
                 "value": {
                     "type": "string"
+                }
+            }
+        },
+        "codersdk.UserPreferenceSettings": {
+            "type": "object",
+            "properties": {
+                "task_notification_alert_dismissed": {
+                    "type": "boolean"
                 }
             }
         },

@@ -2461,6 +2461,10 @@ export const MockEntitlements: TypesGen.Entitlements = {
 			enabled: true,
 			entitlement: "entitled",
 		},
+		task_batch_actions: {
+			enabled: true,
+			entitlement: "entitled",
+		},
 	}),
 	require_telemetry: false,
 	trial: false,
@@ -3479,6 +3483,7 @@ export const MockLicenseResponse: GetLicensesResponse[] = [
 			version: 1,
 			features: {},
 			license_expires: 3420244800,
+			nbf: 1660104000, // valid from 8/10/2022
 		},
 	},
 	{
@@ -3493,6 +3498,7 @@ export const MockLicenseResponse: GetLicensesResponse[] = [
 			version: 1,
 			features: {},
 			license_expires: 3420244800,
+			nbf: 1660104000, // valid from 8/10/2022
 		},
 	},
 	{
@@ -3506,6 +3512,7 @@ export const MockLicenseResponse: GetLicensesResponse[] = [
 			version: 1,
 			features: {},
 			license_expires: 3420244800,
+			nbf: 1660104000, // valid from 8/10/2022
 		},
 	},
 	{
@@ -3519,6 +3526,7 @@ export const MockLicenseResponse: GetLicensesResponse[] = [
 			version: 1,
 			features: {},
 			license_expires: 1660104000,
+			nbf: 1628568000, // valid from 8/10/2021
 		},
 	},
 	{
@@ -3532,6 +3540,7 @@ export const MockLicenseResponse: GetLicensesResponse[] = [
 			version: 1,
 			features: {},
 			license_expires: 1682346425,
+			nbf: 1650810425, // valid from 4/24/2022
 		},
 	},
 ];
@@ -4692,6 +4701,31 @@ export const MockSystemNotificationTemplates: TypesGen.NotificationTemplate[] =
 			enabled_by_default: true,
 		},
 		{
+			id: "8c5a4d12-9f7e-4b3a-a1c8-6e4f2d9b5a7c",
+			name: "Task Completed",
+			title_template: "Task '{{.Labels.workspace}}' completed",
+			body_template: "The task '{{.Labels.task}}' has completed successfully.",
+			actions:
+				'[{"url": "{{base_url}}/tasks/{{.UserUsername}}/{{.Labels.workspace}}", "label": "View task"}, {"url": "{{base_url}}/@{{.UserUsername}}/{{.Labels.workspace}}", "label": "View workspace"}]',
+			group: "Task Events",
+			method: "",
+			kind: "system",
+			enabled_by_default: false,
+		},
+		{
+			id: "3b7e8f1a-4c2d-49a6-b5e9-7f3a1c8d6b4e",
+			name: "Task Failed",
+			title_template: "Task '{{.Labels.workspace}}' failed",
+			body_template:
+				"The task '{{.Labels.task}}' has failed. Check the logs for more details.",
+			actions:
+				'[{"url": "{{base_url}}/tasks/{{.UserUsername}}/{{.Labels.workspace}}", "label": "View task"}, {"url": "{{base_url}}/@{{.UserUsername}}/{{.Labels.workspace}}", "label": "View workspace"}]',
+			group: "Task Events",
+			method: "",
+			kind: "system",
+			enabled_by_default: false,
+		},
+		{
 			id: "d4a6271c-cced-4ed0-84ad-afd02a9c7799",
 			name: "Task Idle",
 			title_template: "Task '{{.Labels.workspace}}' is idle",
@@ -4701,7 +4735,7 @@ export const MockSystemNotificationTemplates: TypesGen.NotificationTemplate[] =
 			group: "Task Events",
 			method: "",
 			kind: "system",
-			enabled_by_default: true,
+			enabled_by_default: false,
 		},
 		{
 			id: "bd4b7168-d05e-4e19-ad0f-3593b77aa90f",
@@ -4714,7 +4748,7 @@ export const MockSystemNotificationTemplates: TypesGen.NotificationTemplate[] =
 			group: "Task Events",
 			method: "",
 			kind: "system",
-			enabled_by_default: true,
+			enabled_by_default: false,
 		},
 	];
 
@@ -4971,8 +5005,8 @@ export const MockAIPromptPresets: TypesGen.Preset[] = [
 
 export const MockTask = {
 	id: "test-task",
-	name: "wild-test-123",
-	display_name: "Task wild test",
+	name: "perform-some-task-123",
+	display_name: "Perform some task",
 	organization_id: MockOrganization.id,
 	owner_id: MockUserOwner.id,
 	owner_name: MockUserOwner.username,
