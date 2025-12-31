@@ -183,7 +183,7 @@ require (
 	github.com/unrolled/secure v1.17.0
 	github.com/valyala/fasthttp v1.68.0
 	github.com/wagslane/go-password-validator v0.3.0
-	github.com/zclconf/go-cty-yaml v1.1.0
+	github.com/zclconf/go-cty-yaml v1.2.0
 	go.mozilla.org/pkcs7 v0.9.0
 	go.nhat.io/otelsql v0.16.0
 	go.opentelemetry.io/otel v1.38.0
@@ -482,6 +482,7 @@ require (
 	github.com/coder/preview v1.0.4
 	github.com/danieljoos/wincred v1.2.3
 	github.com/dgraph-io/ristretto/v2 v2.3.0
+	github.com/elazarl/goproxy v1.7.2
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/go-git/go-git/v5 v5.16.2
 	github.com/icholy/replace v0.6.0
