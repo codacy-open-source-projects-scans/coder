@@ -205,8 +205,8 @@ func (*echo) Parse(sess *provisionersdk.Session, _ *proto.ParseRequest, _ <-chan
 	return provisionersdk.ParseErrorf("complete response missing")
 }
 
-func (*echo) Init(sess *provisionersdk.Session, req *proto.InitRequest, canceledOrComplete <-chan struct{}) *proto.InitComplete {
-	err := sess.Files.ExtractArchive(sess.Context(), sess.Logger, afero.NewOsFs(), req.TemplateSourceArchive)
+func (*echo) Init(sess *provisionersdk.Session, req *provisionersdk.InitRequest, canceledOrComplete <-chan struct{}) *proto.InitComplete {
+	err := sess.Files.ExtractArchive(sess.Context(), sess.Logger, afero.NewOsFs(), req.TemplateSourceArchive, nil)
 	if err != nil {
 		return provisionersdk.InitErrorf("extract archive: %s", err.Error())
 	}
@@ -660,7 +660,15 @@ data "coder_parameter" "{{ .Name }}" {
   ephemeral    = {{ .Ephemeral }}
   order 	 = {{ .Order }}
 {{- if .DefaultValue }}
+  {{- if eq .Type "list(string)" }}
+  default      = jsonencode({{ .DefaultValue }})
+  {{else if eq .Type "bool"}}
   default      = {{ .DefaultValue }}
+  {{else if eq .Type "number"}}
+  default      = {{ .DefaultValue }}
+  {{else}}
+  default      = "{{ .DefaultValue }}"
+  {{- end }}
 {{- end }}
 {{- if .Type }}
   type      = "{{ .Type }}"
