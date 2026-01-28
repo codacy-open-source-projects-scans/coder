@@ -174,6 +174,19 @@ func (q *querier) authorizePrebuiltWorkspace(ctx context.Context, action policy.
 	return xerrors.Errorf("authorize context: %w", workspaceErr)
 }
 
+func workspaceTransitionAction(transition database.WorkspaceTransition) (policy.Action, error) {
+	switch transition {
+	case database.WorkspaceTransitionStart:
+		return policy.ActionWorkspaceStart, nil
+	case database.WorkspaceTransitionStop:
+		return policy.ActionWorkspaceStop, nil
+	case database.WorkspaceTransitionDelete:
+		return policy.ActionDelete, nil
+	default:
+		return "", xerrors.Errorf("unsupported workspace transition %q", transition)
+	}
+}
+
 // authorizeAIBridgeInterceptionAction validates that the context's actor matches the initiator of the AIBridgeInterception.
 // This is used by all of the sub-resources which fall under the [ResourceAibridgeInterception] umbrella.
 func (q *querier) authorizeAIBridgeInterceptionAction(ctx context.Context, action policy.Action, interceptionID uuid.UUID) error {
@@ -636,6 +649,25 @@ var (
 		}),
 		Scope: rbac.ScopeAll,
 	}.WithCachedASTValue()
+
+	// Used by the boundary usage tracker to record telemetry statistics.
+	subjectBoundaryUsageTracker = rbac.Subject{
+		Type:         rbac.SubjectTypeBoundaryUsageTracker,
+		FriendlyName: "Boundary Usage Tracker",
+		ID:           uuid.Nil.String(),
+		Roles: rbac.Roles([]rbac.Role{
+			{
+				Identifier:  rbac.RoleIdentifier{Name: "boundary-usage-tracker"},
+				DisplayName: "Boundary Usage Tracker",
+				Site: rbac.Permissions(map[string][]policy.Action{
+					rbac.ResourceBoundaryUsage.Type: rbac.ResourceBoundaryUsage.AvailableActions(),
+				}),
+				User:    []rbac.Permission{},
+				ByOrgID: map[string]rbac.OrgPermissions{},
+			},
+		}),
+		Scope: rbac.ScopeAll,
+	}.WithCachedASTValue()
 )
 
 // AsProvisionerd returns a context with an actor that has permissions required
@@ -734,6 +766,12 @@ func AsAIBridged(ctx context.Context) context.Context {
 // for dbpurge to delete old database records.
 func AsDBPurge(ctx context.Context) context.Context {
 	return As(ctx, subjectDBPurge)
+}
+
+// AsBoundaryUsageTracker returns a context with an actor that has permissions
+// required for the boundary usage tracker to record telemetry statistics.
+func AsBoundaryUsageTracker(ctx context.Context) context.Context {
+	return As(ctx, subjectBoundaryUsageTracker)
 }
 
 var AsRemoveActor = rbac.Subject{
@@ -1665,6 +1703,13 @@ func (q *querier) DeleteApplicationConnectAPIKeysByUserID(ctx context.Context, u
 	return q.db.DeleteApplicationConnectAPIKeysByUserID(ctx, userID)
 }
 
+func (q *querier) DeleteBoundaryUsageStatsByReplicaID(ctx context.Context, replicaID uuid.UUID) error {
+	if err := q.authorizeContext(ctx, policy.ActionDelete, rbac.ResourceBoundaryUsage); err != nil {
+		return err
+	}
+	return q.db.DeleteBoundaryUsageStatsByReplicaID(ctx, replicaID)
+}
+
 func (q *querier) DeleteCryptoKey(ctx context.Context, arg database.DeleteCryptoKeyParams) (database.CryptoKey, error) {
 	if err := q.authorizeContext(ctx, policy.ActionDelete, rbac.ResourceCryptoKey); err != nil {
 		return database.CryptoKey{}, err
@@ -2224,6 +2269,13 @@ func (q *querier) GetAuthorizationUserRoles(ctx context.Context, userID uuid.UUI
 		return database.GetAuthorizationUserRolesRow{}, err
 	}
 	return q.db.GetAuthorizationUserRoles(ctx, userID)
+}
+
+func (q *querier) GetBoundaryUsageSummary(ctx context.Context, maxStalenessMs int64) (database.GetBoundaryUsageSummaryRow, error) {
+	if err := q.authorizeContext(ctx, policy.ActionRead, rbac.ResourceBoundaryUsage); err != nil {
+		return database.GetBoundaryUsageSummaryRow{}, err
+	}
+	return q.db.GetBoundaryUsageSummary(ctx, maxStalenessMs)
 }
 
 func (q *querier) GetConnectionLogsOffset(ctx context.Context, arg database.GetConnectionLogsOffsetParams) ([]database.GetConnectionLogsOffsetRow, error) {
@@ -3053,6 +3105,25 @@ func (q *querier) GetTaskByOwnerIDAndName(ctx context.Context, arg database.GetT
 
 func (q *querier) GetTaskByWorkspaceID(ctx context.Context, workspaceID uuid.UUID) (database.Task, error) {
 	return fetch(q.log, q.auth, q.db.GetTaskByWorkspaceID)(ctx, workspaceID)
+}
+
+func (q *querier) GetTaskSnapshot(ctx context.Context, taskID uuid.UUID) (database.TaskSnapshot, error) {
+	// Fetch task to build RBAC object for authorization.
+	task, err := q.GetTaskByID(ctx, taskID)
+	if err != nil {
+		return database.TaskSnapshot{}, err
+	}
+
+	obj := rbac.ResourceTask.
+		WithID(task.ID).
+		WithOwner(task.OwnerID.String()).
+		InOrg(task.OrganizationID)
+
+	if err := q.authorizeContext(ctx, policy.ActionRead, obj); err != nil {
+		return database.TaskSnapshot{}, err
+	}
+
+	return q.db.GetTaskSnapshot(ctx, taskID)
 }
 
 func (q *querier) GetTelemetryItem(ctx context.Context, key string) (database.TelemetryItem, error) {
@@ -4575,11 +4646,9 @@ func (q *querier) InsertWorkspaceBuild(ctx context.Context, arg database.InsertW
 		return xerrors.Errorf("get workspace by id: %w", err)
 	}
 
-	var action policy.Action = policy.ActionWorkspaceStart
-	if arg.Transition == database.WorkspaceTransitionDelete {
-		action = policy.ActionDelete
-	} else if arg.Transition == database.WorkspaceTransitionStop {
-		action = policy.ActionWorkspaceStop
+	action, err := workspaceTransitionAction(arg.Transition)
+	if err != nil {
+		return err
 	}
 
 	// Special handling for prebuilt workspace deletion
@@ -4623,8 +4692,13 @@ func (q *querier) InsertWorkspaceBuildParameters(ctx context.Context, arg databa
 		return err
 	}
 
+	action, err := workspaceTransitionAction(build.Transition)
+	if err != nil {
+		return err
+	}
+
 	// Special handling for prebuilt workspace deletion
-	if err := q.authorizePrebuiltWorkspace(ctx, policy.ActionUpdate, workspace); err != nil {
+	if err := q.authorizePrebuiltWorkspace(ctx, action, workspace); err != nil {
 		return err
 	}
 
@@ -4815,6 +4889,13 @@ func (q *querier) RemoveUserFromGroups(ctx context.Context, arg database.RemoveU
 		return nil, err
 	}
 	return q.db.RemoveUserFromGroups(ctx, arg)
+}
+
+func (q *querier) ResetBoundaryUsageStats(ctx context.Context) error {
+	if err := q.authorizeContext(ctx, policy.ActionDelete, rbac.ResourceBoundaryUsage); err != nil {
+		return err
+	}
+	return q.db.ResetBoundaryUsageStats(ctx)
 }
 
 func (q *querier) RevokeDBCryptKey(ctx context.Context, activeKeyDigest string) error {
@@ -5908,6 +5989,13 @@ func (q *querier) UpsertApplicationName(ctx context.Context, value string) error
 	return q.db.UpsertApplicationName(ctx, value)
 }
 
+func (q *querier) UpsertBoundaryUsageStats(ctx context.Context, arg database.UpsertBoundaryUsageStatsParams) (bool, error) {
+	if err := q.authorizeContext(ctx, policy.ActionUpdate, rbac.ResourceBoundaryUsage); err != nil {
+		return false, err
+	}
+	return q.db.UpsertBoundaryUsageStats(ctx, arg)
+}
+
 func (q *querier) UpsertConnectionLog(ctx context.Context, arg database.UpsertConnectionLogParams) (database.ConnectionLog, error) {
 	if err := q.authorizeContext(ctx, policy.ActionUpdate, rbac.ResourceConnectionLog); err != nil {
 		return database.ConnectionLog{}, err
@@ -6022,6 +6110,25 @@ func (q *querier) UpsertTailnetTunnel(ctx context.Context, arg database.UpsertTa
 		return database.TailnetTunnel{}, err
 	}
 	return q.db.UpsertTailnetTunnel(ctx, arg)
+}
+
+func (q *querier) UpsertTaskSnapshot(ctx context.Context, arg database.UpsertTaskSnapshotParams) error {
+	// Fetch task to build RBAC object for authorization.
+	task, err := q.GetTaskByID(ctx, arg.TaskID)
+	if err != nil {
+		return err
+	}
+
+	obj := rbac.ResourceTask.
+		WithID(task.ID).
+		WithOwner(task.OwnerID.String()).
+		InOrg(task.OrganizationID)
+
+	if err := q.authorizeContext(ctx, policy.ActionUpdate, obj); err != nil {
+		return err
+	}
+
+	return q.db.UpsertTaskSnapshot(ctx, arg)
 }
 
 func (q *querier) UpsertTaskWorkspaceApp(ctx context.Context, arg database.UpsertTaskWorkspaceAppParams) (database.TaskWorkspaceApp, error) {

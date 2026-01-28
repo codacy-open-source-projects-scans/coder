@@ -335,6 +335,14 @@ func (m queryMetricsStore) DeleteApplicationConnectAPIKeysByUserID(ctx context.C
 	return r0
 }
 
+func (m queryMetricsStore) DeleteBoundaryUsageStatsByReplicaID(ctx context.Context, replicaID uuid.UUID) error {
+	start := time.Now()
+	r0 := m.s.DeleteBoundaryUsageStatsByReplicaID(ctx, replicaID)
+	m.queryLatencies.WithLabelValues("DeleteBoundaryUsageStatsByReplicaID").Observe(time.Since(start).Seconds())
+	m.queryCounts.WithLabelValues(httpmw.ExtractHTTPRoute(ctx), httpmw.ExtractHTTPMethod(ctx), "DeleteBoundaryUsageStatsByReplicaID").Inc()
+	return r0
+}
+
 func (m queryMetricsStore) DeleteCryptoKey(ctx context.Context, arg database.DeleteCryptoKeyParams) (database.CryptoKey, error) {
 	start := time.Now()
 	r0, r1 := m.s.DeleteCryptoKey(ctx, arg)
@@ -891,6 +899,14 @@ func (m queryMetricsStore) GetAuthorizationUserRoles(ctx context.Context, userID
 	r0, r1 := m.s.GetAuthorizationUserRoles(ctx, userID)
 	m.queryLatencies.WithLabelValues("GetAuthorizationUserRoles").Observe(time.Since(start).Seconds())
 	m.queryCounts.WithLabelValues(httpmw.ExtractHTTPRoute(ctx), httpmw.ExtractHTTPMethod(ctx), "GetAuthorizationUserRoles").Inc()
+	return r0, r1
+}
+
+func (m queryMetricsStore) GetBoundaryUsageSummary(ctx context.Context, maxStalenessMs int64) (database.GetBoundaryUsageSummaryRow, error) {
+	start := time.Now()
+	r0, r1 := m.s.GetBoundaryUsageSummary(ctx, maxStalenessMs)
+	m.queryLatencies.WithLabelValues("GetBoundaryUsageSummary").Observe(time.Since(start).Seconds())
+	m.queryCounts.WithLabelValues(httpmw.ExtractHTTPRoute(ctx), httpmw.ExtractHTTPMethod(ctx), "GetBoundaryUsageSummary").Inc()
 	return r0, r1
 }
 
@@ -1755,6 +1771,14 @@ func (m queryMetricsStore) GetTaskByWorkspaceID(ctx context.Context, workspaceID
 	r0, r1 := m.s.GetTaskByWorkspaceID(ctx, workspaceID)
 	m.queryLatencies.WithLabelValues("GetTaskByWorkspaceID").Observe(time.Since(start).Seconds())
 	m.queryCounts.WithLabelValues(httpmw.ExtractHTTPRoute(ctx), httpmw.ExtractHTTPMethod(ctx), "GetTaskByWorkspaceID").Inc()
+	return r0, r1
+}
+
+func (m queryMetricsStore) GetTaskSnapshot(ctx context.Context, taskID uuid.UUID) (database.TaskSnapshot, error) {
+	start := time.Now()
+	r0, r1 := m.s.GetTaskSnapshot(ctx, taskID)
+	m.queryLatencies.WithLabelValues("GetTaskSnapshot").Observe(time.Since(start).Seconds())
+	m.queryCounts.WithLabelValues(httpmw.ExtractHTTPRoute(ctx), httpmw.ExtractHTTPMethod(ctx), "GetTaskSnapshot").Inc()
 	return r0, r1
 }
 
@@ -3310,6 +3334,14 @@ func (m queryMetricsStore) RemoveUserFromGroups(ctx context.Context, arg databas
 	return r0, r1
 }
 
+func (m queryMetricsStore) ResetBoundaryUsageStats(ctx context.Context) error {
+	start := time.Now()
+	r0 := m.s.ResetBoundaryUsageStats(ctx)
+	m.queryLatencies.WithLabelValues("ResetBoundaryUsageStats").Observe(time.Since(start).Seconds())
+	m.queryCounts.WithLabelValues(httpmw.ExtractHTTPRoute(ctx), httpmw.ExtractHTTPMethod(ctx), "ResetBoundaryUsageStats").Inc()
+	return r0
+}
+
 func (m queryMetricsStore) RevokeDBCryptKey(ctx context.Context, activeKeyDigest string) error {
 	start := time.Now()
 	r0 := m.s.RevokeDBCryptKey(ctx, activeKeyDigest)
@@ -4061,6 +4093,14 @@ func (m queryMetricsStore) UpsertApplicationName(ctx context.Context, value stri
 	return r0
 }
 
+func (m queryMetricsStore) UpsertBoundaryUsageStats(ctx context.Context, arg database.UpsertBoundaryUsageStatsParams) (bool, error) {
+	start := time.Now()
+	r0, r1 := m.s.UpsertBoundaryUsageStats(ctx, arg)
+	m.queryLatencies.WithLabelValues("UpsertBoundaryUsageStats").Observe(time.Since(start).Seconds())
+	m.queryCounts.WithLabelValues(httpmw.ExtractHTTPRoute(ctx), httpmw.ExtractHTTPMethod(ctx), "UpsertBoundaryUsageStats").Inc()
+	return r0, r1
+}
+
 func (m queryMetricsStore) UpsertConnectionLog(ctx context.Context, arg database.UpsertConnectionLogParams) (database.ConnectionLog, error) {
 	start := time.Now()
 	r0, r1 := m.s.UpsertConnectionLog(ctx, arg)
@@ -4187,6 +4227,14 @@ func (m queryMetricsStore) UpsertTailnetTunnel(ctx context.Context, arg database
 	m.queryLatencies.WithLabelValues("UpsertTailnetTunnel").Observe(time.Since(start).Seconds())
 	m.queryCounts.WithLabelValues(httpmw.ExtractHTTPRoute(ctx), httpmw.ExtractHTTPMethod(ctx), "UpsertTailnetTunnel").Inc()
 	return r0, r1
+}
+
+func (m queryMetricsStore) UpsertTaskSnapshot(ctx context.Context, arg database.UpsertTaskSnapshotParams) error {
+	start := time.Now()
+	r0 := m.s.UpsertTaskSnapshot(ctx, arg)
+	m.queryLatencies.WithLabelValues("UpsertTaskSnapshot").Observe(time.Since(start).Seconds())
+	m.queryCounts.WithLabelValues(httpmw.ExtractHTTPRoute(ctx), httpmw.ExtractHTTPMethod(ctx), "UpsertTaskSnapshot").Inc()
+	return r0
 }
 
 func (m queryMetricsStore) UpsertTaskWorkspaceApp(ctx context.Context, arg database.UpsertTaskWorkspaceAppParams) (database.TaskWorkspaceApp, error) {
