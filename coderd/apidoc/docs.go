@@ -15368,10 +15368,6 @@ const docTemplate = `{
                 "limit": {
                     "type": "integer"
                 },
-                "soft_limit": {
-                    "description": "SoftLimit is the soft limit of the feature, and is only used for showing\nincluded limits in the dashboard. No license validation or warnings are\ngenerated from this value.",
-                    "type": "integer"
-                },
                 "usage_period": {
                     "description": "UsagePeriod denotes that the usage is a counter that accumulates over\nthis period (and most likely resets with the issuance of the next\nlicense).\n\nThese dates are determined from the license that this entitlement comes\nfrom, see enterprise/coderd/license/license.go.\n\nOnly certain features set these fields:\n- FeatureManagedAgentLimit",
                     "allOf": [
@@ -15575,6 +15571,9 @@ const docTemplate = `{
         "codersdk.HTTPCookieConfig": {
             "type": "object",
             "properties": {
+                "host_prefix": {
+                    "type": "boolean"
+                },
                 "same_site": {
                     "type": "string"
                 },
@@ -16784,6 +16783,14 @@ const docTemplate = `{
                 },
                 "organization_mapping": {
                     "type": "object"
+                },
+                "redirect_url": {
+                    "description": "RedirectURL is optional, defaulting to 'ACCESS_URL'. Only useful in niche\nsituations where the OIDC callback domain is different from the ACCESS_URL\ndomain.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/serpent.URL"
+                        }
+                    ]
                 },
                 "scopes": {
                     "type": "array",
@@ -22868,7 +22875,7 @@ const docTemplate = `{
                     ]
                 },
                 "default": {
-                    "description": "Default is parsed into Value if set.",
+                    "description": "Default is parsed into Value if set.\nMust be ` + "`" + `\"\"` + "`" + ` if ` + "`" + `DefaultFn` + "`" + ` != nil",
                     "type": "string"
                 },
                 "description": {

@@ -75,6 +75,7 @@ replace github.com/spf13/afero => github.com/aslilac/afero v0.0.0-20250403163713
 require (
 	cdr.dev/slog/v3 v3.0.0-rc1
 	cloud.google.com/go/compute/metadata v0.9.0
+	github.com/Microsoft/go-winio v0.6.2
 	github.com/acarl005/stripansi v0.0.0-20180116102854-5a71ef0e047d
 	github.com/adrg/xdg v0.5.0
 	github.com/ammario/tlru v0.4.0
@@ -100,7 +101,7 @@ require (
 	github.com/coder/pretty v0.0.0-20230908205945-e89ba86370e0
 	github.com/coder/quartz v0.3.0
 	github.com/coder/retry v1.5.1
-	github.com/coder/serpent v0.13.0
+	github.com/coder/serpent v0.14.0
 	github.com/coder/terraform-provider-coder/v2 v2.13.1
 	github.com/coder/websocket v1.8.14
 	github.com/coder/wgtunnel v0.2.0
@@ -239,7 +240,6 @@ require (
 	github.com/DataDog/opentelemetry-mapping-go/pkg/otlp/attributes v0.26.0 // indirect
 	github.com/DataDog/sketches-go v1.4.7 // indirect
 	github.com/KyleBanks/depth v1.2.1 // indirect
-	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/Nvveen/Gotty v0.0.0-20120604004816-cd527374f1e5 // indirect
 	github.com/ProtonMail/go-crypto v1.3.0 // indirect
 	github.com/agext/levenshtein v1.2.3 // indirect
@@ -473,7 +473,7 @@ require (
 	github.com/anthropics/anthropic-sdk-go v1.19.0
 	github.com/brianvoe/gofakeit/v7 v7.14.0
 	github.com/coder/agentapi-sdk-go v0.0.0-20250505131810-560d1d88d225
-	github.com/coder/aibridge v1.0.4
+	github.com/coder/aibridge v1.0.5
 	github.com/coder/aisdk-go v0.0.9
 	github.com/coder/boundary v0.8.0
 	github.com/coder/preview v1.0.4
