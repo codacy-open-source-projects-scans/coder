@@ -30,6 +30,7 @@ import (
 	"github.com/coder/coder/v2/coderd/util/slice"
 	"github.com/coder/coder/v2/codersdk"
 	"github.com/coder/coder/v2/provisioner/echo"
+	proto "github.com/coder/coder/v2/provisionersdk/proto"
 	"github.com/coder/coder/v2/testutil"
 )
 
@@ -619,7 +620,7 @@ func TestRecoverStaleChatsPeriodically(t *testing.T) {
 		Database:                   db,
 		ReplicaID:                  uuid.New(),
 		Pubsub:                     ps,
-		PendingChatAcquireInterval: testutil.WaitSuperLong,
+		PendingChatAcquireInterval: testutil.WaitLong,
 		InFlightChatStaleAfter:     staleAfter,
 	})
 	t.Cleanup(func() {
@@ -733,7 +734,7 @@ func TestWaitingChatsAreNotRecoveredAsStale(t *testing.T) {
 		Database:                   db,
 		ReplicaID:                  uuid.New(),
 		Pubsub:                     ps,
-		PendingChatAcquireInterval: testutil.WaitSuperLong,
+		PendingChatAcquireInterval: testutil.WaitLong,
 		InFlightChatStaleAfter:     500 * time.Millisecond,
 	})
 	t.Cleanup(func() {
@@ -969,11 +970,20 @@ func TestCreateWorkspaceTool_EndToEnd(t *testing.T) {
 	user := coderdtest.CreateFirstUser(t, client)
 
 	agentToken := uuid.NewString()
+	// Add a startup script so the agent spends time in the
+	// "starting" lifecycle state. This lets us verify that
+	// create_workspace waits for scripts to finish.
 	version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, &echo.Responses{
 		Parse:          echo.ParseComplete,
 		ProvisionPlan:  echo.PlanComplete,
 		ProvisionApply: echo.ApplyComplete,
-		ProvisionGraph: echo.ProvisionGraphWithAgent(agentToken),
+		ProvisionGraph: echo.ProvisionGraphWithAgent(agentToken, func(g *proto.GraphComplete) {
+			g.Resources[0].Agents[0].Scripts = []*proto.Script{{
+				DisplayName: "setup",
+				Script:      "sleep 5",
+				RunOnStart:  true,
+			}}
+		}),
 	})
 	coderdtest.AwaitTemplateVersionJobCompleted(t, client, version.ID)
 	template := coderdtest.CreateTemplate(t, client, user.OrganizationID, version.ID)
@@ -1082,6 +1092,20 @@ func TestCreateWorkspaceTool_EndToEnd(t *testing.T) {
 	}
 	require.True(t, foundCreateWorkspaceResult, "expected create_workspace tool result message")
 
+	// Verify that the tool waited for startup scripts to
+	// complete. The agent should be in "ready" state by the
+	// time create_workspace returns its result.
+	workspace, err = client.Workspace(ctx, workspaceID)
+	require.NoError(t, err)
+	var agentLifecycle codersdk.WorkspaceAgentLifecycle
+	for _, res := range workspace.LatestBuild.Resources {
+		for _, agt := range res.Agents {
+			agentLifecycle = agt.LifecycleState
+		}
+	}
+	require.Equal(t, codersdk.WorkspaceAgentLifecycleReady, agentLifecycle,
+		"agent should be ready after create_workspace returns; startup scripts were not awaited")
+
 	require.GreaterOrEqual(t, streamedCallCount.Load(), int32(2))
 	streamedCallsMu.Lock()
 	recordedStreamCalls := append([][]chattest.OpenAIMessage(nil), streamedCalls...)
@@ -1109,6 +1133,162 @@ func TestCreateWorkspaceTool_EndToEnd(t *testing.T) {
 	require.True(t, foundToolResultInSecondCall, "expected second streamed model call to include create_workspace tool output")
 }
 
+func TestStartWorkspaceTool_EndToEnd(t *testing.T) {
+	t.Parallel()
+
+	ctx := testutil.Context(t, testutil.WaitSuperLong)
+	deploymentValues := coderdtest.DeploymentValues(t)
+	deploymentValues.Experiments = []string{string(codersdk.ExperimentAgents)}
+	client := coderdtest.New(t, &coderdtest.Options{
+		DeploymentValues:         deploymentValues,
+		IncludeProvisionerDaemon: true,
+	})
+	user := coderdtest.CreateFirstUser(t, client)
+
+	version := coderdtest.CreateTemplateVersion(t, client, user.OrganizationID, &echo.Responses{
+		Parse:          echo.ParseComplete,
+		ProvisionPlan:  echo.PlanComplete,
+		ProvisionApply: echo.ApplyComplete,
+	})
+	coderdtest.AwaitTemplateVersionJobCompleted(t, client, version.ID)
+	template := coderdtest.CreateTemplate(t, client, user.OrganizationID, version.ID)
+
+	// Create a workspace, then stop it so start_workspace has
+	// something to start. We intentionally skip starting a test
+	// agent — the echo provisioner creates new agent rows for each
+	// build, so an agent started for build 1 cannot serve build 3.
+	// The tool handles the no-agent case gracefully.
+	workspace := coderdtest.CreateWorkspace(t, client, template.ID)
+	coderdtest.AwaitWorkspaceBuildJobCompleted(t, client, workspace.LatestBuild.ID)
+	workspace = coderdtest.MustTransitionWorkspace(
+		t, client, workspace.ID,
+		codersdk.WorkspaceTransitionStart, codersdk.WorkspaceTransitionStop,
+	)
+
+	var streamedCallCount atomic.Int32
+	var streamedCallsMu sync.Mutex
+	streamedCalls := make([][]chattest.OpenAIMessage, 0, 2)
+
+	openAIURL := chattest.NewOpenAI(t, func(req *chattest.OpenAIRequest) chattest.OpenAIResponse {
+		if !req.Stream {
+			return chattest.OpenAINonStreamingResponse("Start workspace test")
+		}
+
+		streamedCallsMu.Lock()
+		streamedCalls = append(streamedCalls, append([]chattest.OpenAIMessage(nil), req.Messages...))
+		streamedCallsMu.Unlock()
+
+		if streamedCallCount.Add(1) == 1 {
+			return chattest.OpenAIStreamingResponse(
+				chattest.OpenAIToolCallChunk("start_workspace", "{}"),
+			)
+		}
+		return chattest.OpenAIStreamingResponse(
+			chattest.OpenAITextChunks("Workspace started and ready.")...,
+		)
+	})
+
+	_, err := client.CreateChatProvider(ctx, codersdk.CreateChatProviderConfigRequest{
+		Provider: "openai-compat",
+		APIKey:   "test-api-key",
+		BaseURL:  openAIURL,
+	})
+	require.NoError(t, err)
+
+	contextLimit := int64(4096)
+	isDefault := true
+	_, err = client.CreateChatModelConfig(ctx, codersdk.CreateChatModelConfigRequest{
+		Provider:     "openai-compat",
+		Model:        "gpt-4o-mini",
+		ContextLimit: &contextLimit,
+		IsDefault:    &isDefault,
+	})
+	require.NoError(t, err)
+
+	// Create a chat with the stopped workspace pre-associated.
+	chat, err := client.CreateChat(ctx, codersdk.CreateChatRequest{
+		Content: []codersdk.ChatInputPart{
+			{
+				Type: codersdk.ChatInputPartTypeText,
+				Text: "Start the workspace.",
+			},
+		},
+		WorkspaceID: &workspace.ID,
+	})
+	require.NoError(t, err)
+
+	var chatWithMessages codersdk.ChatWithMessages
+	require.Eventually(t, func() bool {
+		got, getErr := client.GetChat(ctx, chat.ID)
+		if getErr != nil {
+			return false
+		}
+		chatWithMessages = got
+		return got.Chat.Status == codersdk.ChatStatusWaiting || got.Chat.Status == codersdk.ChatStatusError
+	}, testutil.WaitSuperLong, testutil.IntervalFast)
+
+	if chatWithMessages.Chat.Status == codersdk.ChatStatusError {
+		lastError := ""
+		if chatWithMessages.Chat.LastError != nil {
+			lastError = *chatWithMessages.Chat.LastError
+		}
+		require.FailNowf(t, "chat run failed", "last_error=%q", lastError)
+	}
+
+	// Verify the workspace was started.
+	require.NotNil(t, chatWithMessages.Chat.WorkspaceID)
+	updatedWorkspace, err := client.Workspace(ctx, workspace.ID)
+	require.NoError(t, err)
+	require.Equal(t, codersdk.WorkspaceTransitionStart, updatedWorkspace.LatestBuild.Transition)
+
+	// Verify start_workspace tool result exists in the chat messages.
+	var foundStartWorkspaceResult bool
+	for _, message := range chatWithMessages.Messages {
+		if message.Role != "tool" {
+			continue
+		}
+		for _, part := range message.Content {
+			if part.Type != codersdk.ChatMessagePartTypeToolResult || part.ToolName != "start_workspace" {
+				continue
+			}
+			var result map[string]any
+			require.NoError(t, json.Unmarshal(part.Result, &result))
+			started, ok := result["started"].(bool)
+			require.True(t, ok)
+			require.True(t, started)
+			foundStartWorkspaceResult = true
+		}
+	}
+	require.True(t, foundStartWorkspaceResult, "expected start_workspace tool result message")
+
+	// Verify the LLM received the tool result in its second call.
+	require.GreaterOrEqual(t, streamedCallCount.Load(), int32(2))
+	streamedCallsMu.Lock()
+	recordedStreamCalls := append([][]chattest.OpenAIMessage(nil), streamedCalls...)
+	streamedCallsMu.Unlock()
+	require.GreaterOrEqual(t, len(recordedStreamCalls), 2)
+
+	var foundToolResultInSecondCall bool
+	for _, message := range recordedStreamCalls[1] {
+		if message.Role != "tool" {
+			continue
+		}
+		if !json.Valid([]byte(message.Content)) {
+			continue
+		}
+		var result map[string]any
+		if err := json.Unmarshal([]byte(message.Content), &result); err != nil {
+			continue
+		}
+		started, ok := result["started"].(bool)
+		if ok && started {
+			foundToolResultInSecondCall = true
+			break
+		}
+	}
+	require.True(t, foundToolResultInSecondCall, "expected second streamed model call to include start_workspace tool output")
+}
+
 func newTestServer(
 	t *testing.T,
 	db database.Store,
@@ -1123,7 +1303,7 @@ func newTestServer(
 		Database:                   db,
 		ReplicaID:                  replicaID,
 		Pubsub:                     ps,
-		PendingChatAcquireInterval: testutil.WaitSuperLong,
+		PendingChatAcquireInterval: testutil.WaitLong,
 	})
 	t.Cleanup(func() {
 		require.NoError(t, server.Close())
@@ -1187,6 +1367,195 @@ func setOpenAIProviderBaseURL(
 	require.NoError(t, err)
 }
 
+func TestInterruptChatDoesNotSendWebPushNotification(t *testing.T) {
+	t.Parallel()
+
+	db, ps := dbtestutil.NewDB(t)
+	ctx := testutil.Context(t, testutil.WaitLong)
+
+	// Set up a mock OpenAI that blocks until the request context is
+	// canceled (i.e. until the chat is interrupted).
+	streamStarted := make(chan struct{})
+	openAIURL := chattest.NewOpenAI(t, func(req *chattest.OpenAIRequest) chattest.OpenAIResponse {
+		if !req.Stream {
+			return chattest.OpenAINonStreamingResponse("title")
+		}
+		chunks := make(chan chattest.OpenAIChunk, 1)
+		go func() {
+			defer close(chunks)
+			chunks <- chattest.OpenAITextChunks("partial")[0]
+			select {
+			case <-streamStarted:
+			default:
+				close(streamStarted)
+			}
+			// Block until the chat context is canceled by the interrupt.
+			<-req.Context().Done()
+		}()
+		return chattest.OpenAIResponse{StreamingChunks: chunks}
+	})
+
+	// Mock webpush dispatcher that records calls.
+	mockPush := &mockWebpushDispatcher{}
+
+	logger := slogtest.Make(t, &slogtest.Options{IgnoreErrors: true})
+	server := chatd.New(chatd.Config{
+		Logger:                     logger,
+		Database:                   db,
+		ReplicaID:                  uuid.New(),
+		Pubsub:                     ps,
+		PendingChatAcquireInterval: 10 * time.Millisecond,
+		InFlightChatStaleAfter:     testutil.WaitSuperLong,
+		WebpushDispatcher:          mockPush,
+	})
+	t.Cleanup(func() {
+		require.NoError(t, server.Close())
+	})
+
+	user, model := seedChatDependencies(ctx, t, db)
+	setOpenAIProviderBaseURL(ctx, t, db, openAIURL)
+
+	chat, err := server.CreateChat(ctx, chatd.CreateOptions{
+		OwnerID:            user.ID,
+		Title:              "interrupt-no-push",
+		ModelConfigID:      model.ID,
+		InitialUserContent: []fantasy.Content{fantasy.TextContent{Text: "hello"}},
+	})
+	require.NoError(t, err)
+
+	// Wait for the chat to be picked up and start streaming.
+	testutil.Eventually(ctx, t, func(ctx context.Context) bool {
+		fromDB, dbErr := db.GetChatByID(ctx, chat.ID)
+		if dbErr != nil {
+			return false
+		}
+		return fromDB.Status == database.ChatStatusRunning && fromDB.WorkerID.Valid
+	}, testutil.IntervalFast)
+
+	testutil.Eventually(ctx, t, func(ctx context.Context) bool {
+		select {
+		case <-streamStarted:
+			return true
+		default:
+			return false
+		}
+	}, testutil.IntervalFast)
+
+	// Interrupt the chat.
+	updated := server.InterruptChat(ctx, chat)
+	require.Equal(t, database.ChatStatusWaiting, updated.Status)
+
+	// Wait for the chat to finish processing and return to waiting.
+	testutil.Eventually(ctx, t, func(ctx context.Context) bool {
+		fromDB, dbErr := db.GetChatByID(ctx, chat.ID)
+		if dbErr != nil {
+			return false
+		}
+		return fromDB.Status == database.ChatStatusWaiting && !fromDB.WorkerID.Valid
+	}, testutil.IntervalFast)
+
+	// Verify no web push notification was dispatched.
+	require.Equal(t, int32(0), mockPush.dispatchCount.Load(),
+		"expected no web push dispatch for an interrupted chat")
+}
+
+// mockWebpushDispatcher implements webpush.Dispatcher and records Dispatch calls.
+type mockWebpushDispatcher struct {
+	dispatchCount atomic.Int32
+	mu            sync.Mutex
+	lastMessage   codersdk.WebpushMessage
+	lastUserID    uuid.UUID
+}
+
+func (m *mockWebpushDispatcher) Dispatch(_ context.Context, userID uuid.UUID, msg codersdk.WebpushMessage) error {
+	m.dispatchCount.Add(1)
+	m.mu.Lock()
+	m.lastMessage = msg
+	m.lastUserID = userID
+	m.mu.Unlock()
+	return nil
+}
+
+func (*mockWebpushDispatcher) Test(_ context.Context, _ codersdk.WebpushSubscription) error {
+	return nil
+}
+
+func (*mockWebpushDispatcher) PublicKey() string {
+	return "test-vapid-public-key"
+}
+
+func TestSuccessfulChatSendsWebPushWithNavigationData(t *testing.T) {
+	t.Parallel()
+
+	db, ps := dbtestutil.NewDB(t)
+	ctx := testutil.Context(t, testutil.WaitLong)
+
+	// Set up a mock OpenAI that returns a simple successful response.
+	openAIURL := chattest.NewOpenAI(t, func(req *chattest.OpenAIRequest) chattest.OpenAIResponse {
+		if !req.Stream {
+			return chattest.OpenAINonStreamingResponse("title")
+		}
+		return chattest.OpenAIStreamingResponse(
+			chattest.OpenAITextChunks("done")...,
+		)
+	})
+
+	// Mock webpush dispatcher that captures the dispatched message.
+	mockPush := &mockWebpushDispatcher{}
+
+	logger := slogtest.Make(t, &slogtest.Options{IgnoreErrors: true})
+	server := chatd.New(chatd.Config{
+		Logger:                     logger,
+		Database:                   db,
+		ReplicaID:                  uuid.New(),
+		Pubsub:                     ps,
+		PendingChatAcquireInterval: 10 * time.Millisecond,
+		InFlightChatStaleAfter:     testutil.WaitSuperLong,
+		WebpushDispatcher:          mockPush,
+	})
+	t.Cleanup(func() {
+		require.NoError(t, server.Close())
+	})
+
+	user, model := seedChatDependencies(ctx, t, db)
+	setOpenAIProviderBaseURL(ctx, t, db, openAIURL)
+
+	chat, err := server.CreateChat(ctx, chatd.CreateOptions{
+		OwnerID:            user.ID,
+		Title:              "push-nav-test",
+		ModelConfigID:      model.ID,
+		InitialUserContent: []fantasy.Content{fantasy.TextContent{Text: "hello"}},
+	})
+	require.NoError(t, err)
+
+	// Wait for the chat to complete and return to waiting status.
+	testutil.Eventually(ctx, t, func(ctx context.Context) bool {
+		fromDB, dbErr := db.GetChatByID(ctx, chat.ID)
+		if dbErr != nil {
+			return false
+		}
+		return fromDB.Status == database.ChatStatusWaiting && !fromDB.WorkerID.Valid
+	}, testutil.IntervalFast)
+
+	// Verify a web push notification was dispatched exactly once.
+	require.Equal(t, int32(1), mockPush.dispatchCount.Load(),
+		"expected exactly one web push dispatch for a completed chat")
+
+	// Verify the notification was sent to the correct user.
+	mockPush.mu.Lock()
+	capturedMsg := mockPush.lastMessage
+	capturedUserID := mockPush.lastUserID
+	mockPush.mu.Unlock()
+
+	require.Equal(t, user.ID, capturedUserID,
+		"web push should be dispatched to the chat owner")
+
+	// Verify the Data field contains the correct navigation URL.
+	expectedURL := fmt.Sprintf("/agents/%s", chat.ID)
+	require.Equal(t, expectedURL, capturedMsg.Data["url"],
+		"web push Data should contain the chat navigation URL")
+}
+
 func TestCloseDuringShutdownContextCanceledShouldRetryOnNewReplica(t *testing.T) {
 	t.Parallel()
 
@@ -1220,7 +1589,7 @@ func TestCloseDuringShutdownContextCanceledShouldRetryOnNewReplica(t *testing.T)
 		ReplicaID:                  uuid.New(),
 		Pubsub:                     ps,
 		PendingChatAcquireInterval: 10 * time.Millisecond,
-		InFlightChatStaleAfter:     testutil.WaitSuperLong,
+		InFlightChatStaleAfter:     testutil.WaitLong,
 	})
 	t.Cleanup(func() {
 		require.NoError(t, serverA.Close())
@@ -1273,7 +1642,7 @@ func TestCloseDuringShutdownContextCanceledShouldRetryOnNewReplica(t *testing.T)
 		ReplicaID:                  uuid.New(),
 		Pubsub:                     ps,
 		PendingChatAcquireInterval: 10 * time.Millisecond,
-		InFlightChatStaleAfter:     testutil.WaitSuperLong,
+		InFlightChatStaleAfter:     testutil.WaitLong,
 	})
 	t.Cleanup(func() {
 		require.NoError(t, serverB.Close())

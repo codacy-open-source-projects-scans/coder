@@ -82,6 +82,8 @@ export interface AIBridgeOpenAIConfig {
 export interface AIBridgeProxyConfig {
 	readonly enabled: boolean;
 	readonly listen_addr: string;
+	readonly tls_cert_file: string;
+	readonly tls_key_file: string;
 	readonly cert_file: string;
 	readonly key_file: string;
 	readonly domain_allowlist: string;
@@ -6797,6 +6799,7 @@ export interface WebpushMessage {
 	readonly title: string;
 	readonly body: string;
 	readonly actions: readonly WebpushMessageAction[];
+	readonly data?: Record<string, string>;
 }
 
 // From codersdk/notifications.go

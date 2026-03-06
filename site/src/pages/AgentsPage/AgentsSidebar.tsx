@@ -53,6 +53,7 @@ import {
 import { NavLink, useParams } from "react-router";
 import { cn } from "utils/cn";
 import { shortRelativeTime } from "utils/time";
+import { getTimeGroup, TIME_GROUPS } from "./timeGroups";
 
 interface AgentsSidebarProps {
 	chats: readonly Chat[];
@@ -87,24 +88,6 @@ type ChatTree = {
 	readonly childrenById: ReadonlyMap<string, readonly string[]>;
 	readonly parentById: ReadonlyMap<string, string | undefined>;
 };
-
-const TIME_GROUPS = ["Today", "Yesterday", "This Week", "Older"] as const;
-type TimeGroup = (typeof TIME_GROUPS)[number];
-
-function getTimeGroup(dateStr: string): TimeGroup {
-	const now = new Date();
-	const date = new Date(dateStr);
-	const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-	const yesterday = new Date(today);
-	yesterday.setDate(yesterday.getDate() - 1);
-	const weekAgo = new Date(today);
-	weekAgo.setDate(weekAgo.getDate() - 7);
-
-	if (date >= today) return "Today";
-	if (date >= yesterday) return "Yesterday";
-	if (date >= weekAgo) return "This Week";
-	return "Older";
-}
 
 const getStatusConfig = (status: ChatStatus) => {
 	return statusConfig[status] ?? statusConfig.completed;
@@ -340,7 +323,7 @@ const ChatTreeNode = memo<ChatTreeNodeProps>(({ chat, isChildNode }) => {
 	const changedFiles = diffStatus?.changed_files ?? 0;
 	const additions = diffStatus?.additions ?? 0;
 	const deletions = diffStatus?.deletions ?? 0;
-	const hasLineStats = additions > 0 || deletions > 0;
+	const hasLineStats = additions > 0 || deletions > 0 || changedFiles > 0;
 	const filesChangedLabel = `${changedFiles} ${
 		changedFiles === 1 ? "file" : "files"
 	}`;
@@ -433,15 +416,17 @@ const ChatTreeNode = memo<ChatTreeNodeProps>(({ chat, isChildNode }) => {
 								<div className="flex min-w-0 items-center gap-1.5">
 									{hasLinkedDiffStatus && hasLineStats && (
 										<span
-											className="inline-flex shrink-0 items-center gap-0.5 text-[13px] font-medium leading-none tabular-nums"
+											className="inline-flex shrink-0 items-center gap-0.5 font-mono text-xs font-medium leading-none tabular-nums"
 											title={`${filesChangedLabel}, +${additions} -${deletions}`}
 										>
-											<span className="text-content-success">+{additions}</span>
-											<span className="text-content-destructive">
-												-{deletions}
+											<span className="text-green-700 dark:text-green-500">
+												+{additions}
 											</span>
+											<span className="text-red-700 dark:text-red-400">
+												&minus;{deletions}
+											</span>{" "}
 										</span>
-									)}
+									)}{" "}
 									<div
 										className={cn(
 											"min-w-0 overflow-hidden text-[13px] leading-4",
@@ -458,7 +443,7 @@ const ChatTreeNode = memo<ChatTreeNodeProps>(({ chat, isChildNode }) => {
 						</>
 					)}
 				</NavLink>
-				<div className="mr-1 mt-1 flex h-6 w-7 shrink-0 items-center justify-end">
+				<div className="relative mr-1 mt-1 flex h-6 w-7 shrink-0 items-center justify-end">
 					{isArchivingThisChat ? (
 						<Loader2Icon className="h-3.5 w-3.5 animate-spin text-content-secondary" />
 					) : (
@@ -471,13 +456,14 @@ const ChatTreeNode = memo<ChatTreeNodeProps>(({ chat, isChildNode }) => {
 									<Button
 										size="icon"
 										variant="subtle"
-										className="hidden h-6 w-7 min-w-0 justify-end rounded-none px-0 text-content-secondary hover:text-content-primary [@media(hover:hover)]:group-hover:inline-flex data-[state=open]:inline-flex"
+										className="absolute inset-0 flex h-6 w-7 min-w-0 justify-end rounded-none px-0 opacity-0 text-content-secondary hover:text-content-primary [@media(hover:hover)]:group-hover:opacity-100 data-[state=open]:opacity-100"
 										aria-label={`Open actions for ${chat.title}`}
 									>
 										<EllipsisIcon className="h-3.5 w-3.5" />
 									</Button>
 								</DropdownMenuTrigger>
 								<DropdownMenuContent align="end">
+									{" "}
 									{chat.archived ? (
 										<DropdownMenuItem
 											disabled={isArchiving}
@@ -488,7 +474,6 @@ const ChatTreeNode = memo<ChatTreeNodeProps>(({ chat, isChildNode }) => {
 										</DropdownMenuItem>
 									) : (
 										<>
-											{" "}
 											<DropdownMenuItem
 												className="text-content-destructive focus:text-content-destructive"
 												disabled={isArchiving}
@@ -751,7 +736,10 @@ export const AgentsSidebar: FC<AgentsSidebarProps> = (props) => {
 													);
 												if (groupChats.length === 0) return null;
 												return (
-													<div key={group}>
+													<div
+														key={group}
+														className="[&:not(:first-child)]:mt-3"
+													>
 														<div className="mb-1 ml-2.5 flex items-center justify-between text-xs font-medium text-content-secondary">
 															<span>{group}</span>
 														</div>
@@ -813,13 +801,14 @@ export const AgentsSidebar: FC<AgentsSidebarProps> = (props) => {
 					<DropdownMenuTrigger asChild>
 						<button
 							type="button"
-							className="flex w-full items-center gap-2 bg-transparent border-0 cursor-pointer px-3 py-2 text-left hover:bg-surface-tertiary/50 transition-colors"
+							className="flex w-full items-center gap-2 bg-transparent border-0 cursor-pointer px-3 py-3 text-left hover:bg-surface-tertiary/50 transition-colors"
 						>
 							<Avatar
 								fallback={user.username}
 								src={user.avatar_url}
 								size="sm"
-							/>
+								className="rounded-full"
+							/>{" "}
 							<span className="truncate text-sm text-content-secondary">
 								{user.name || user.username}
 							</span>
@@ -838,7 +827,7 @@ export const AgentsSidebar: FC<AgentsSidebarProps> = (props) => {
 						/>
 					</DropdownMenuContent>
 				</DropdownMenu>
-			</div>{" "}
+			</div>
 		</div>
 	);
 };

@@ -66,6 +66,7 @@ type Server struct {
 
 	agentConnFn       AgentConnFunc
 	createWorkspaceFn chattool.CreateWorkspaceFn
+	startWorkspaceFn  chattool.StartWorkspaceFn
 	pubsub            pubsub.Pubsub
 	webpushDispatcher webpush.Dispatcher
 	providerAPIKeys   chatprovider.ProviderAPIKeys
@@ -852,6 +853,7 @@ type Config struct {
 	InFlightChatStaleAfter     time.Duration
 	AgentConn                  AgentConnFunc
 	CreateWorkspace            chattool.CreateWorkspaceFn
+	StartWorkspace             chattool.StartWorkspaceFn
 	Pubsub                     pubsub.Pubsub
 	ProviderAPIKeys            chatprovider.ProviderAPIKeys
 	WebpushDispatcher          webpush.Dispatcher
@@ -887,6 +889,7 @@ func New(cfg Config) *Server {
 		subscribeFn:                cfg.SubscribeFn,
 		agentConnFn:                cfg.AgentConn,
 		createWorkspaceFn:          cfg.CreateWorkspace,
+		startWorkspaceFn:           cfg.StartWorkspace,
 		pubsub:                     cfg.Pubsub,
 		webpushDispatcher:          cfg.WebpushDispatcher,
 		providerAPIKeys:            cfg.ProviderAPIKeys,
@@ -1673,6 +1676,7 @@ func (p *Server) processChat(ctx context.Context, chat database.Chat) {
 
 	// Determine the final status and last error to set when we're done.
 	status := database.ChatStatusWaiting
+	wasInterrupted := false
 	lastError := ""
 	remainingQueuedMessages := []database.ChatQueuedMessage{}
 	shouldPublishQueueUpdate := false
@@ -1802,15 +1806,16 @@ func (p *Server) processChat(ctx context.Context, chat database.Chat) {
 
 		// Send a web push notification when the agent finishes
 		// processing. We only notify for terminal states (waiting
-		// = success, error = failure) and skip sub-agent chats to
-		// avoid spamming the user with notifications for internal
-		// delegation.
-		if p.webpushDispatcher != nil && p.webpushDispatcher.PublicKey() != "" && !chat.ParentChatID.Valid {
+		// = success, error = failure) and skip sub-agent chats
+		// and user-interrupted chats to avoid unnecessary
+		// notifications.
+		if p.webpushDispatcher != nil && p.webpushDispatcher.PublicKey() != "" && !chat.ParentChatID.Valid && !wasInterrupted {
 			if status == database.ChatStatusWaiting || status == database.ChatStatusError {
 				pushMsg := codersdk.WebpushMessage{
 					Title: chat.Title,
 					Body:  "Agent has finished running.",
 					Icon:  "/favicon.ico",
+					Data:  map[string]string{"url": fmt.Sprintf("/agents/%s", chat.ID)},
 				}
 				if status == database.ChatStatusError {
 					pushMsg.Body = "Agent encountered an error."
@@ -1833,6 +1838,7 @@ func (p *Server) processChat(ctx context.Context, chat database.Chat) {
 		if errors.Is(err, chatloop.ErrInterrupted) || errors.Is(context.Cause(chatCtx), chatloop.ErrInterrupted) {
 			logger.Info(ctx, "chat interrupted")
 			status = database.ChatStatusWaiting
+			wasInterrupted = true
 			return
 		}
 		if isShutdownCancellation(ctx, chatCtx, err) {
@@ -2208,6 +2214,14 @@ func (p *Server) runChat(
 				AgentConnFn: chattool.AgentConnFunc(p.agentConnFn),
 				WorkspaceMu: &workspaceMu,
 			}),
+			chattool.StartWorkspace(chattool.StartWorkspaceOptions{
+				DB:          p.db,
+				OwnerID:     chat.OwnerID,
+				ChatID:      chat.ID,
+				StartFn:     p.startWorkspaceFn,
+				AgentConnFn: chattool.AgentConnFunc(p.agentConnFn),
+				WorkspaceMu: &workspaceMu,
+			}),
 		)
 		tools = append(tools, p.subagentTools(func() database.Chat {
 			return chat
@@ -2233,6 +2247,23 @@ func (p *Server) runChat(
 			p.publishMessagePart(chat.ID, string(role), part)
 		},
 		Compaction: compactionOptions,
+		ReloadMessages: func(reloadCtx context.Context) ([]fantasy.Message, error) {
+			reloadedMsgs, err := p.db.GetChatMessagesForPromptByChatID(reloadCtx, chat.ID)
+			if err != nil {
+				return nil, xerrors.Errorf("reload chat messages: %w", err)
+			}
+			reloadedPrompt, err := chatprompt.ConvertMessages(reloadedMsgs)
+			if err != nil {
+				return nil, xerrors.Errorf("convert reloaded messages: %w", err)
+			}
+			if chat.ParentChatID.Valid {
+				reloadedPrompt = chatprompt.InsertSystem(reloadedPrompt, defaultSubagentInstruction)
+			}
+			if instruction := p.resolveInstructions(reloadCtx, chat, getWorkspaceConn); instruction != "" {
+				reloadedPrompt = chatprompt.InsertSystem(reloadedPrompt, instruction)
+			}
+			return reloadedPrompt, nil
+		},
 
 		OnRetry: func(attempt int, retryErr error, delay time.Duration) {
 			logger.Warn(ctx, "retrying LLM stream",
