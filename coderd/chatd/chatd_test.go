@@ -73,10 +73,11 @@ func TestInterruptChatBroadcastsStatusAcrossInstances(t *testing.T) {
 	require.Eventually(t, func() bool {
 		select {
 		case event := <-events:
-			if event.Type != codersdk.ChatStreamEventTypeStatus || event.Status == nil {
-				return false
+			if event.Type == codersdk.ChatStreamEventTypeStatus && event.Status != nil {
+				return event.Status.Status == codersdk.ChatStatusWaiting
 			}
-			return event.Status.Status == codersdk.ChatStatusWaiting
+			t.Logf("skipping unexpected event: type=%s", event.Type)
+			return false
 		default:
 			return false
 		}
@@ -366,7 +367,7 @@ func TestSendMessageQueueBehaviorQueuesWhenBusy(t *testing.T) {
 	require.Len(t, messages, 1)
 }
 
-func TestSendMessageInterruptBehaviorSendsImmediatelyWhenBusy(t *testing.T) {
+func TestSendMessageInterruptBehaviorQueuesAndInterruptsWhenBusy(t *testing.T) {
 	t.Parallel()
 
 	db, ps := dbtestutil.NewDB(t)
@@ -398,26 +399,31 @@ func TestSendMessageInterruptBehaviorSendsImmediatelyWhenBusy(t *testing.T) {
 		BusyBehavior: chatd.SendMessageBusyBehaviorInterrupt,
 	})
 	require.NoError(t, err)
-	require.False(t, result.Queued)
-	require.Equal(t, database.ChatStatusPending, result.Chat.Status)
-	require.False(t, result.Chat.WorkerID.Valid)
+
+	// The message should be queued, not inserted directly.
+	require.True(t, result.Queued)
+	require.NotNil(t, result.QueuedMessage)
+
+	// The chat should transition to waiting (interrupt signal),
+	// not pending.
+	require.Equal(t, database.ChatStatusWaiting, result.Chat.Status)
 
 	fromDB, err := db.GetChatByID(ctx, chat.ID)
 	require.NoError(t, err)
-	require.Equal(t, database.ChatStatusPending, fromDB.Status)
-	require.False(t, fromDB.WorkerID.Valid)
+	require.Equal(t, database.ChatStatusWaiting, fromDB.Status)
 
+	// The message should be in the queue, not in chat_messages.
 	queued, err := db.GetChatQueuedMessages(ctx, chat.ID)
 	require.NoError(t, err)
-	require.Len(t, queued, 0)
+	require.Len(t, queued, 1)
 
+	// Only the initial user message should be in chat_messages.
 	messages, err := db.GetChatMessagesByChatID(ctx, database.GetChatMessagesByChatIDParams{
 		ChatID:  chat.ID,
 		AfterID: 0,
 	})
 	require.NoError(t, err)
-	require.Len(t, messages, 2)
-	require.Equal(t, messages[len(messages)-1].ID, result.Message.ID)
+	require.Len(t, messages, 1)
 }
 
 func TestEditMessageUpdatesAndTruncatesAndClearsQueue(t *testing.T) {
@@ -865,15 +871,15 @@ func TestSubscribeNoPubsubNoDuplicateMessageParts(t *testing.T) {
 	// events — the snapshot already contained everything. Before
 	// the fix, localSnapshot was replayed into the channel,
 	// causing duplicates.
-	select {
-	case event, ok := <-events:
-		if ok {
-			t.Fatalf("unexpected event from channel (would be a duplicate): type=%s", event.Type)
+	require.Never(t, func() bool {
+		select {
+		case <-events:
+			return true
+		default:
+			return false
 		}
-		// Channel closed without events is fine.
-	case <-time.After(200 * time.Millisecond):
-		// No events — correct behavior.
-	}
+	}, 200*time.Millisecond, testutil.IntervalFast,
+		"expected no duplicate events after snapshot")
 }
 
 func TestSubscribeAfterMessageID(t *testing.T) {
@@ -1534,7 +1540,7 @@ func TestSuccessfulChatSendsWebPushWithNavigationData(t *testing.T) {
 		if dbErr != nil {
 			return false
 		}
-		return fromDB.Status == database.ChatStatusWaiting && !fromDB.WorkerID.Valid
+		return fromDB.Status == database.ChatStatusWaiting && !fromDB.WorkerID.Valid && mockPush.dispatchCount.Load() == 1
 	}, testutil.IntervalFast)
 
 	// Verify a web push notification was dispatched exactly once.

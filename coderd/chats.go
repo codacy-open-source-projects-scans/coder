@@ -1,17 +1,22 @@
 package coderd
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"charm.land/fantasy"
@@ -35,6 +40,8 @@ import (
 	"github.com/coder/coder/v2/coderd/rbac/policy"
 	"github.com/coder/coder/v2/coderd/tracing"
 	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/coder/v2/codersdk/wsjson"
+	"github.com/coder/websocket"
 )
 
 const (
@@ -244,7 +251,7 @@ func (api *API) postChats(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	contentBlocks, titleSource, inputError := createChatInputFromRequest(req)
+	contentBlocks, contentFileIDs, titleSource, inputError := createChatInputFromRequest(ctx, api.Database, req)
 	if inputError != nil {
 		httpapi.Write(ctx, rw, http.StatusBadRequest, *inputError)
 		return
@@ -279,6 +286,7 @@ func (api *API) postChats(rw http.ResponseWriter, r *http.Request) {
 		ModelConfigID:      modelConfigID,
 		SystemPrompt:       defaultChatSystemPrompt(),
 		InitialUserContent: contentBlocks,
+		ContentFileIDs:     contentFileIDs,
 	})
 	if err != nil {
 		if database.IsForeignKeyViolation(
@@ -413,6 +421,162 @@ func (api *API) getChat(rw http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// @Summary Watch git changes for a chat.
+// @ID watch-chat-git
+// @Security CoderSessionToken
+// @Tags Chats
+// @Param chat path string true "Chat ID" format(uuid)
+// @Success 101
+// @Router /chats/{chat}/git/watch [get]
+//
+// EXPERIMENTAL: this endpoint is experimental and is subject to change.
+//
+//nolint:revive // HTTP handler writes to ResponseWriter.
+func (api *API) watchChatGit(rw http.ResponseWriter, r *http.Request) {
+	var (
+		ctx    = r.Context()
+		chat   = httpmw.ChatParam(r)
+		logger = api.Logger.Named("chat_git_watcher").With(slog.F("chat_id", chat.ID))
+	)
+
+	if !chat.WorkspaceID.Valid {
+		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
+			Message: "Chat has no workspace to watch.",
+		})
+		return
+	}
+
+	agents, err := api.Database.GetWorkspaceAgentsInLatestBuildByWorkspaceID(ctx, chat.WorkspaceID.UUID)
+	if err != nil {
+		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
+			Message: "Internal error fetching workspace agents.",
+			Detail:  err.Error(),
+		})
+		return
+	}
+	if len(agents) == 0 {
+		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
+			Message: "Chat workspace has no agents.",
+		})
+		return
+	}
+
+	apiAgent, err := db2sdk.WorkspaceAgent(
+		api.DERPMap(),
+		*api.TailnetCoordinator.Load(),
+		agents[0],
+		nil,
+		nil,
+		nil,
+		api.AgentInactiveDisconnectTimeout,
+		api.DeploymentValues.AgentFallbackTroubleshootingURL.String(),
+	)
+	if err != nil {
+		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
+			Message: "Internal error reading workspace agent.",
+			Detail:  err.Error(),
+		})
+		return
+	}
+	if apiAgent.Status != codersdk.WorkspaceAgentConnected {
+		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
+			Message: fmt.Sprintf("Agent state is %q, it must be in the %q state.", apiAgent.Status, codersdk.WorkspaceAgentConnected),
+		})
+		return
+	}
+
+	dialCtx, dialCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer dialCancel()
+
+	agentConn, release, err := api.agentProvider.AgentConn(dialCtx, agents[0].ID)
+	if err != nil {
+		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
+			Message: "Internal error dialing workspace agent.",
+			Detail:  err.Error(),
+		})
+		return
+	}
+	defer release()
+
+	agentStream, err := agentConn.WatchGit(ctx, logger, chat.ID)
+	if err != nil {
+		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
+			Message: "Internal error watching agent's git state.",
+			Detail:  err.Error(),
+		})
+		return
+	}
+	defer agentStream.Close(websocket.StatusGoingAway)
+
+	clientConn, err := websocket.Accept(rw, r, &websocket.AcceptOptions{
+		CompressionMode: websocket.CompressionNoContextTakeover,
+	})
+	if err != nil {
+		logger.Error(ctx, "failed to accept websocket", slog.Error(err))
+		return
+	}
+
+	clientStream := wsjson.NewStream[
+		codersdk.WorkspaceAgentGitClientMessage,
+		codersdk.WorkspaceAgentGitServerMessage,
+	](clientConn, websocket.MessageText, websocket.MessageText, logger)
+
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+
+	go httpapi.HeartbeatClose(ctx, logger, cancel, clientConn)
+
+	// Proxy agent → client.
+	agentCh := agentStream.Chan()
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-api.ctx.Done():
+				return
+			case <-ctx.Done():
+				return
+			case msg, ok := <-agentCh:
+				if !ok {
+					cancel()
+					return
+				}
+				if err := clientStream.Send(msg); err != nil {
+					logger.Debug(ctx, "failed to forward agent message to client", slog.Error(err))
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+
+	// Proxy client → agent.
+	clientCh := clientStream.Chan()
+proxyLoop:
+	for {
+		select {
+		case <-api.ctx.Done():
+			break proxyLoop
+		case <-ctx.Done():
+			break proxyLoop
+		case msg, ok := <-clientCh:
+			if !ok {
+				break proxyLoop
+			}
+			if err := agentStream.Send(msg); err != nil {
+				logger.Debug(ctx, "failed to forward client message to agent", slog.Error(err))
+				break proxyLoop
+			}
+		}
+	}
+
+	cancel()
+	wg.Wait()
+	_ = clientStream.Close(websocket.StatusGoingAway)
+}
+
 // @Summary Archive a chat
 // @ID archive-chat
 // @Tags Chats
@@ -429,7 +593,15 @@ func (api *API) archiveChat(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err := api.Database.ArchiveChatByID(ctx, chat.ID)
+	var err error
+	// Use chatDaemon when available so it can notify
+	// active subscribers. Fall back to direct DB for the
+	// simple archive flag — no streaming state is involved.
+	if api.chatDaemon != nil {
+		err = api.chatDaemon.ArchiveChat(ctx, chat.ID)
+	} else {
+		err = api.Database.ArchiveChatByID(ctx, chat.ID)
+	}
 	if err != nil {
 		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
 			Message: "Failed to archive chat.",
@@ -457,7 +629,15 @@ func (api *API) unarchiveChat(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err := api.Database.UnarchiveChatByID(ctx, chat.ID)
+	var err error
+	// Use chatDaemon when available so it can notify
+	// active subscribers. Fall back to direct DB for the
+	// simple unarchive flag — no streaming state is involved.
+	if api.chatDaemon != nil {
+		err = api.chatDaemon.UnarchiveChat(ctx, chat.ID)
+	} else {
+		err = api.Database.UnarchiveChatByID(ctx, chat.ID)
+	}
 	if err != nil {
 		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
 			Message: "Failed to unarchive chat.",
@@ -488,7 +668,7 @@ func (api *API) postChatMessages(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	contentBlocks, _, inputError := createChatInputFromParts(req.Content, "content")
+	contentBlocks, contentFileIDs, _, inputError := createChatInputFromParts(ctx, api.Database, req.Content, "content")
 	if inputError != nil {
 		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
 			Message: inputError.Message,
@@ -500,10 +680,11 @@ func (api *API) postChatMessages(rw http.ResponseWriter, r *http.Request) {
 	sendResult, sendErr := api.chatDaemon.SendMessage(
 		ctx,
 		chatd.SendMessageOptions{
-			ChatID:        chatID,
-			Content:       contentBlocks,
-			ModelConfigID: req.ModelConfigID,
-			BusyBehavior:  chatd.SendMessageBusyBehaviorQueue,
+			ChatID:         chatID,
+			Content:        contentBlocks,
+			ContentFileIDs: contentFileIDs,
+			ModelConfigID:  req.ModelConfigID,
+			BusyBehavior:   chatd.SendMessageBusyBehaviorQueue,
 		},
 	)
 	if sendErr != nil {
@@ -562,7 +743,7 @@ func (api *API) patchChatMessage(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	contentBlocks, _, inputError := createChatInputFromParts(req.Content, "content")
+	contentBlocks, contentFileIDs, _, inputError := createChatInputFromParts(ctx, api.Database, req.Content, "content")
 	if inputError != nil {
 		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
 			Message: inputError.Message,
@@ -575,6 +756,7 @@ func (api *API) patchChatMessage(rw http.ResponseWriter, r *http.Request) {
 		ChatID:          chat.ID,
 		EditedMessageID: messageID,
 		Content:         contentBlocks,
+		ContentFileIDs:  contentFileIDs,
 	})
 	if editErr != nil {
 		switch {
@@ -689,18 +871,6 @@ func (api *API) streamChat(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sendEvent, senderClosed, err := httpapi.OneWayWebSocketEventSender(api.Logger)(rw, r)
-	if err != nil {
-		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
-			Message: "Failed to open chat stream.",
-			Detail:  err.Error(),
-		})
-		return
-	}
-	defer func() {
-		<-senderClosed
-	}()
-
 	var afterMessageID int64
 	if v := r.URL.Query().Get("after_id"); v != "" {
 		var err error
@@ -714,14 +884,31 @@ func (api *API) streamChat(rw http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	snapshot, events, cancel, ok := api.chatDaemon.Subscribe(ctx, chatID, r.Header, afterMessageID)
-	if !ok {
+	sendEvent, senderClosed, err := httpapi.OneWayWebSocketEventSender(api.Logger)(rw, r)
+	if err != nil {
 		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
-			Message: "Chat streaming is not available.",
-			Detail:  "Chat stream state is not configured.",
+			Message: "Failed to open chat stream.",
+			Detail:  err.Error(),
 		})
 		return
 	}
+	snapshot, events, cancel, ok := api.chatDaemon.Subscribe(ctx, chatID, r.Header, afterMessageID)
+	if !ok {
+		_ = sendEvent(codersdk.ServerSentEvent{
+			Type: codersdk.ServerSentEventTypeError,
+			Data: codersdk.Response{
+				Message: "Chat streaming is not available.",
+				Detail:  "Chat stream state is not configured.",
+			},
+		})
+		// Ensure the WebSocket is closed so senderClosed
+		// completes and the handler can return.
+		<-senderClosed
+		return
+	}
+	defer func() {
+		<-senderClosed
+	}()
 	defer cancel()
 
 	sendChatStreamBatch := func(batch []codersdk.ChatStreamEvent) error {
@@ -814,9 +1001,13 @@ func (api *API) interruptChat(rw http.ResponseWriter, r *http.Request) {
 		if updateErr != nil {
 			api.Logger.Error(ctx, "failed to mark chat as waiting",
 				slog.F("chat_id", chatID), slog.Error(updateErr))
-		} else {
-			chat = updatedChat
+			httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
+				Message: "Failed to interrupt chat.",
+				Detail:  updateErr.Error(),
+			})
+			return
 		}
+		chat = updatedChat
 	}
 
 	httpapi.Write(ctx, rw, http.StatusOK, convertChat(chat, nil))
@@ -2037,45 +2228,298 @@ func normalizeChatCompressionThreshold(
 	return threshold, nil
 }
 
+const (
+	// maxChatFileSize is the maximum size of a chat file upload (10 MB).
+	maxChatFileSize = 10 << 20
+	// maxChatFileName is the maximum length of an uploaded file name.
+	maxChatFileName = 255
+)
+
+// allowedChatFileMIMETypes lists the content types accepted for chat
+// file uploads. SVG is explicitly excluded because it can contain scripts.
+var allowedChatFileMIMETypes = map[string]bool{
+	"image/png":     true,
+	"image/jpeg":    true,
+	"image/gif":     true,
+	"image/webp":    true,
+	"image/svg+xml": false, // SVG can contain scripts.
+}
+
+var (
+	webpMagicRIFF = []byte("RIFF")
+	webpMagicWEBP = []byte("WEBP")
+)
+
+// detectChatFileType detects the MIME type of the given data.
+// It extends http.DetectContentType with support for WebP, which
+// Go's standard sniffer does not recognize.
+func detectChatFileType(data []byte) string {
+	if len(data) >= 12 &&
+		bytes.Equal(data[0:4], webpMagicRIFF) &&
+		bytes.Equal(data[8:12], webpMagicWEBP) {
+		return "image/webp"
+	}
+	return http.DetectContentType(data)
+}
+
 func defaultChatSystemPrompt() string {
 	return chatd.DefaultSystemPrompt
 }
 
-func createChatInputFromRequest(req codersdk.CreateChatRequest) (
+// @Summary Upload a chat file
+// @ID upload-chat-file
+// @Security CoderSessionToken
+// @Accept application/octet-stream
+// @Produce json
+// @Tags Chats
+// @Param Content-Type header string true "Content-Type must be an image type (image/png, image/jpeg, image/gif, image/webp)"
+// @Param organization query string true "Organization ID" format(uuid)
+// @Success 201 {object} codersdk.UploadChatFileResponse
+// @Failure 400 {object} codersdk.Response
+// @Failure 401 {object} codersdk.Response
+// @Failure 413 {object} codersdk.Response
+// @Failure 500 {object} codersdk.Response
+// @Router /chats/files [post]
+func (api *API) postChatFile(rw http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	apiKey := httpmw.APIKey(r)
+
+	if !api.Authorize(r, policy.ActionCreate, rbac.ResourceChat.WithOwner(apiKey.UserID.String())) {
+		httpapi.Forbidden(rw)
+		return
+	}
+
+	orgIDStr := r.URL.Query().Get("organization")
+	if orgIDStr == "" {
+		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
+			Message: "Missing organization query parameter.",
+		})
+		return
+	}
+	orgID, err := uuid.Parse(orgIDStr)
+	if err != nil {
+		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
+			Message: "Invalid organization ID.",
+		})
+		return
+	}
+
+	contentType := r.Header.Get("Content-Type")
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	// Strip parameters (e.g. "image/png; charset=utf-8" → "image/png")
+	// so the allowlist check matches the base media type.
+	if mediaType, _, err := mime.ParseMediaType(contentType); err == nil {
+		contentType = mediaType
+	}
+
+	if allowed, ok := allowedChatFileMIMETypes[contentType]; !ok || !allowed {
+		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
+			Message: "Unsupported file type.",
+			Detail:  "Allowed types: image/png, image/jpeg, image/gif, image/webp.",
+		})
+		return
+	}
+
+	r.Body = http.MaxBytesReader(rw, r.Body, maxChatFileSize)
+	br := bufio.NewReader(r.Body)
+
+	// Peek at the leading bytes to sniff the real content type
+	// before reading the entire body.
+	peek, peekErr := br.Peek(512)
+	if peekErr != nil && !errors.Is(peekErr, io.EOF) && !errors.Is(peekErr, bufio.ErrBufferFull) {
+		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
+			Message: "Failed to read file from request.",
+			Detail:  peekErr.Error(),
+		})
+		return
+	}
+
+	// Verify the actual content matches a safe image type so that
+	// a client cannot spoof Content-Type to serve active content.
+	detected := detectChatFileType(peek)
+	if allowed, ok := allowedChatFileMIMETypes[detected]; !ok || !allowed {
+		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
+			Message: "Unsupported file type.",
+			Detail:  "Allowed types: image/png, image/jpeg, image/gif, image/webp.",
+		})
+		return
+	}
+
+	// Read the full body now that we know the type is valid.
+	data, err := io.ReadAll(br)
+	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			httpapi.Write(ctx, rw, http.StatusRequestEntityTooLarge, codersdk.Response{
+				Message: "File too large.",
+				Detail:  fmt.Sprintf("Maximum file size is %d bytes.", maxChatFileSize),
+			})
+			return
+		}
+		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
+			Message: "Failed to read file from request.",
+			Detail:  err.Error(),
+		})
+		return
+	}
+
+	// Extract filename from Content-Disposition header if provided.
+	var filename string
+	if cd := r.Header.Get("Content-Disposition"); cd != "" {
+		if _, params, err := mime.ParseMediaType(cd); err == nil {
+			filename = params["filename"]
+			if len(filename) > maxChatFileName {
+				// Truncate at rune boundary to avoid splitting
+				// multi-byte UTF-8 characters.
+				var truncated []byte
+				for _, r := range filename {
+					encoded := []byte(string(r))
+					if len(truncated)+len(encoded) > maxChatFileName {
+						break
+					}
+					truncated = append(truncated, encoded...)
+				}
+				filename = string(truncated)
+			}
+		}
+	}
+
+	chatFile, err := api.Database.InsertChatFile(ctx, database.InsertChatFileParams{
+		OwnerID:        apiKey.UserID,
+		OrganizationID: orgID,
+		Name:           filename,
+		Mimetype:       detected,
+		Data:           data,
+	})
+	if err != nil {
+		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
+			Message: "Failed to save chat file.",
+			Detail:  err.Error(),
+		})
+		return
+	}
+
+	httpapi.Write(ctx, rw, http.StatusCreated, codersdk.UploadChatFileResponse{
+		ID: chatFile.ID,
+	})
+}
+
+// @Summary Get a chat file
+// @ID get-chat-file
+// @Security CoderSessionToken
+// @Tags Chats
+// @Param file path string true "File ID" format(uuid)
+// @Success 200
+// @Failure 400 {object} codersdk.Response
+// @Failure 401 {object} codersdk.Response
+// @Failure 404 {object} codersdk.Response
+// @Failure 500 {object} codersdk.Response
+// @Router /chats/files/{file} [get]
+func (api *API) chatFileByID(rw http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	fileIDStr := chi.URLParam(r, "file")
+	fileID, err := uuid.Parse(fileIDStr)
+	if err != nil {
+		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
+			Message: "Invalid file ID.",
+		})
+		return
+	}
+
+	chatFile, err := api.Database.GetChatFileByID(ctx, fileID)
+	if err != nil {
+		if httpapi.Is404Error(err) {
+			httpapi.ResourceNotFound(rw)
+			return
+		}
+		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
+			Message: "Failed to get chat file.",
+			Detail:  err.Error(),
+		})
+		return
+	}
+
+	rw.Header().Set("Content-Type", chatFile.Mimetype)
+	if chatFile.Name != "" {
+		rw.Header().Set("Content-Disposition", mime.FormatMediaType("inline", map[string]string{"filename": chatFile.Name}))
+	} else {
+		rw.Header().Set("Content-Disposition", "inline")
+	}
+	rw.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+	rw.Header().Set("Content-Length", strconv.Itoa(len(chatFile.Data)))
+	rw.WriteHeader(http.StatusOK)
+	_, _ = rw.Write(chatFile.Data)
+}
+
+func createChatInputFromRequest(ctx context.Context, db database.Store, req codersdk.CreateChatRequest) (
 	[]fantasy.Content,
+	map[int]uuid.UUID,
 	string,
 	*codersdk.Response,
 ) {
-	return createChatInputFromParts(req.Content, "content")
+	return createChatInputFromParts(ctx, db, req.Content, "content")
 }
 
 func createChatInputFromParts(
+	ctx context.Context,
+	db database.Store,
 	parts []codersdk.ChatInputPart,
 	fieldName string,
-) ([]fantasy.Content, string, *codersdk.Response) {
+) ([]fantasy.Content, map[int]uuid.UUID, string, *codersdk.Response) {
 	if len(parts) == 0 {
-		return nil, "", &codersdk.Response{
+		return nil, nil, "", &codersdk.Response{
 			Message: "Content is required.",
 			Detail:  "Content cannot be empty.",
 		}
 	}
 
 	content := make([]fantasy.Content, 0, len(parts))
+	fileIDs := make(map[int]uuid.UUID)
 	textParts := make([]string, 0, len(parts))
 	for i, part := range parts {
 		switch strings.ToLower(strings.TrimSpace(string(part.Type))) {
 		case string(codersdk.ChatInputPartTypeText):
 			text := strings.TrimSpace(part.Text)
 			if text == "" {
-				return nil, "", &codersdk.Response{
+				return nil, nil, "", &codersdk.Response{
 					Message: "Invalid input part.",
 					Detail:  fmt.Sprintf("%s[%d].text cannot be empty.", fieldName, i),
 				}
 			}
 			content = append(content, fantasy.TextContent{Text: text})
 			textParts = append(textParts, text)
+		case string(codersdk.ChatInputPartTypeFile):
+			if part.FileID == uuid.Nil {
+				return nil, nil, "", &codersdk.Response{
+					Message: "Invalid input part.",
+					Detail:  fmt.Sprintf("%s[%d].file_id is required for file parts.", fieldName, i),
+				}
+			}
+			// Validate that the file exists and get its media type.
+			// File data is not loaded here; it's resolved at LLM
+			// dispatch time via chatFileResolver.
+			chatFile, err := db.GetChatFileByID(ctx, part.FileID)
+			if err != nil {
+				if httpapi.Is404Error(err) {
+					return nil, nil, "", &codersdk.Response{
+						Message: "Invalid input part.",
+						Detail:  fmt.Sprintf("%s[%d].file_id references a file that does not exist.", fieldName, i),
+					}
+				}
+				return nil, nil, "", &codersdk.Response{
+					Message: "Internal error.",
+					Detail:  fmt.Sprintf("Failed to retrieve file for %s[%d].", fieldName, i),
+				}
+			}
+			content = append(content, fantasy.FileContent{
+				MediaType: chatFile.Mimetype,
+			})
+			fileIDs[len(content)-1] = part.FileID
 		default:
-			return nil, "", &codersdk.Response{
+			return nil, nil, "", &codersdk.Response{
 				Message: "Invalid input part.",
 				Detail: fmt.Sprintf(
 					"%s[%d].type %q is not supported.",
@@ -2087,14 +2531,16 @@ func createChatInputFromParts(
 		}
 	}
 
-	titleSource := strings.TrimSpace(strings.Join(textParts, " "))
-	if titleSource == "" {
-		return nil, "", &codersdk.Response{
+	// Allow file-only messages. The titleSource may be empty
+	// when only file parts are provided, callers handle this.
+	if len(content) == 0 {
+		return nil, nil, "", &codersdk.Response{
 			Message: "Content is required.",
-			Detail:  "Content must include at least one text part.",
+			Detail:  fmt.Sprintf("%s must include at least one text or file part.", fieldName),
 		}
 	}
-	return content, titleSource, nil
+	titleSource := strings.TrimSpace(strings.Join(textParts, " "))
+	return content, fileIDs, titleSource, nil
 }
 
 func chatTitleFromMessage(message string) string {

@@ -59,10 +59,11 @@ import {
 } from "./modelOptions";
 import { useAgentsPageKeybindings } from "./useAgentsPageKeybindings";
 import { useAgentsPWA } from "./useAgentsPWA";
+import { useFileAttachments } from "./useFileAttachments";
 import { WebPushButton } from "./WebPushButton";
 
 /** @internal Exported for testing. */
-const emptyInputStorageKey = "agents.empty-input";
+export const emptyInputStorageKey = "agents.empty-input";
 const selectedWorkspaceIdStorageKey = "agents.selected-workspace-id";
 const lastModelConfigIDStorageKey = "agents.last-model-config-id";
 const systemPromptStorageKey = "agents.system-prompt";
@@ -72,6 +73,7 @@ type ChatModelOption = ModelSelectorOption;
 
 type CreateChatOptions = {
 	message: string;
+	fileIDs?: string[];
 	workspaceId?: string;
 	model?: string;
 };
@@ -329,17 +331,25 @@ const AgentsPage: FC = () => {
 		],
 	);
 	const handleCreateChat = async (options: CreateChatOptions) => {
-		const { message, workspaceId, model } = options;
+		const { message, fileIDs, workspaceId, model } = options;
 		const modelConfigID =
 			(model && modelConfigIDByModelID.get(model)) || nilUUID;
+		const content: TypesGen.ChatInputPart[] = [];
+		if (message.trim()) {
+			content.push({ type: "text", text: message });
+		}
+		if (fileIDs) {
+			for (const fileID of fileIDs) {
+				content.push({ type: "file", file_id: fileID });
+			}
+		}
 		const createdChat = await createMutation.mutateAsync({
-			content: [{ type: "text", text: message }],
+			content,
 			workspace_id: workspaceId,
 			model_config_id: modelConfigID,
 		});
 
 		if (typeof window !== "undefined") {
-			localStorage.removeItem(emptyInputStorageKey);
 			if (modelConfigID !== nilUUID) {
 				localStorage.setItem(lastModelConfigIDStorageKey, modelConfigID);
 			} else {
@@ -367,125 +377,188 @@ const AgentsPage: FC = () => {
 	activeChatIDRef.current = agentId;
 
 	useEffect(() => {
-		const ws = watchChats();
-		ws.addEventListener("open", () => {
-			void queryClient.invalidateQueries({ queryKey: chatsKey });
-		});
-		ws.addEventListener("close", () => {
-			void queryClient.invalidateQueries({ queryKey: chatsKey });
-		});
-		ws.addEventListener("error", () => {
-			void queryClient.invalidateQueries({ queryKey: chatsKey });
-		});
-		ws.addEventListener("message", (event) => {
-			const sse = event.parsedMessage;
-			if (sse?.type !== "data" || !sse.data) {
+		let disposed = false;
+		let reconnectAttempt = 0;
+		let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+		let activeSocket: ReturnType<typeof watchChats> | null = null;
+
+		// Schedule a reconnect with capped exponential backoff.
+		const scheduleReconnect = () => {
+			if (disposed) {
 				return;
 			}
-			if (!isChatListSSEEvent(sse.data)) {
+			if (reconnectTimer !== null) {
+				clearTimeout(reconnectTimer);
+			}
+			const delay = Math.min(1000 * 2 ** reconnectAttempt, 10000);
+			reconnectAttempt += 1;
+			reconnectTimer = setTimeout(connect, delay);
+		};
+
+		function connect() {
+			if (disposed) {
 				return;
 			}
-			const chatEvent = sse.data;
-			const updatedChat = chatEvent.chat;
-
-			// Read the previous status from the query cache, which
-			// is synchronously updated by both the per-chat WebSocket
-			// (via updateSidebarChat) and this handler. This avoids
-			// the async-lag of a useEffect-based status map.
-			const currentChats = queryClient.getQueryData<TypesGen.Chat[]>(chatsKey);
-			const prevStatus = currentChats?.find(
-				(c) => c.id === updatedChat.id,
-			)?.status;
-			// Only play the chime for top-level chats, not sub-agents.
-			if (!updatedChat.parent_chat_id) {
-				maybePlayChime(
-					prevStatus,
-					updatedChat.status,
-					updatedChat.id,
-					activeChatIDRef.current,
-				);
+			if (activeSocket) {
+				activeSocket.close();
 			}
 
-			if (chatEvent.kind === "deleted") {
+			const ws = watchChats();
+			activeSocket = ws;
+
+			ws.addEventListener("open", () => {
+				// Connection succeeded — reset backoff.
+				reconnectAttempt = 0;
+				void queryClient.invalidateQueries({ queryKey: chatsKey });
+			});
+
+			const handleDisconnect = () => {
+				// Guard against duplicate calls: browsers fire both
+				// "error" and "close" on a failed WebSocket, so we
+				// only process the first event per socket instance.
+				if (activeSocket !== ws || disposed) {
+					return;
+				}
+				activeSocket = null;
+				void queryClient.invalidateQueries({ queryKey: chatsKey });
+				scheduleReconnect();
+			};
+
+			ws.addEventListener("close", handleDisconnect);
+			ws.addEventListener("error", handleDisconnect);
+
+			ws.addEventListener("message", (event) => {
+				if (event.parseError) {
+					console.warn("Failed to parse chat watch event:", event.parseError);
+					return;
+				}
+				const sse = event.parsedMessage;
+				if (sse?.type !== "data" || !sse.data) {
+					return;
+				}
+				if (!isChatListSSEEvent(sse.data)) {
+					return;
+				}
+				const chatEvent = sse.data;
+				const updatedChat = chatEvent.chat;
+
+				// Read the previous status from the query cache, which
+				// is synchronously updated by both the per-chat WebSocket
+				// (via updateSidebarChat) and this handler. This avoids
+				// the async-lag of a useEffect-based status map.
+				const currentChats =
+					queryClient.getQueryData<TypesGen.Chat[]>(chatsKey);
+				const prevStatus = currentChats?.find(
+					(c) => c.id === updatedChat.id,
+				)?.status;
+				// Only play the chime for top-level chats, not sub-agents.
+				if (!updatedChat.parent_chat_id) {
+					maybePlayChime(
+						prevStatus,
+						updatedChat.status,
+						updatedChat.id,
+						activeChatIDRef.current,
+					);
+				}
+
+				if (chatEvent.kind === "deleted") {
+					queryClient.setQueryData(
+						chatsKey,
+						(prev: TypesGen.Chat[] | undefined) =>
+							prev?.filter(
+								(c) =>
+									c.id !== updatedChat.id && c.root_chat_id !== updatedChat.id,
+							),
+					);
+					queryClient.removeQueries({
+						queryKey: chatKey(updatedChat.id),
+						exact: true,
+					});
+					return;
+				}
+
+				if (chatEvent.kind === "diff_status_change") {
+					void Promise.all([
+						queryClient.invalidateQueries({
+							queryKey: chatsKey,
+						}),
+						queryClient.invalidateQueries({
+							queryKey: chatDiffStatusKey(updatedChat.id),
+						}),
+						queryClient.invalidateQueries({
+							queryKey: chatDiffContentsKey(updatedChat.id),
+						}),
+					]);
+					return;
+				}
+
+				// Scope field updates by event kind so that
+				// status_change events (which may carry a stale title
+				// snapshot from before async title generation
+				// finished) don't clobber a title_change that already
+				// landed.
+				const isTitleEvent = chatEvent.kind === "title_change";
+				const isStatusEvent = chatEvent.kind === "status_change";
+
 				queryClient.setQueryData(
 					chatsKey,
-					(prev: TypesGen.Chat[] | undefined) =>
-						prev?.filter(
-							(c) =>
-								c.id !== updatedChat.id && c.root_chat_id !== updatedChat.id,
-						),
+					(prev: TypesGen.Chat[] | undefined) => {
+						if (!prev) return prev;
+						const exists = prev.some((c) => c.id === updatedChat.id);
+						if (exists) {
+							return prev.map((c) => {
+								if (c.id !== updatedChat.id) return c;
+								return {
+									...c,
+									...(isStatusEvent && { status: updatedChat.status }),
+									...(isTitleEvent && { title: updatedChat.title }),
+									updated_at:
+										c.updated_at > updatedChat.updated_at
+											? c.updated_at
+											: updatedChat.updated_at,
+								};
+							});
+						}
+						if (chatEvent.kind === "created") {
+							return [updatedChat, ...prev];
+						}
+						return prev;
+					},
 				);
-				queryClient.removeQueries({
-					queryKey: chatKey(updatedChat.id),
-					exact: true,
-				});
-				return;
-			}
+				queryClient.setQueryData<TypesGen.ChatWithMessages | undefined>(
+					chatKey(updatedChat.id),
+					(previousChat) => {
+						if (!previousChat) {
+							return previousChat;
+						}
+						return {
+							...previousChat,
+							chat: {
+								...previousChat.chat,
+								...(isStatusEvent && { status: updatedChat.status }),
+								...(isTitleEvent && { title: updatedChat.title }),
+								updated_at:
+									previousChat.chat.updated_at > updatedChat.updated_at
+										? previousChat.chat.updated_at
+										: updatedChat.updated_at,
+							},
+						};
+					},
+				);
+			});
+		}
 
-			if (chatEvent.kind === "diff_status_change") {
-				void Promise.all([
-					queryClient.invalidateQueries({
-						queryKey: chatsKey,
-					}),
-					queryClient.invalidateQueries({
-						queryKey: chatDiffStatusKey(updatedChat.id),
-					}),
-					queryClient.invalidateQueries({
-						queryKey: chatDiffContentsKey(updatedChat.id),
-					}),
-				]);
-				return;
-			}
+		// Kick off the first connection.
+		connect();
 
-			queryClient.setQueryData(
-				chatsKey,
-				(prev: TypesGen.Chat[] | undefined) => {
-					if (!prev) return prev;
-					const exists = prev.some((c) => c.id === updatedChat.id);
-					if (exists) {
-						return prev.map((c) =>
-							c.id === updatedChat.id
-								? {
-										...c,
-										status: updatedChat.status,
-										title: updatedChat.title,
-										updated_at:
-											c.updated_at > updatedChat.updated_at
-												? c.updated_at
-												: updatedChat.updated_at,
-									}
-								: c,
-						);
-					}
-					if (chatEvent.kind === "created") {
-						return [updatedChat, ...prev];
-					}
-					return prev;
-				},
-			);
-			queryClient.setQueryData<TypesGen.ChatWithMessages | undefined>(
-				chatKey(updatedChat.id),
-				(previousChat) => {
-					if (!previousChat) {
-						return previousChat;
-					}
-					return {
-						...previousChat,
-						chat: {
-							...previousChat.chat,
-							status: updatedChat.status,
-							title: updatedChat.title,
-							updated_at:
-								previousChat.chat.updated_at > updatedChat.updated_at
-									? previousChat.chat.updated_at
-									: updatedChat.updated_at,
-						},
-					};
-				},
-			);
-		});
 		return () => {
-			ws.close();
+			disposed = true;
+			if (reconnectTimer !== null) {
+				clearTimeout(reconnectTimer);
+			}
+			if (activeSocket) {
+				activeSocket.close();
+			}
 		};
 	}, [queryClient]);
 
@@ -602,6 +675,60 @@ const AgentsPage: FC = () => {
 	);
 };
 
+/**
+ * Hook that manages draft persistence for the empty-state chat input.
+ * Persists the current input to localStorage so the user's draft
+ * survives page reloads.
+ *
+ * Once `submitDraft` is called, the stored draft is removed and further
+ * content changes are no longer persisted for the lifetime of the hook.
+ * Call `resetDraft` to re-enable persistence (e.g. on mutation failure).
+ *
+ * @internal Exported for testing.
+ */
+export function useEmptyStateDraft() {
+	const [initialInputValue] = useState(() => {
+		if (typeof window === "undefined") {
+			return "";
+		}
+		return localStorage.getItem(emptyInputStorageKey) ?? "";
+	});
+	const inputValueRef = useRef(initialInputValue);
+	const sentRef = useRef(false);
+
+	const handleContentChange = useCallback((content: string) => {
+		inputValueRef.current = content;
+		if (typeof window !== "undefined" && !sentRef.current) {
+			if (content) {
+				localStorage.setItem(emptyInputStorageKey, content);
+			} else {
+				localStorage.removeItem(emptyInputStorageKey);
+			}
+		}
+	}, []);
+
+	const submitDraft = useCallback(() => {
+		// Mark as sent so that editor change events firing during
+		// the async gap cannot re-persist the draft.
+		sentRef.current = true;
+		localStorage.removeItem(emptyInputStorageKey);
+	}, []);
+
+	const resetDraft = useCallback(() => {
+		sentRef.current = false;
+	}, []);
+
+	const getCurrentContent = useCallback(() => inputValueRef.current, []);
+
+	return {
+		initialInputValue,
+		getCurrentContent,
+		handleContentChange,
+		submitDraft,
+		resetDraft,
+	};
+}
+
 interface AgentsEmptyStateProps {
 	onCreateChat: (options: CreateChatOptions) => Promise<void>;
 	isCreating: boolean;
@@ -633,13 +760,9 @@ export const AgentsEmptyState: FC<AgentsEmptyStateProps> = ({
 	isConfigureAgentsDialogOpen,
 	onConfigureAgentsDialogOpenChange,
 }) => {
-	const [initialInputValue] = useState(() => {
-		if (typeof window === "undefined") {
-			return "";
-		}
-		return localStorage.getItem(emptyInputStorageKey) ?? "";
-	});
-	const inputValueRef = useRef(initialInputValue);
+	const { organizations } = useDashboard();
+	const { initialInputValue, handleContentChange, submitDraft, resetDraft } =
+		useEmptyStateDraft();
 	const initialSystemPrompt = () => {
 		if (typeof window === "undefined") {
 			return "";
@@ -782,16 +905,6 @@ export const AgentsEmptyState: FC<AgentsEmptyStateProps> = ({
 		}
 	};
 
-	const handleContentChange = useCallback((content: string) => {
-		inputValueRef.current = content;
-		if (typeof window !== "undefined") {
-			if (content) {
-				localStorage.setItem(emptyInputStorageKey, content);
-			} else {
-				localStorage.removeItem(emptyInputStorageKey);
-			}
-		}
-	}, []);
 	const handleModelChange = useCallback((value: string) => {
 		setHasUserSelectedModel(true);
 		setUserSelectedModel(value);
@@ -817,18 +930,20 @@ export const AgentsEmptyState: FC<AgentsEmptyStateProps> = ({
 	);
 
 	const handleSend = useCallback(
-		(message: string) => {
-			// Clear the draft synchronously before the async
-			// onCreateChat call so that editor change events
-			// firing during the async gap cannot re-persist it.
-			localStorage.removeItem(emptyInputStorageKey);
-			void onCreateChat({
+		async (message: string, fileIDs?: string[]) => {
+			submitDraft();
+			await onCreateChat({
 				message,
+				fileIDs,
 				workspaceId: selectedWorkspaceIdRef.current ?? undefined,
 				model: selectedModelRef.current || undefined,
+			}).catch(() => {
+				// Re-enable draft persistence so the user can edit
+				// and retry after a failed send attempt.
+				resetDraft();
 			});
 		},
-		[onCreateChat],
+		[submitDraft, resetDraft, onCreateChat],
 	);
 
 	const selectedWorkspace = selectedWorkspaceId
@@ -837,6 +952,44 @@ export const AgentsEmptyState: FC<AgentsEmptyStateProps> = ({
 	const selectedWorkspaceLabel = selectedWorkspace
 		? `${selectedWorkspace.owner_name}/${selectedWorkspace.name}`
 		: undefined;
+
+	const {
+		attachments,
+		uploadStates,
+		previewUrls,
+		handleAttach,
+		handleRemoveAttachment,
+		resetAttachments,
+	} = useFileAttachments(organizations[0]?.id);
+
+	const handleSendWithAttachments = useCallback(
+		async (message: string) => {
+			const fileIds: string[] = [];
+			let skippedErrors = 0;
+			for (const file of attachments) {
+				const state = uploadStates.get(file);
+				if (state?.status === "error") {
+					skippedErrors++;
+					continue;
+				}
+				if (state?.status === "uploaded" && state.fileId) {
+					fileIds.push(state.fileId);
+				}
+			}
+			if (skippedErrors > 0) {
+				toast.warning(
+					`${skippedErrors} attachment${skippedErrors > 1 ? "s" : ""} could not be sent (upload failed)`,
+				);
+			}
+			try {
+				await handleSend(message, fileIds.length > 0 ? fileIds : undefined);
+				resetAttachments();
+			} catch {
+				// Attachments preserved for retry on failure.
+			}
+		},
+		[attachments, handleSend, resetAttachments, uploadStates],
+	);
 
 	return (
 		<div className="flex min-h-0 flex-1 items-start justify-center overflow-auto p-4 pt-12 md:h-full md:items-center md:pt-4">
@@ -847,7 +1000,7 @@ export const AgentsEmptyState: FC<AgentsEmptyStateProps> = ({
 				)}
 
 				<AgentChatInput
-					onSend={handleSend}
+					onSend={handleSendWithAttachments}
 					placeholder="Ask Coder to build, fix bugs, or explore your project..."
 					isDisabled={isCreating}
 					isLoading={isCreating}
@@ -860,6 +1013,11 @@ export const AgentsEmptyState: FC<AgentsEmptyStateProps> = ({
 					hasModelOptions={hasModelOptions}
 					inputStatusText={inputStatusText}
 					modelCatalogStatusMessage={modelCatalogStatusMessage}
+					attachments={attachments}
+					onAttach={handleAttach}
+					onRemoveAttachment={handleRemoveAttachment}
+					uploadStates={uploadStates}
+					previewUrls={previewUrls}
 					leftActions={
 						<Combobox
 							value={selectedWorkspaceId ?? autoCreateWorkspaceValue}

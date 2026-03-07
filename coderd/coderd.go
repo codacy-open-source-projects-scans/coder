@@ -99,6 +99,7 @@ import (
 	"github.com/coder/coder/v2/provisionersdk"
 	"github.com/coder/coder/v2/site"
 	"github.com/coder/coder/v2/tailnet"
+	"github.com/coder/coder/v2/tailnet/derpmetrics"
 	"github.com/coder/quartz"
 	"github.com/coder/serpent"
 )
@@ -899,17 +900,18 @@ func New(options *Options) *API {
 	apiRateLimiter := httpmw.RateLimit(options.APIRateLimit, time.Minute)
 
 	// Register DERP on expvar HTTP handler, which we serve below in the router, c.f. expvar.Handler()
-	// These are the metrics the DERP server exposes.
-	// TODO: export via prometheus
 	expDERPOnce.Do(func() {
 		// We need to do this via a global Once because expvar registry is global and panics if we
 		// register multiple times.  In production there is only one Coderd and one DERP server per
 		// process, but in testing, we create multiple of both, so the Once protects us from
 		// panicking.
-		if options.DERPServer != nil {
+		if options.DERPServer != nil && expvar.Get("derp") == nil {
 			expvar.Publish("derp", api.DERPServer.ExpVar())
 		}
 	})
+	if options.PrometheusRegistry != nil && options.DERPServer != nil {
+		options.PrometheusRegistry.MustRegister(derpmetrics.NewDERPExpvarCollector(options.DERPServer))
+	}
 	cors := httpmw.Cors(options.DeploymentValues.Dangerous.AllowAllCors.Value())
 	prometheusMW := httpmw.Prometheus(options.PrometheusRegistry)
 
@@ -1111,6 +1113,11 @@ func New(options *Options) *API {
 			r.Post("/", api.postChats)
 			r.Get("/models", api.listChatModels)
 			r.Get("/watch", api.watchChats)
+			r.Route("/files", func(r chi.Router) {
+				r.Use(httpmw.RateLimit(options.FilesRateLimit, time.Minute))
+				r.Post("/", api.postChatFile)
+				r.Get("/{file}", api.chatFileByID)
+			})
 			r.Route("/providers", func(r chi.Router) {
 				r.Get("/", api.listChatProviders)
 				r.Post("/", api.createChatProvider)
@@ -1130,6 +1137,7 @@ func New(options *Options) *API {
 			r.Route("/{chat}", func(r chi.Router) {
 				r.Use(httpmw.ExtractChatParam(options.Database))
 				r.Get("/", api.getChat)
+				r.Get("/git/watch", api.watchChatGit)
 				r.Post("/archive", api.archiveChat)
 				r.Post("/unarchive", api.unarchiveChat)
 				r.Post("/messages", api.postChatMessages)
@@ -1837,6 +1845,14 @@ func New(options *Options) *API {
 		// and continue
 		api.Logger.Error(context.Background(),
 			"parsing additional CSP headers", slog.Error(cspParseErrors))
+	}
+
+	// Add blob: to img-src for chat file attachment previews when
+	// the agents experiment is enabled.
+	if api.Experiments.Enabled(codersdk.ExperimentAgents) {
+		additionalCSPHeaders[httpmw.CSPDirectiveImgSrc] = append(
+			additionalCSPHeaders[httpmw.CSPDirectiveImgSrc], "blob:",
+		)
 	}
 
 	// Add CSP headers to all static assets and pages. CSP headers only affect
