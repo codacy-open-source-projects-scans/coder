@@ -70,7 +70,6 @@ import { AgentDetailTopBar } from "./AgentDetail/TopBar";
 import { useMessageWindow } from "./AgentDetail/useMessageWindow";
 import { useWorkspaceCreationWatcher } from "./AgentDetail/useWorkspaceCreationWatcher";
 import type { AgentsOutletContext } from "./AgentsPage";
-
 import {
 	getModelCatalogStatusMessage,
 	getModelOptionsFromCatalog,
@@ -108,7 +107,7 @@ interface AgentDetailTimelineProps {
 	onEditUserMessage?: (
 		messageId: number,
 		text: string,
-		fileBlocks?: Array<{ mediaType: string; data?: string }>,
+		fileBlocks?: readonly { mediaType: string; data?: string }[],
 	) => void;
 	editingMessageId?: number | null;
 	savingMessageId?: number | null;
@@ -222,11 +221,11 @@ interface AgentDetailInputProps {
 	onCancelHistoryEdit: () => void;
 	// File blocks from the message being edited, converted to
 	// File objects and pre-populated into attachments.
-	editingFileBlocks?: Array<{
+	editingFileBlocks?: readonly {
 		mediaType: string;
 		data?: string;
 		fileId?: string;
-	}>;
+	}[];
 }
 
 const AgentDetailInput: FC<AgentDetailInputProps> = ({
@@ -430,14 +429,18 @@ export function useConversationEditingState(deps: {
 		string | null
 	>(null);
 	const [editingFileBlocks, setEditingFileBlocks] = useState<
-		Array<{ mediaType: string; data?: string; fileId?: string }>
+		readonly { mediaType: string; data?: string; fileId?: string }[]
 	>([]);
 
 	const handleEditUserMessage = useCallback(
 		(
 			messageId: number,
 			text: string,
-			fileBlocks?: Array<{ mediaType: string; data?: string; fileId?: string }>,
+			fileBlocks?: readonly {
+				mediaType: string;
+				data?: string;
+				fileId?: string;
+			}[],
 		) => {
 			setDraftBeforeHistoryEdit((prev) =>
 				editingMessageId !== null ? prev : inputValueRef.current,
@@ -780,13 +783,44 @@ const AgentDetail: FC = () => {
 		fileIds?: string[],
 		editedMessageID?: number,
 	) => {
-		const hasContent = message.trim() || (fileIds && fileIds.length > 0);
+		const chatInputHandle = (
+			editing.chatInputRef as React.RefObject<ChatMessageInputRef | null>
+		)?.current;
+
+		// Walk the Lexical tree in document order so file-reference
+		// parts appear at the correct position relative to the
+		// surrounding text the user typed.
+		const editorParts = chatInputHandle?.getContentParts() ?? [];
+		const hasFileReferences = editorParts.some(
+			(p) => p.type === "file-reference",
+		);
+		const hasContent =
+			message.trim() || (fileIds && fileIds.length > 0) || hasFileReferences;
 		if (!hasContent || isSubmissionPending || !agentId || !hasModelOptions) {
 			return;
 		}
+
 		const content: TypesGen.ChatInputPart[] = [];
-		if (message.trim()) {
-			content.push({ type: "text", text: message });
+
+		// Emit parts in document order — text segments and
+		// file-reference chips are interleaved as they appear in
+		// the editor.
+		for (const part of editorParts) {
+			if (part.type === "text") {
+				const trimmed = part.text.trim();
+				if (trimmed) {
+					content.push({ type: "text", text: part.text });
+				}
+			} else {
+				const r = part.reference;
+				content.push({
+					type: "file-reference",
+					file_name: r.fileName,
+					start_line: r.startLine,
+					end_line: r.endLine,
+					content: r.content,
+				});
+			}
 		}
 
 		// Add pre-uploaded file references.
@@ -904,15 +938,11 @@ const AgentDetail: FC = () => {
 
 	const chatTitle = chatQuery.data?.chat?.title;
 
-	// Update the browser tab title when navigating to / between agents.
-	useEffect(() => {
-		document.title = chatTitle
-			? pageTitle(chatTitle, "Agents")
-			: pageTitle("Agents");
-		return () => {
-			document.title = pageTitle("Agents");
-		};
-	}, [chatTitle]);
+	const titleElement = (
+		<title>
+			{chatTitle ? pageTitle(chatTitle, "Agents") : pageTitle("Agents")}
+		</title>
+	);
 
 	const parentChatID = getParentChatID(chatQuery.data?.chat);
 	const parentChat = parentChatID
@@ -1004,6 +1034,7 @@ const AgentDetail: FC = () => {
 	if (chatQuery.isLoading) {
 		return (
 			<div className="relative flex h-full min-h-0 min-w-0 flex-1 flex-col">
+				{titleElement}
 				<AgentDetailTopBar
 					diff={{
 						hasDiffStatus: false,
@@ -1082,6 +1113,7 @@ const AgentDetail: FC = () => {
 	if (!chatQuery.data || !agentId) {
 		return (
 			<div className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
+				{titleElement}
 				<AgentDetailTopBar
 					diff={{
 						hasDiffStatus: false,
@@ -1114,7 +1146,6 @@ const AgentDetail: FC = () => {
 			</div>
 		);
 	}
-
 	return (
 		<div
 			className={cn(
@@ -1122,6 +1153,7 @@ const AgentDetail: FC = () => {
 				shouldShowSidebar && !visualExpanded && "flex-row",
 			)}
 		>
+			{titleElement}
 			<div
 				className={cn(
 					"relative flex min-h-0 min-w-0 flex-1 flex-col",
@@ -1254,6 +1286,7 @@ const AgentDetail: FC = () => {
 					onToggleSidebarCollapsed={onToggleSidebarCollapsed}
 					chatTitle={chatTitle}
 					diffStatus={diffStatusQuery.data}
+					chatInputRef={editing.chatInputRef}
 				/>
 			</RightPanel>
 		</div>
