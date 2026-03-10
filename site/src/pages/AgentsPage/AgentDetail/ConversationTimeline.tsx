@@ -8,7 +8,8 @@ import {
 	Tool,
 } from "components/ai-elements";
 import { FileIcon } from "components/FileIcon/FileIcon";
-import { ChevronDownIcon, Loader2Icon } from "lucide-react";
+import { Spinner } from "components/Spinner/Spinner";
+import { ChevronDownIcon } from "lucide-react";
 import {
 	type FC,
 	memo,
@@ -348,9 +349,10 @@ const ChatMessageItem = memo<{
 											{parsed.markdown || ""}
 										</span>
 										{isSavingMessage && (
-											<Loader2Icon
-												className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin text-content-secondary"
+											<Spinner
+												className="mt-0.5 h-3.5 w-3.5 shrink-0 text-content-secondary"
 												aria-label="Saving message edit"
+												loading
 											/>
 										)}
 									</div>
@@ -435,49 +437,6 @@ const ChatMessageItem = memo<{
 										/>
 									)}
 								</div>
-								{(() => {
-									const imageBlocks = parsed.blocks.filter(
-										(b): b is Extract<RenderBlock, { type: "file" }> =>
-											b.type === "file" && b.mediaType.startsWith("image/"),
-									);
-									if (imageBlocks.length === 0) return null;
-									return (
-										<div className="mt-2 flex flex-wrap gap-2">
-											{imageBlocks.map((block, i) => {
-												const src = block.fileId
-													? `/api/experimental/chats/files/${block.fileId}`
-													: `data:${block.mediaType};base64,${block.data}`;
-												return (
-													<button
-														key={`user-file-${i}`}
-														type="button"
-														aria-label="View image"
-														className="inline-block rounded-md border-0 bg-transparent p-0"
-														onClick={(e) => {
-															e.stopPropagation();
-															setPreviewImage(src);
-														}}
-													>
-														<ImageThumbnail
-															previewUrl={src}
-															name="Attached image"
-															className="cursor-pointer transition-opacity hover:opacity-80"
-														/>
-													</button>
-												);
-											})}
-										</div>
-									);
-								})()}
-								{fadeFromBottom && (
-									<div
-										className="pointer-events-none absolute inset-x-0 bottom-0 h-1/2 max-h-12"
-										style={{
-											background:
-												"linear-gradient(to top, hsl(var(--surface-secondary)), transparent)",
-										}}
-									/>
-								)}{" "}
 							</MessageContent>
 						</Message>
 					) : (
