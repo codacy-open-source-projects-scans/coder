@@ -11,7 +11,7 @@ import {
 	waitFor,
 	within,
 } from "storybook/test";
-import { AgentsEmptyState } from "./AgentsPage";
+import { AgentCreateForm } from "./AgentCreateForm";
 
 const modelOptions = [
 	{
@@ -22,11 +22,9 @@ const modelOptions = [
 	},
 ] as const;
 
-const behaviorStorageKey = "agents.system-prompt";
-
-const meta: Meta<typeof AgentsEmptyState> = {
-	title: "pages/AgentsPage/AgentsEmptyState",
-	component: AgentsEmptyState,
+const meta: Meta<typeof AgentCreateForm> = {
+	title: "pages/AgentsPage/AgentCreateForm",
+	component: AgentCreateForm,
 	decorators: [withDashboardProvider],
 	args: {
 		onCreateChat: fn(),
@@ -49,11 +47,21 @@ const meta: Meta<typeof AgentsEmptyState> = {
 			workspaces: [],
 			count: 0,
 		});
+		spyOn(API, "getChatSystemPrompt").mockResolvedValue({
+			system_prompt: "",
+		});
+		spyOn(API, "updateChatSystemPrompt").mockResolvedValue();
+		spyOn(API, "getUserChatCustomPrompt").mockResolvedValue({
+			custom_prompt: "",
+		});
+		spyOn(API, "updateUserChatCustomPrompt").mockResolvedValue({
+			custom_prompt: "",
+		});
 	},
 };
 
 export default meta;
-type Story = StoryObj<typeof AgentsEmptyState>;
+type Story = StoryObj<typeof AgentCreateForm>;
 
 export const Default: Story = {};
 
@@ -178,17 +186,25 @@ export const SavesBehaviorPromptAndRestores: Story = {
 	},
 	play: async () => {
 		const dialog = await screen.findByRole("dialog");
-		const textarea = await within(dialog).findByPlaceholderText(
-			"Optional. Set deployment-wide instructions for all new chats.",
+
+		// Find the System Instructions textarea by its unique placeholder.
+		const textareas = await within(dialog).findAllByPlaceholderText(
+			"Additional behavior, style, and tone preferences for all users",
 		);
+		const textarea = textareas[0];
 
 		await userEvent.type(textarea, "You are a focused coding assistant.");
-		await userEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+
+		// Click the Save button inside the System Instructions form.
+		// There are multiple Save buttons (one per form), so grab all and
+		// pick the last one which belongs to the system prompt section.
+		const saveButtons = within(dialog).getAllByRole("button", { name: "Save" });
+		await userEvent.click(saveButtons[saveButtons.length - 1]);
 
 		await waitFor(() => {
-			expect(localStorage.getItem(behaviorStorageKey)).toBe(
-				"You are a focused coding assistant.",
-			);
+			expect(API.updateChatSystemPrompt).toHaveBeenCalledWith({
+				system_prompt: "You are a focused coding assistant.",
+			});
 		});
 	},
 };
