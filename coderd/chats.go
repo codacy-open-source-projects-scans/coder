@@ -39,6 +39,7 @@ import (
 	"github.com/coder/coder/v2/coderd/pubsub"
 	"github.com/coder/coder/v2/coderd/rbac"
 	"github.com/coder/coder/v2/coderd/rbac/policy"
+	"github.com/coder/coder/v2/coderd/searchquery"
 	"github.com/coder/coder/v2/coderd/tracing"
 	"github.com/coder/coder/v2/coderd/util/ptr"
 	"github.com/coder/coder/v2/codersdk"
@@ -145,26 +146,24 @@ func (api *API) listChats(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	queryStr := r.URL.Query().Get("q")
+	searchParams, errs := searchquery.Chats(queryStr)
+	if len(errs) > 0 {
+		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
+			Message:     "Invalid chat search query.",
+			Validations: errs,
+		})
+		return
+	}
+
 	params := database.GetChatsByOwnerIDParams{
-		OwnerID: apiKey.UserID,
-		AfterID: paginationParams.AfterID,
+		OwnerID:  apiKey.UserID,
+		Archived: searchParams.Archived,
+		AfterID:  paginationParams.AfterID,
 		// #nosec G115 - Pagination offsets are small and fit in int32
 		OffsetOpt: int32(paginationParams.Offset),
 		// #nosec G115 - Pagination limits are small and fit in int32
 		LimitOpt: int32(paginationParams.Limit),
-	}
-	if v := r.URL.Query().Get("archived"); v != "" {
-		b, err := strconv.ParseBool(v)
-		if err != nil {
-			httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
-				Message: "Invalid query parameter.",
-				Validations: []codersdk.ValidationError{
-					{Field: "archived", Detail: "Must be a valid boolean"},
-				},
-			})
-			return
-		}
-		params.Archived = sql.NullBool{Bool: b, Valid: true}
 	}
 
 	chats, err := api.Database.GetChatsByOwnerID(ctx, params)
@@ -606,6 +605,7 @@ func (api *API) unarchiveChat(rw http.ResponseWriter, r *http.Request) {
 // EXPERIMENTAL: this endpoint is experimental and is subject to change.
 func (api *API) postChatMessages(rw http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	apiKey := httpmw.APIKey(r)
 	chat := httpmw.ChatParam(r)
 	chatID := chat.ID
 
@@ -635,6 +635,7 @@ func (api *API) postChatMessages(rw http.ResponseWriter, r *http.Request) {
 		ctx,
 		chatd.SendMessageOptions{
 			ChatID:         chatID,
+			CreatedBy:      apiKey.UserID,
 			Content:        contentBlocks,
 			ContentFileIDs: contentFileIDs,
 			ModelConfigID:  req.ModelConfigID,
@@ -672,6 +673,7 @@ func (api *API) postChatMessages(rw http.ResponseWriter, r *http.Request) {
 // EXPERIMENTAL: this endpoint is experimental and is subject to change.
 func (api *API) patchChatMessage(rw http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	apiKey := httpmw.APIKey(r)
 	chat := httpmw.ChatParam(r)
 
 	if api.chatDaemon == nil {
@@ -708,6 +710,7 @@ func (api *API) patchChatMessage(rw http.ResponseWriter, r *http.Request) {
 
 	editResult, editErr := api.chatDaemon.EditMessage(ctx, chatd.EditMessageOptions{
 		ChatID:          chat.ID,
+		CreatedBy:       apiKey.UserID,
 		EditedMessageID: messageID,
 		Content:         contentBlocks,
 		ContentFileIDs:  contentFileIDs,
@@ -774,6 +777,7 @@ func (api *API) deleteChatQueuedMessage(rw http.ResponseWriter, r *http.Request)
 // EXPERIMENTAL: this endpoint is experimental and is subject to change.
 func (api *API) promoteChatQueuedMessage(rw http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	apiKey := httpmw.APIKey(r)
 	chat := httpmw.ChatParam(r)
 	chatID := chat.ID
 
@@ -797,6 +801,7 @@ func (api *API) promoteChatQueuedMessage(rw http.ResponseWriter, r *http.Request
 
 	promoteResult, txErr := api.chatDaemon.PromoteQueued(ctx, chatd.PromoteQueuedOptions{
 		ChatID:          chatID,
+		CreatedBy:       apiKey.UserID,
 		QueuedMessageID: queuedMessageID,
 	})
 
@@ -1134,15 +1139,6 @@ func (api *API) resolveChatDiffStatus(
 	ctx context.Context,
 	chat database.Chat,
 ) (*database.ChatDiffStatus, error) {
-	return api.resolveChatDiffStatusWithOptions(ctx, chat, false)
-}
-
-//nolint:revive // Boolean forces cache refresh bypass.
-func (api *API) resolveChatDiffStatusWithOptions(
-	ctx context.Context,
-	chat database.Chat,
-	forceRefresh bool,
-) (*database.ChatDiffStatus, error) {
 	status, found, err := api.getCachedChatDiffStatus(ctx, chat.ID)
 	if err != nil {
 		return nil, err
@@ -1167,26 +1163,25 @@ func (api *API) resolveChatDiffStatusWithOptions(
 	if !found {
 		return nil, nil //nolint:nilnil // Callers handle nil status explicitly.
 	}
-	if reference.PullRequestURL == "" {
-		return &status, nil
-	}
-	if !shouldRefreshChatDiffStatus(status, now, forceRefresh) {
+	if !chatDiffStatusIsStale(status, now) {
 		return &status, nil
 	}
 
-	refreshed, err := api.refreshChatDiffStatus(
-		ctx,
-		chat.OwnerID,
-		chat.ID,
-		reference.PullRequestURL,
+	// Use the same refresh pipeline as the background worker
+	// so both paths share identical provider/token resolution.
+	refreshed, err := api.gitSyncWorker.RefreshChat(
+		ctx, status, chat.OwnerID,
 	)
+	if err == nil && refreshed != nil {
+		return refreshed, nil
+	}
 	if err == nil {
-		return &refreshed, nil
+		// No PR exists yet; return what we have.
+		return &status, nil
 	}
 
 	api.Logger.Warn(ctx, "failed to refresh chat diff status",
 		slog.F("chat_id", chat.ID),
-		slog.F("pull_request_url", reference.PullRequestURL),
 		slog.Error(err),
 	)
 
@@ -1200,14 +1195,6 @@ func (api *API) resolveChatDiffStatusWithOptions(
 	}
 
 	return &backoffStatus, nil
-}
-
-//nolint:revive // Boolean forces cache refresh bypass.
-func shouldRefreshChatDiffStatus(status database.ChatDiffStatus, now time.Time, forceRefresh bool) bool {
-	if forceRefresh {
-		return true
-	}
-	return chatDiffStatusIsStale(status, now)
 }
 
 func (api *API) resolveChatDiffContents(
@@ -1483,66 +1470,6 @@ func chatDiffStatusIsStale(status database.ChatDiffStatus, now time.Time) bool {
 	return !status.StaleAt.After(now)
 }
 
-func (api *API) refreshChatDiffStatus(
-	ctx context.Context,
-	chatOwnerID uuid.UUID,
-	chatID uuid.UUID,
-	pullRequestURL string,
-) (database.ChatDiffStatus, error) {
-	// Find a provider that can handle this PR URL.
-	var gp gitprovider.Provider
-	var ref gitprovider.PRRef
-	for _, extAuth := range api.ExternalAuthConfigs {
-		p := extAuth.Git(api.HTTPClient)
-		if p == nil {
-			continue
-		}
-		if parsed, ok := p.ParsePullRequestURL(pullRequestURL); ok {
-			gp = p
-			ref = parsed
-			break
-		}
-	}
-	if gp == nil {
-		return database.ChatDiffStatus{}, xerrors.Errorf("no git provider found for PR URL %q", pullRequestURL)
-	}
-
-	origin := gp.BuildRepositoryURL(ref.Owner, ref.Repo)
-	token, err := api.resolveChatGitAccessToken(ctx, chatOwnerID, origin)
-	if err != nil {
-		return database.ChatDiffStatus{}, xerrors.Errorf("resolve git access token: %w", err)
-	} else if token == nil {
-		return database.ChatDiffStatus{}, xerrors.New("nil git access token")
-	}
-	status, err := gp.FetchPullRequestStatus(ctx, *token, ref)
-	if err != nil {
-		return database.ChatDiffStatus{}, err
-	}
-
-	refreshedAt := time.Now().UTC()
-	refreshedStatus, err := api.Database.UpsertChatDiffStatus(
-		ctx,
-		database.UpsertChatDiffStatusParams{
-			ChatID: chatID,
-			Url:    sql.NullString{String: pullRequestURL, Valid: true},
-			PullRequestState: sql.NullString{
-				String: string(status.State),
-				Valid:  status.State != "",
-			},
-			ChangesRequested: status.ChangesRequested,
-			Additions:        status.DiffStats.Additions,
-			Deletions:        status.DiffStats.Deletions,
-			ChangedFiles:     status.DiffStats.ChangedFiles,
-			RefreshedAt:      refreshedAt,
-			StaleAt:          refreshedAt.Add(chatDiffStatusTTL),
-		},
-	)
-	if err != nil {
-		return database.ChatDiffStatus{}, xerrors.Errorf("upsert chat diff status: %w", err)
-	}
-	return refreshedStatus, nil
-}
-
 func (api *API) resolveChatGitAccessToken(
 	ctx context.Context,
 	userID uuid.UUID,
@@ -1558,7 +1485,9 @@ func (api *API) resolveChatGitAccessToken(
 			if config.Regex == nil || !config.Regex.MatchString(origin) {
 				continue
 			}
-			link, err := api.Database.GetExternalAuthLink(ctx,
+			//nolint:gocritic // System access needed to read external auth
+			// links when called from the gitsync worker (chatd context).
+			link, err := api.Database.GetExternalAuthLink(dbauthz.AsSystemRestricted(ctx),
 				database.GetExternalAuthLinkParams{
 					ProviderID: config.ID,
 					UserID:     userID,
@@ -1567,7 +1496,8 @@ func (api *API) resolveChatGitAccessToken(
 			if err != nil {
 				continue
 			}
-			refreshed, refreshErr := config.RefreshToken(ctx, api.Database, link)
+			//nolint:gocritic // System context carried through for token refresh.
+			refreshed, refreshErr := config.RefreshToken(dbauthz.AsSystemRestricted(ctx), api.Database, link)
 			if refreshErr == nil {
 				link = refreshed
 			}
@@ -1595,8 +1525,10 @@ func (api *API) resolveChatGitAccessToken(
 		}
 		seen[providerID] = struct{}{}
 
+		//nolint:gocritic // System access needed to read external auth
+		// links when called from the gitsync worker (chatd context).
 		link, err := api.Database.GetExternalAuthLink(
-			ctx,
+			dbauthz.AsSystemRestricted(ctx),
 			database.GetExternalAuthLinkParams{
 				ProviderID: providerID,
 				UserID:     userID,
@@ -1610,7 +1542,8 @@ func (api *API) resolveChatGitAccessToken(
 		// the same code path used by provisionerdserver when handing
 		// tokens to provisioners.
 		if cfg, ok := configs[providerID]; ok {
-			refreshed, refreshErr := cfg.RefreshToken(ctx, api.Database, link)
+			//nolint:gocritic // System context carried through for token refresh.
+			refreshed, refreshErr := cfg.RefreshToken(dbauthz.AsSystemRestricted(ctx), api.Database, link)
 			if refreshErr != nil {
 				api.Logger.Debug(ctx, "failed to refresh external auth token for chat diff",
 					slog.F("provider_id", providerID),
@@ -2309,6 +2242,8 @@ func convertChatDiffStatus(chatID uuid.UUID, status *database.ChatDiffStatus) co
 			result.PullRequestState = &pullRequestState
 		}
 	}
+	result.PullRequestTitle = status.PullRequestTitle
+	result.PullRequestDraft = status.PullRequestDraft
 	result.ChangesRequested = status.ChangesRequested
 	result.Additions = status.Additions
 	result.Deletions = status.Deletions

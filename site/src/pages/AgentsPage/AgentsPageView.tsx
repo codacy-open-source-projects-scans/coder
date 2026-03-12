@@ -11,6 +11,7 @@ import { pageTitle } from "utils/page";
 import { AgentCreateForm, type CreateChatOptions } from "./AgentCreateForm";
 import { AgentsSidebar } from "./AgentsSidebar";
 import { ChimeButton } from "./ChimeButton";
+import { ConfigureAgentsDialog } from "./ConfigureAgentsDialog";
 import { WebPushButton } from "./WebPushButton";
 
 type ChatModelOption = ModelSelectorOption;
@@ -55,6 +56,9 @@ interface AgentsPageViewProps {
 	modelCatalogError: unknown;
 	hasNextPage: boolean | undefined;
 	onLoadMore: () => void;
+	isFetchingNextPage: boolean;
+	archivedFilter: "active" | "archived";
+	onArchivedFilterChange: (filter: "active" | "archived") => void;
 }
 
 export const AgentsPageView: FC<AgentsPageViewProps> = ({
@@ -83,6 +87,9 @@ export const AgentsPageView: FC<AgentsPageViewProps> = ({
 	modelCatalogError,
 	hasNextPage,
 	onLoadMore,
+	isFetchingNextPage,
+	archivedFilter,
+	onArchivedFilterChange,
 }) => {
 	const {
 		chatErrorReasons,
@@ -122,6 +129,9 @@ export const AgentsPageView: FC<AgentsPageViewProps> = ({
 					onRetryLoad={onRetryChatsLoad}
 					hasNextPage={hasNextPage}
 					onLoadMore={onLoadMore}
+					isFetchingNextPage={isFetchingNextPage}
+					archivedFilter={archivedFilter}
+					onArchivedFilterChange={onArchivedFilterChange}
 					onCollapse={onCollapseSidebar}
 					onOpenSettings={() => setConfigureAgentsDialogOpen(true)}
 				/>
@@ -175,14 +185,17 @@ export const AgentsPageView: FC<AgentsPageViewProps> = ({
 							isModelCatalogLoading={isModelCatalogLoading}
 							isModelConfigsLoading={isModelConfigsLoading}
 							modelCatalogError={modelCatalogError}
-							canSetSystemPrompt={isAgentsAdmin}
-							canManageChatModelConfigs={isAgentsAdmin}
-							isConfigureAgentsDialogOpen={isConfigureAgentsDialogOpen}
-							onConfigureAgentsDialogOpenChange={setConfigureAgentsDialogOpen}
 						/>
 					</>
 				)}
 			</div>
+
+			<ConfigureAgentsDialog
+				open={isConfigureAgentsDialogOpen}
+				onOpenChange={setConfigureAgentsDialogOpen}
+				canManageChatModelConfigs={isAgentsAdmin}
+				canSetSystemPrompt={isAgentsAdmin}
+			/>
 		</div>
 	);
 };

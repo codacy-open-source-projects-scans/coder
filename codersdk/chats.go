@@ -49,6 +49,7 @@ type Chat struct {
 type ChatMessage struct {
 	ID            int64             `json:"id"`
 	ChatID        uuid.UUID         `json:"chat_id" format:"uuid"`
+	CreatedBy     *uuid.UUID        `json:"created_by,omitempty" format:"uuid"`
 	ModelConfigID *uuid.UUID        `json:"model_config_id,omitempty" format:"uuid"`
 	CreatedAt     time.Time         `json:"created_at" format:"date-time"`
 	Role          string            `json:"role"`
@@ -82,22 +83,23 @@ const (
 
 // ChatMessagePart is a structured chunk of a chat message.
 type ChatMessagePart struct {
-	Type        ChatMessagePartType `json:"type"`
-	Text        string              `json:"text,omitempty"`
-	Signature   string              `json:"signature,omitempty"`
-	ToolCallID  string              `json:"tool_call_id,omitempty"`
-	ToolName    string              `json:"tool_name,omitempty"`
-	Args        json.RawMessage     `json:"args,omitempty"`
-	ArgsDelta   string              `json:"args_delta,omitempty"`
-	Result      json.RawMessage     `json:"result,omitempty"`
-	ResultDelta string              `json:"result_delta,omitempty"`
-	IsError     bool                `json:"is_error,omitempty"`
-	SourceID    string              `json:"source_id,omitempty"`
-	URL         string              `json:"url,omitempty"`
-	Title       string              `json:"title,omitempty"`
-	MediaType   string              `json:"media_type,omitempty"`
-	Data        []byte              `json:"data,omitempty"`
-	FileID      uuid.NullUUID       `json:"file_id,omitempty" format:"uuid"`
+	Type             ChatMessagePartType `json:"type"`
+	Text             string              `json:"text,omitempty"`
+	Signature        string              `json:"signature,omitempty"`
+	ToolCallID       string              `json:"tool_call_id,omitempty"`
+	ToolName         string              `json:"tool_name,omitempty"`
+	Args             json.RawMessage     `json:"args,omitempty"`
+	ArgsDelta        string              `json:"args_delta,omitempty"`
+	Result           json.RawMessage     `json:"result,omitempty"`
+	ResultDelta      string              `json:"result_delta,omitempty"`
+	IsError          bool                `json:"is_error,omitempty"`
+	ProviderExecuted bool                `json:"provider_executed,omitempty"`
+	SourceID         string              `json:"source_id,omitempty"`
+	URL              string              `json:"url,omitempty"`
+	Title            string              `json:"title,omitempty"`
+	MediaType        string              `json:"media_type,omitempty"`
+	Data             []byte              `json:"data,omitempty"`
+	FileID           uuid.NullUUID       `json:"file_id,omitempty" format:"uuid"`
 	// The following fields are only set when Type is
 	// ChatInputPartTypeFileReference.
 	FileName  string `json:"file_name,omitempty"`
@@ -312,6 +314,9 @@ type ChatModelOpenAIProviderOptions struct {
 	ServiceTier         *string          `json:"service_tier,omitempty" description:"Latency tier to use for processing the request"`
 	StructuredOutputs   *bool            `json:"structured_outputs,omitempty" description:"Whether to enable structured JSON output mode" hidden:"true"`
 	StrictJSONSchema    *bool            `json:"strict_json_schema,omitempty" description:"Whether to enforce strict adherence to the JSON schema" hidden:"true"`
+	WebSearchEnabled    *bool            `json:"web_search_enabled,omitempty" description:"Enable OpenAI web search tool for grounding responses with real-time information"`
+	SearchContextSize   *string          `json:"search_context_size,omitempty" description:"Amount of search context to use" enum:"low,medium,high"`
+	AllowedDomains      []string         `json:"allowed_domains,omitempty" description:"Restrict web search to these domains"`
 }
 
 // ChatModelAnthropicThinkingOptions configures Anthropic thinking budget.
@@ -325,6 +330,9 @@ type ChatModelAnthropicProviderOptions struct {
 	Thinking               *ChatModelAnthropicThinkingOptions `json:"thinking,omitempty" description:"Configuration for extended thinking"`
 	Effort                 *string                            `json:"effort,omitempty" description:"Controls the level of reasoning effort" enum:"low,medium,high,max"`
 	DisableParallelToolUse *bool                              `json:"disable_parallel_tool_use,omitempty" description:"Whether to disable parallel tool execution"`
+	WebSearchEnabled       *bool                              `json:"web_search_enabled,omitempty" description:"Enable Anthropic web search tool for grounding responses with real-time information"`
+	AllowedDomains         []string                           `json:"allowed_domains,omitempty" description:"Restrict web search to these domains (cannot be used with blocked_domains)"`
+	BlockedDomains         []string                           `json:"blocked_domains,omitempty" description:"Block web search on these domains (cannot be used with allowed_domains)"`
 }
 
 // ChatModelGoogleThinkingConfig configures Google thinking behavior.
@@ -341,10 +349,11 @@ type ChatModelGoogleSafetySetting struct {
 
 // ChatModelGoogleProviderOptions configures Google provider behavior.
 type ChatModelGoogleProviderOptions struct {
-	ThinkingConfig *ChatModelGoogleThinkingConfig `json:"thinking_config,omitempty" description:"Configuration for extended thinking"`
-	CachedContent  string                         `json:"cached_content,omitempty" description:"Resource name of a cached content object" hidden:"true"`
-	SafetySettings []ChatModelGoogleSafetySetting `json:"safety_settings,omitempty" description:"Safety filtering settings for harmful content categories" hidden:"true"`
-	Threshold      string                         `json:"threshold,omitempty" hidden:"true"`
+	ThinkingConfig   *ChatModelGoogleThinkingConfig `json:"thinking_config,omitempty" description:"Configuration for extended thinking"`
+	CachedContent    string                         `json:"cached_content,omitempty" description:"Resource name of a cached content object" hidden:"true"`
+	SafetySettings   []ChatModelGoogleSafetySetting `json:"safety_settings,omitempty" description:"Safety filtering settings for harmful content categories" hidden:"true"`
+	Threshold        string                         `json:"threshold,omitempty" hidden:"true"`
+	WebSearchEnabled *bool                          `json:"web_search_enabled,omitempty" description:"Enable Google Search grounding for real-time information"`
 }
 
 // ChatModelOpenAICompatProviderOptions configures OpenAI-compatible behavior.
@@ -464,6 +473,8 @@ type ChatDiffStatus struct {
 	ChatID           uuid.UUID  `json:"chat_id" format:"uuid"`
 	URL              *string    `json:"url,omitempty"`
 	PullRequestState *string    `json:"pull_request_state,omitempty"`
+	PullRequestTitle string     `json:"pull_request_title"`
+	PullRequestDraft bool       `json:"pull_request_draft"`
 	ChangesRequested bool       `json:"changes_requested"`
 	Additions        int32      `json:"additions"`
 	Deletions        int32      `json:"deletions"`
@@ -550,7 +561,7 @@ type chatStreamEnvelope struct {
 
 // ListChatsOptions are optional parameters for ListChats.
 type ListChatsOptions struct {
-	Archived *bool
+	Query string
 	Pagination
 }
 
@@ -559,10 +570,10 @@ func (c *Client) ListChats(ctx context.Context, opts *ListChatsOptions) ([]Chat,
 	var reqOpts []RequestOption
 	if opts != nil {
 		reqOpts = append(reqOpts, opts.Pagination.asRequestOption())
-		if opts.Archived != nil {
+		if opts.Query != "" {
 			reqOpts = append(reqOpts, func(r *http.Request) {
 				q := r.URL.Query()
-				q.Set("archived", fmt.Sprintf("%t", *opts.Archived))
+				q.Set("q", opts.Query)
 				r.URL.RawQuery = q.Encode()
 			})
 		}

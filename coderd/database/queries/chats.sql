@@ -192,6 +192,7 @@ WITH updated_chat AS (
 )
 INSERT INTO chat_messages (
     chat_id,
+    created_by,
     model_config_id,
     role,
     content,
@@ -206,6 +207,7 @@ INSERT INTO chat_messages (
     compressed
 ) VALUES (
     @chat_id::uuid,
+    sqlc.narg('created_by')::uuid,
     sqlc.narg('model_config_id')::uuid,
     @role::text,
     sqlc.narg('content')::jsonb,
@@ -255,9 +257,9 @@ WHERE
 RETURNING
     *;
 
--- name: AcquireChat :one
--- Acquires a pending chat for processing. Uses SKIP LOCKED to prevent
--- multiple replicas from acquiring the same chat.
+-- name: AcquireChats :many
+-- Acquires up to @num_chats pending chats for processing. Uses SKIP LOCKED
+-- to prevent multiple replicas from acquiring the same chat.
 UPDATE
     chats
 SET
@@ -267,7 +269,7 @@ SET
     updated_at = @started_at::timestamptz,
     worker_id = @worker_id::uuid
 WHERE
-    id = (
+    id = ANY(
         SELECT
             id
         FROM
@@ -279,7 +281,7 @@ WHERE
         FOR UPDATE
             SKIP LOCKED
         LIMIT
-            1
+            @num_chats::int
     )
 RETURNING
     *;
@@ -376,6 +378,8 @@ INSERT INTO chat_diff_statuses (
     chat_id,
     url,
     pull_request_state,
+    pull_request_title,
+    pull_request_draft,
     changes_requested,
     additions,
     deletions,
@@ -386,6 +390,8 @@ INSERT INTO chat_diff_statuses (
     @chat_id::uuid,
     sqlc.narg('url')::text,
     sqlc.narg('pull_request_state')::text,
+    @pull_request_title::text,
+    @pull_request_draft::boolean,
     @changes_requested::boolean,
     @additions::integer,
     @deletions::integer,
@@ -397,6 +403,8 @@ ON CONFLICT (chat_id) DO UPDATE
 SET
     url = EXCLUDED.url,
     pull_request_state = EXCLUDED.pull_request_state,
+    pull_request_title = EXCLUDED.pull_request_title,
+    pull_request_draft = EXCLUDED.pull_request_draft,
     changes_requested = EXCLUDED.changes_requested,
     additions = EXCLUDED.additions,
     deletions = EXCLUDED.deletions,

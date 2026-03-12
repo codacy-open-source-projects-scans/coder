@@ -2968,7 +2968,7 @@ func (q *sqlQuerier) UpdateChatProvider(ctx context.Context, arg UpdateChatProvi
 	return i, err
 }
 
-const acquireChat = `-- name: AcquireChat :one
+const acquireChats = `-- name: AcquireChats :many
 UPDATE
     chats
 SET
@@ -2978,7 +2978,7 @@ SET
     updated_at = $1::timestamptz,
     worker_id = $2::uuid
 WHERE
-    id = (
+    id = ANY(
         SELECT
             id
         FROM
@@ -2990,40 +2990,57 @@ WHERE
         FOR UPDATE
             SKIP LOCKED
         LIMIT
-            1
+            $3::int
     )
 RETURNING
     id, owner_id, workspace_id, title, status, worker_id, started_at, heartbeat_at, created_at, updated_at, parent_chat_id, root_chat_id, last_model_config_id, archived, last_error
 `
 
-type AcquireChatParams struct {
+type AcquireChatsParams struct {
 	StartedAt time.Time `db:"started_at" json:"started_at"`
 	WorkerID  uuid.UUID `db:"worker_id" json:"worker_id"`
+	NumChats  int32     `db:"num_chats" json:"num_chats"`
 }
 
-// Acquires a pending chat for processing. Uses SKIP LOCKED to prevent
-// multiple replicas from acquiring the same chat.
-func (q *sqlQuerier) AcquireChat(ctx context.Context, arg AcquireChatParams) (Chat, error) {
-	row := q.db.QueryRowContext(ctx, acquireChat, arg.StartedAt, arg.WorkerID)
-	var i Chat
-	err := row.Scan(
-		&i.ID,
-		&i.OwnerID,
-		&i.WorkspaceID,
-		&i.Title,
-		&i.Status,
-		&i.WorkerID,
-		&i.StartedAt,
-		&i.HeartbeatAt,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.ParentChatID,
-		&i.RootChatID,
-		&i.LastModelConfigID,
-		&i.Archived,
-		&i.LastError,
-	)
-	return i, err
+// Acquires up to @num_chats pending chats for processing. Uses SKIP LOCKED
+// to prevent multiple replicas from acquiring the same chat.
+func (q *sqlQuerier) AcquireChats(ctx context.Context, arg AcquireChatsParams) ([]Chat, error) {
+	rows, err := q.db.QueryContext(ctx, acquireChats, arg.StartedAt, arg.WorkerID, arg.NumChats)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Chat
+	for rows.Next() {
+		var i Chat
+		if err := rows.Scan(
+			&i.ID,
+			&i.OwnerID,
+			&i.WorkspaceID,
+			&i.Title,
+			&i.Status,
+			&i.WorkerID,
+			&i.StartedAt,
+			&i.HeartbeatAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.ParentChatID,
+			&i.RootChatID,
+			&i.LastModelConfigID,
+			&i.Archived,
+			&i.LastError,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const acquireStaleChatDiffStatuses = `-- name: AcquireStaleChatDiffStatuses :many
@@ -3056,10 +3073,10 @@ WITH acquired AS (
             LIMIT
                 $1::int
         )
-    RETURNING chat_id, url, pull_request_state, changes_requested, additions, deletions, changed_files, refreshed_at, stale_at, created_at, updated_at, git_branch, git_remote_origin
+    RETURNING chat_id, url, pull_request_state, changes_requested, additions, deletions, changed_files, refreshed_at, stale_at, created_at, updated_at, git_branch, git_remote_origin, pull_request_title, pull_request_draft
 )
 SELECT
-    acquired.chat_id, acquired.url, acquired.pull_request_state, acquired.changes_requested, acquired.additions, acquired.deletions, acquired.changed_files, acquired.refreshed_at, acquired.stale_at, acquired.created_at, acquired.updated_at, acquired.git_branch, acquired.git_remote_origin,
+    acquired.chat_id, acquired.url, acquired.pull_request_state, acquired.changes_requested, acquired.additions, acquired.deletions, acquired.changed_files, acquired.refreshed_at, acquired.stale_at, acquired.created_at, acquired.updated_at, acquired.git_branch, acquired.git_remote_origin, acquired.pull_request_title, acquired.pull_request_draft,
     c.owner_id
 FROM
     acquired
@@ -3081,6 +3098,8 @@ type AcquireStaleChatDiffStatusesRow struct {
 	UpdatedAt        time.Time      `db:"updated_at" json:"updated_at"`
 	GitBranch        string         `db:"git_branch" json:"git_branch"`
 	GitRemoteOrigin  string         `db:"git_remote_origin" json:"git_remote_origin"`
+	PullRequestTitle string         `db:"pull_request_title" json:"pull_request_title"`
+	PullRequestDraft bool           `db:"pull_request_draft" json:"pull_request_draft"`
 	OwnerID          uuid.UUID      `db:"owner_id" json:"owner_id"`
 }
 
@@ -3107,6 +3126,8 @@ func (q *sqlQuerier) AcquireStaleChatDiffStatuses(ctx context.Context, limitVal 
 			&i.UpdatedAt,
 			&i.GitBranch,
 			&i.GitRemoteOrigin,
+			&i.PullRequestTitle,
+			&i.PullRequestDraft,
 			&i.OwnerID,
 		); err != nil {
 			return nil, err
@@ -3266,7 +3287,7 @@ func (q *sqlQuerier) GetChatByIDForUpdate(ctx context.Context, id uuid.UUID) (Ch
 
 const getChatDiffStatusByChatID = `-- name: GetChatDiffStatusByChatID :one
 SELECT
-    chat_id, url, pull_request_state, changes_requested, additions, deletions, changed_files, refreshed_at, stale_at, created_at, updated_at, git_branch, git_remote_origin
+    chat_id, url, pull_request_state, changes_requested, additions, deletions, changed_files, refreshed_at, stale_at, created_at, updated_at, git_branch, git_remote_origin, pull_request_title, pull_request_draft
 FROM
     chat_diff_statuses
 WHERE
@@ -3290,13 +3311,15 @@ func (q *sqlQuerier) GetChatDiffStatusByChatID(ctx context.Context, chatID uuid.
 		&i.UpdatedAt,
 		&i.GitBranch,
 		&i.GitRemoteOrigin,
+		&i.PullRequestTitle,
+		&i.PullRequestDraft,
 	)
 	return i, err
 }
 
 const getChatDiffStatusesByChatIDs = `-- name: GetChatDiffStatusesByChatIDs :many
 SELECT
-    chat_id, url, pull_request_state, changes_requested, additions, deletions, changed_files, refreshed_at, stale_at, created_at, updated_at, git_branch, git_remote_origin
+    chat_id, url, pull_request_state, changes_requested, additions, deletions, changed_files, refreshed_at, stale_at, created_at, updated_at, git_branch, git_remote_origin, pull_request_title, pull_request_draft
 FROM
     chat_diff_statuses
 WHERE
@@ -3326,6 +3349,8 @@ func (q *sqlQuerier) GetChatDiffStatusesByChatIDs(ctx context.Context, chatIds [
 			&i.UpdatedAt,
 			&i.GitBranch,
 			&i.GitRemoteOrigin,
+			&i.PullRequestTitle,
+			&i.PullRequestDraft,
 		); err != nil {
 			return nil, err
 		}
@@ -3342,7 +3367,7 @@ func (q *sqlQuerier) GetChatDiffStatusesByChatIDs(ctx context.Context, chatIds [
 
 const getChatMessageByID = `-- name: GetChatMessageByID :one
 SELECT
-    id, chat_id, model_config_id, created_at, role, content, visibility, input_tokens, output_tokens, total_tokens, reasoning_tokens, cache_creation_tokens, cache_read_tokens, context_limit, compressed
+    id, chat_id, model_config_id, created_at, role, content, visibility, input_tokens, output_tokens, total_tokens, reasoning_tokens, cache_creation_tokens, cache_read_tokens, context_limit, compressed, created_by
 FROM
     chat_messages
 WHERE
@@ -3368,13 +3393,14 @@ func (q *sqlQuerier) GetChatMessageByID(ctx context.Context, id int64) (ChatMess
 		&i.CacheReadTokens,
 		&i.ContextLimit,
 		&i.Compressed,
+		&i.CreatedBy,
 	)
 	return i, err
 }
 
 const getChatMessagesByChatID = `-- name: GetChatMessagesByChatID :many
 SELECT
-    id, chat_id, model_config_id, created_at, role, content, visibility, input_tokens, output_tokens, total_tokens, reasoning_tokens, cache_creation_tokens, cache_read_tokens, context_limit, compressed
+    id, chat_id, model_config_id, created_at, role, content, visibility, input_tokens, output_tokens, total_tokens, reasoning_tokens, cache_creation_tokens, cache_read_tokens, context_limit, compressed, created_by
 FROM
     chat_messages
 WHERE
@@ -3415,6 +3441,7 @@ func (q *sqlQuerier) GetChatMessagesByChatID(ctx context.Context, arg GetChatMes
 			&i.CacheReadTokens,
 			&i.ContextLimit,
 			&i.Compressed,
+			&i.CreatedBy,
 		); err != nil {
 			return nil, err
 		}
@@ -3446,7 +3473,7 @@ WITH latest_compressed_summary AS (
         1
 )
 SELECT
-    id, chat_id, model_config_id, created_at, role, content, visibility, input_tokens, output_tokens, total_tokens, reasoning_tokens, cache_creation_tokens, cache_read_tokens, context_limit, compressed
+    id, chat_id, model_config_id, created_at, role, content, visibility, input_tokens, output_tokens, total_tokens, reasoning_tokens, cache_creation_tokens, cache_read_tokens, context_limit, compressed, created_by
 FROM
     chat_messages
 WHERE
@@ -3511,6 +3538,7 @@ func (q *sqlQuerier) GetChatMessagesForPromptByChatID(ctx context.Context, chatI
 			&i.CacheReadTokens,
 			&i.ContextLimit,
 			&i.Compressed,
+			&i.CreatedBy,
 		); err != nil {
 			return nil, err
 		}
@@ -3654,7 +3682,7 @@ func (q *sqlQuerier) GetChatsByOwnerID(ctx context.Context, arg GetChatsByOwnerI
 
 const getLastChatMessageByRole = `-- name: GetLastChatMessageByRole :one
 SELECT
-    id, chat_id, model_config_id, created_at, role, content, visibility, input_tokens, output_tokens, total_tokens, reasoning_tokens, cache_creation_tokens, cache_read_tokens, context_limit, compressed
+    id, chat_id, model_config_id, created_at, role, content, visibility, input_tokens, output_tokens, total_tokens, reasoning_tokens, cache_creation_tokens, cache_read_tokens, context_limit, compressed, created_by
 FROM
     chat_messages
 WHERE
@@ -3690,6 +3718,7 @@ func (q *sqlQuerier) GetLastChatMessageByRole(ctx context.Context, arg GetLastCh
 		&i.CacheReadTokens,
 		&i.ContextLimit,
 		&i.Compressed,
+		&i.CreatedBy,
 	)
 	return i, err
 }
@@ -3809,13 +3838,14 @@ WITH updated_chat AS (
     UPDATE
         chats
     SET
-        last_model_config_id = $2::uuid
+        last_model_config_id = $3::uuid
     WHERE
         id = $1::uuid
-        AND $2::uuid IS NOT NULL
+        AND $3::uuid IS NOT NULL
 )
 INSERT INTO chat_messages (
     chat_id,
+    created_by,
     model_config_id,
     role,
     content,
@@ -3831,24 +3861,26 @@ INSERT INTO chat_messages (
 ) VALUES (
     $1::uuid,
     $2::uuid,
-    $3::text,
-    $4::jsonb,
-    $5::chat_message_visibility,
-    $6::bigint,
+    $3::uuid,
+    $4::text,
+    $5::jsonb,
+    $6::chat_message_visibility,
     $7::bigint,
     $8::bigint,
     $9::bigint,
     $10::bigint,
     $11::bigint,
     $12::bigint,
-    COALESCE($13::boolean, FALSE)
+    $13::bigint,
+    COALESCE($14::boolean, FALSE)
 )
 RETURNING
-    id, chat_id, model_config_id, created_at, role, content, visibility, input_tokens, output_tokens, total_tokens, reasoning_tokens, cache_creation_tokens, cache_read_tokens, context_limit, compressed
+    id, chat_id, model_config_id, created_at, role, content, visibility, input_tokens, output_tokens, total_tokens, reasoning_tokens, cache_creation_tokens, cache_read_tokens, context_limit, compressed, created_by
 `
 
 type InsertChatMessageParams struct {
 	ChatID              uuid.UUID             `db:"chat_id" json:"chat_id"`
+	CreatedBy           uuid.NullUUID         `db:"created_by" json:"created_by"`
 	ModelConfigID       uuid.NullUUID         `db:"model_config_id" json:"model_config_id"`
 	Role                string                `db:"role" json:"role"`
 	Content             pqtype.NullRawMessage `db:"content" json:"content"`
@@ -3866,6 +3898,7 @@ type InsertChatMessageParams struct {
 func (q *sqlQuerier) InsertChatMessage(ctx context.Context, arg InsertChatMessageParams) (ChatMessage, error) {
 	row := q.db.QueryRowContext(ctx, insertChatMessage,
 		arg.ChatID,
+		arg.CreatedBy,
 		arg.ModelConfigID,
 		arg.Role,
 		arg.Content,
@@ -3896,6 +3929,7 @@ func (q *sqlQuerier) InsertChatMessage(ctx context.Context, arg InsertChatMessag
 		&i.CacheReadTokens,
 		&i.ContextLimit,
 		&i.Compressed,
+		&i.CreatedBy,
 	)
 	return i, err
 }
@@ -4130,7 +4164,7 @@ SET
 WHERE
     id = $3::bigint
 RETURNING
-    id, chat_id, model_config_id, created_at, role, content, visibility, input_tokens, output_tokens, total_tokens, reasoning_tokens, cache_creation_tokens, cache_read_tokens, context_limit, compressed
+    id, chat_id, model_config_id, created_at, role, content, visibility, input_tokens, output_tokens, total_tokens, reasoning_tokens, cache_creation_tokens, cache_read_tokens, context_limit, compressed, created_by
 `
 
 type UpdateChatMessageByIDParams struct {
@@ -4158,6 +4192,7 @@ func (q *sqlQuerier) UpdateChatMessageByID(ctx context.Context, arg UpdateChatMe
 		&i.CacheReadTokens,
 		&i.ContextLimit,
 		&i.Compressed,
+		&i.CreatedBy,
 	)
 	return i, err
 }
@@ -4262,6 +4297,8 @@ INSERT INTO chat_diff_statuses (
     chat_id,
     url,
     pull_request_state,
+    pull_request_title,
+    pull_request_draft,
     changes_requested,
     additions,
     deletions,
@@ -4272,17 +4309,21 @@ INSERT INTO chat_diff_statuses (
     $1::uuid,
     $2::text,
     $3::text,
-    $4::boolean,
-    $5::integer,
-    $6::integer,
+    $4::text,
+    $5::boolean,
+    $6::boolean,
     $7::integer,
-    $8::timestamptz,
-    $9::timestamptz
+    $8::integer,
+    $9::integer,
+    $10::timestamptz,
+    $11::timestamptz
 )
 ON CONFLICT (chat_id) DO UPDATE
 SET
     url = EXCLUDED.url,
     pull_request_state = EXCLUDED.pull_request_state,
+    pull_request_title = EXCLUDED.pull_request_title,
+    pull_request_draft = EXCLUDED.pull_request_draft,
     changes_requested = EXCLUDED.changes_requested,
     additions = EXCLUDED.additions,
     deletions = EXCLUDED.deletions,
@@ -4291,13 +4332,15 @@ SET
     stale_at = EXCLUDED.stale_at,
     updated_at = NOW()
 RETURNING
-    chat_id, url, pull_request_state, changes_requested, additions, deletions, changed_files, refreshed_at, stale_at, created_at, updated_at, git_branch, git_remote_origin
+    chat_id, url, pull_request_state, changes_requested, additions, deletions, changed_files, refreshed_at, stale_at, created_at, updated_at, git_branch, git_remote_origin, pull_request_title, pull_request_draft
 `
 
 type UpsertChatDiffStatusParams struct {
 	ChatID           uuid.UUID      `db:"chat_id" json:"chat_id"`
 	Url              sql.NullString `db:"url" json:"url"`
 	PullRequestState sql.NullString `db:"pull_request_state" json:"pull_request_state"`
+	PullRequestTitle string         `db:"pull_request_title" json:"pull_request_title"`
+	PullRequestDraft bool           `db:"pull_request_draft" json:"pull_request_draft"`
 	ChangesRequested bool           `db:"changes_requested" json:"changes_requested"`
 	Additions        int32          `db:"additions" json:"additions"`
 	Deletions        int32          `db:"deletions" json:"deletions"`
@@ -4311,6 +4354,8 @@ func (q *sqlQuerier) UpsertChatDiffStatus(ctx context.Context, arg UpsertChatDif
 		arg.ChatID,
 		arg.Url,
 		arg.PullRequestState,
+		arg.PullRequestTitle,
+		arg.PullRequestDraft,
 		arg.ChangesRequested,
 		arg.Additions,
 		arg.Deletions,
@@ -4333,6 +4378,8 @@ func (q *sqlQuerier) UpsertChatDiffStatus(ctx context.Context, arg UpsertChatDif
 		&i.UpdatedAt,
 		&i.GitBranch,
 		&i.GitRemoteOrigin,
+		&i.PullRequestTitle,
+		&i.PullRequestDraft,
 	)
 	return i, err
 }
@@ -4368,7 +4415,7 @@ SET
     stale_at = EXCLUDED.stale_at,
     updated_at = NOW()
 RETURNING
-    chat_id, url, pull_request_state, changes_requested, additions, deletions, changed_files, refreshed_at, stale_at, created_at, updated_at, git_branch, git_remote_origin
+    chat_id, url, pull_request_state, changes_requested, additions, deletions, changed_files, refreshed_at, stale_at, created_at, updated_at, git_branch, git_remote_origin, pull_request_title, pull_request_draft
 `
 
 type UpsertChatDiffStatusReferenceParams struct {
@@ -4402,6 +4449,8 @@ func (q *sqlQuerier) UpsertChatDiffStatusReference(ctx context.Context, arg Upse
 		&i.UpdatedAt,
 		&i.GitBranch,
 		&i.GitRemoteOrigin,
+		&i.PullRequestTitle,
+		&i.PullRequestDraft,
 	)
 	return i, err
 }
@@ -18790,19 +18839,19 @@ func (q *sqlQuerier) GetAuthorizationUserRoles(ctx context.Context, userID uuid.
 
 const getUserByEmailOrUsername = `-- name: GetUserByEmailOrUsername :one
 SELECT
-	id, email, username, hashed_password, created_at, updated_at, status, rbac_roles, login_type, avatar_url, deleted, last_seen_at, quiet_hours_schedule, name, github_com_user_id, hashed_one_time_passcode, one_time_passcode_expires_at, is_system
+	id, email, username, hashed_password, created_at, updated_at, status, rbac_roles, login_type, avatar_url, deleted, last_seen_at, quiet_hours_schedule, name, github_com_user_id, hashed_one_time_passcode, one_time_passcode_expires_at, is_system, is_service_account
 FROM
 	users
 WHERE
-	(LOWER(username) = LOWER($1) OR LOWER(email) = LOWER($2)) AND
+	(LOWER(username) = LOWER($1) OR ($2 != '' AND LOWER(email) = LOWER($2))) AND
 	deleted = false
 LIMIT
 	1
 `
 
 type GetUserByEmailOrUsernameParams struct {
-	Username string `db:"username" json:"username"`
-	Email    string `db:"email" json:"email"`
+	Username string      `db:"username" json:"username"`
+	Email    interface{} `db:"email" json:"email"`
 }
 
 func (q *sqlQuerier) GetUserByEmailOrUsername(ctx context.Context, arg GetUserByEmailOrUsernameParams) (User, error) {
@@ -18827,13 +18876,14 @@ func (q *sqlQuerier) GetUserByEmailOrUsername(ctx context.Context, arg GetUserBy
 		&i.HashedOneTimePasscode,
 		&i.OneTimePasscodeExpiresAt,
 		&i.IsSystem,
+		&i.IsServiceAccount,
 	)
 	return i, err
 }
 
 const getUserByID = `-- name: GetUserByID :one
 SELECT
-	id, email, username, hashed_password, created_at, updated_at, status, rbac_roles, login_type, avatar_url, deleted, last_seen_at, quiet_hours_schedule, name, github_com_user_id, hashed_one_time_passcode, one_time_passcode_expires_at, is_system
+	id, email, username, hashed_password, created_at, updated_at, status, rbac_roles, login_type, avatar_url, deleted, last_seen_at, quiet_hours_schedule, name, github_com_user_id, hashed_one_time_passcode, one_time_passcode_expires_at, is_system, is_service_account
 FROM
 	users
 WHERE
@@ -18864,6 +18914,7 @@ func (q *sqlQuerier) GetUserByID(ctx context.Context, id uuid.UUID) (User, error
 		&i.HashedOneTimePasscode,
 		&i.OneTimePasscodeExpiresAt,
 		&i.IsSystem,
+		&i.IsServiceAccount,
 	)
 	return i, err
 }
@@ -18955,7 +19006,7 @@ func (q *sqlQuerier) GetUserThemePreference(ctx context.Context, userID uuid.UUI
 
 const getUsers = `-- name: GetUsers :many
 SELECT
-	id, email, username, hashed_password, created_at, updated_at, status, rbac_roles, login_type, avatar_url, deleted, last_seen_at, quiet_hours_schedule, name, github_com_user_id, hashed_one_time_passcode, one_time_passcode_expires_at, is_system, COUNT(*) OVER() AS count
+	id, email, username, hashed_password, created_at, updated_at, status, rbac_roles, login_type, avatar_url, deleted, last_seen_at, quiet_hours_schedule, name, github_com_user_id, hashed_one_time_passcode, one_time_passcode_expires_at, is_system, is_service_account, COUNT(*) OVER() AS count
 FROM
 	users
 WHERE
@@ -19096,6 +19147,7 @@ type GetUsersRow struct {
 	HashedOneTimePasscode    []byte         `db:"hashed_one_time_passcode" json:"hashed_one_time_passcode"`
 	OneTimePasscodeExpiresAt sql.NullTime   `db:"one_time_passcode_expires_at" json:"one_time_passcode_expires_at"`
 	IsSystem                 bool           `db:"is_system" json:"is_system"`
+	IsServiceAccount         bool           `db:"is_service_account" json:"is_service_account"`
 	Count                    int64          `db:"count" json:"count"`
 }
 
@@ -19143,6 +19195,7 @@ func (q *sqlQuerier) GetUsers(ctx context.Context, arg GetUsersParams) ([]GetUse
 			&i.HashedOneTimePasscode,
 			&i.OneTimePasscodeExpiresAt,
 			&i.IsSystem,
+			&i.IsServiceAccount,
 			&i.Count,
 		); err != nil {
 			return nil, err
@@ -19159,7 +19212,7 @@ func (q *sqlQuerier) GetUsers(ctx context.Context, arg GetUsersParams) ([]GetUse
 }
 
 const getUsersByIDs = `-- name: GetUsersByIDs :many
-SELECT id, email, username, hashed_password, created_at, updated_at, status, rbac_roles, login_type, avatar_url, deleted, last_seen_at, quiet_hours_schedule, name, github_com_user_id, hashed_one_time_passcode, one_time_passcode_expires_at, is_system FROM users WHERE id = ANY($1 :: uuid [ ])
+SELECT id, email, username, hashed_password, created_at, updated_at, status, rbac_roles, login_type, avatar_url, deleted, last_seen_at, quiet_hours_schedule, name, github_com_user_id, hashed_one_time_passcode, one_time_passcode_expires_at, is_system, is_service_account FROM users WHERE id = ANY($1 :: uuid [ ])
 `
 
 // This shouldn't check for deleted, because it's frequently used
@@ -19193,6 +19246,7 @@ func (q *sqlQuerier) GetUsersByIDs(ctx context.Context, ids []uuid.UUID) ([]User
 			&i.HashedOneTimePasscode,
 			&i.OneTimePasscodeExpiresAt,
 			&i.IsSystem,
+			&i.IsServiceAccount,
 		); err != nil {
 			return nil, err
 		}
@@ -19219,27 +19273,30 @@ INSERT INTO
 		updated_at,
 		rbac_roles,
 		login_type,
-		status
+		status,
+		is_service_account
 	)
 VALUES
 	($1, $2, $3, $4, $5, $6, $7, $8, $9,
 		-- if the status passed in is empty, fallback to dormant, which is what
 		-- we were doing before.
-		COALESCE(NULLIF($10::text, '')::user_status, 'dormant'::user_status)
-	) RETURNING id, email, username, hashed_password, created_at, updated_at, status, rbac_roles, login_type, avatar_url, deleted, last_seen_at, quiet_hours_schedule, name, github_com_user_id, hashed_one_time_passcode, one_time_passcode_expires_at, is_system
+		COALESCE(NULLIF($10::text, '')::user_status, 'dormant'::user_status),
+		$11::bool
+	) RETURNING id, email, username, hashed_password, created_at, updated_at, status, rbac_roles, login_type, avatar_url, deleted, last_seen_at, quiet_hours_schedule, name, github_com_user_id, hashed_one_time_passcode, one_time_passcode_expires_at, is_system, is_service_account
 `
 
 type InsertUserParams struct {
-	ID             uuid.UUID      `db:"id" json:"id"`
-	Email          string         `db:"email" json:"email"`
-	Username       string         `db:"username" json:"username"`
-	Name           string         `db:"name" json:"name"`
-	HashedPassword []byte         `db:"hashed_password" json:"hashed_password"`
-	CreatedAt      time.Time      `db:"created_at" json:"created_at"`
-	UpdatedAt      time.Time      `db:"updated_at" json:"updated_at"`
-	RBACRoles      pq.StringArray `db:"rbac_roles" json:"rbac_roles"`
-	LoginType      LoginType      `db:"login_type" json:"login_type"`
-	Status         string         `db:"status" json:"status"`
+	ID               uuid.UUID      `db:"id" json:"id"`
+	Email            string         `db:"email" json:"email"`
+	Username         string         `db:"username" json:"username"`
+	Name             string         `db:"name" json:"name"`
+	HashedPassword   []byte         `db:"hashed_password" json:"hashed_password"`
+	CreatedAt        time.Time      `db:"created_at" json:"created_at"`
+	UpdatedAt        time.Time      `db:"updated_at" json:"updated_at"`
+	RBACRoles        pq.StringArray `db:"rbac_roles" json:"rbac_roles"`
+	LoginType        LoginType      `db:"login_type" json:"login_type"`
+	Status           string         `db:"status" json:"status"`
+	IsServiceAccount bool           `db:"is_service_account" json:"is_service_account"`
 }
 
 func (q *sqlQuerier) InsertUser(ctx context.Context, arg InsertUserParams) (User, error) {
@@ -19254,6 +19311,7 @@ func (q *sqlQuerier) InsertUser(ctx context.Context, arg InsertUserParams) (User
 		arg.RBACRoles,
 		arg.LoginType,
 		arg.Status,
+		arg.IsServiceAccount,
 	)
 	var i User
 	err := row.Scan(
@@ -19275,6 +19333,7 @@ func (q *sqlQuerier) InsertUser(ctx context.Context, arg InsertUserParams) (User
 		&i.HashedOneTimePasscode,
 		&i.OneTimePasscodeExpiresAt,
 		&i.IsSystem,
+		&i.IsServiceAccount,
 	)
 	return i, err
 }
@@ -19441,7 +19500,7 @@ SET
 	last_seen_at = $2,
 	updated_at = $3
 WHERE
-	id = $1 RETURNING id, email, username, hashed_password, created_at, updated_at, status, rbac_roles, login_type, avatar_url, deleted, last_seen_at, quiet_hours_schedule, name, github_com_user_id, hashed_one_time_passcode, one_time_passcode_expires_at, is_system
+	id = $1 RETURNING id, email, username, hashed_password, created_at, updated_at, status, rbac_roles, login_type, avatar_url, deleted, last_seen_at, quiet_hours_schedule, name, github_com_user_id, hashed_one_time_passcode, one_time_passcode_expires_at, is_system, is_service_account
 `
 
 type UpdateUserLastSeenAtParams struct {
@@ -19472,6 +19531,7 @@ func (q *sqlQuerier) UpdateUserLastSeenAt(ctx context.Context, arg UpdateUserLas
 		&i.HashedOneTimePasscode,
 		&i.OneTimePasscodeExpiresAt,
 		&i.IsSystem,
+		&i.IsServiceAccount,
 	)
 	return i, err
 }
@@ -19491,7 +19551,7 @@ SET
 WHERE
 	id = $2
 	AND NOT is_system
-RETURNING id, email, username, hashed_password, created_at, updated_at, status, rbac_roles, login_type, avatar_url, deleted, last_seen_at, quiet_hours_schedule, name, github_com_user_id, hashed_one_time_passcode, one_time_passcode_expires_at, is_system
+RETURNING id, email, username, hashed_password, created_at, updated_at, status, rbac_roles, login_type, avatar_url, deleted, last_seen_at, quiet_hours_schedule, name, github_com_user_id, hashed_one_time_passcode, one_time_passcode_expires_at, is_system, is_service_account
 `
 
 type UpdateUserLoginTypeParams struct {
@@ -19521,6 +19581,7 @@ func (q *sqlQuerier) UpdateUserLoginType(ctx context.Context, arg UpdateUserLogi
 		&i.HashedOneTimePasscode,
 		&i.OneTimePasscodeExpiresAt,
 		&i.IsSystem,
+		&i.IsServiceAccount,
 	)
 	return i, err
 }
@@ -19536,7 +19597,7 @@ SET
 	name = $6
 WHERE
 	id = $1
-RETURNING id, email, username, hashed_password, created_at, updated_at, status, rbac_roles, login_type, avatar_url, deleted, last_seen_at, quiet_hours_schedule, name, github_com_user_id, hashed_one_time_passcode, one_time_passcode_expires_at, is_system
+RETURNING id, email, username, hashed_password, created_at, updated_at, status, rbac_roles, login_type, avatar_url, deleted, last_seen_at, quiet_hours_schedule, name, github_com_user_id, hashed_one_time_passcode, one_time_passcode_expires_at, is_system, is_service_account
 `
 
 type UpdateUserProfileParams struct {
@@ -19577,6 +19638,7 @@ func (q *sqlQuerier) UpdateUserProfile(ctx context.Context, arg UpdateUserProfil
 		&i.HashedOneTimePasscode,
 		&i.OneTimePasscodeExpiresAt,
 		&i.IsSystem,
+		&i.IsServiceAccount,
 	)
 	return i, err
 }
@@ -19588,7 +19650,7 @@ SET
 	quiet_hours_schedule = $2
 WHERE
 	id = $1
-RETURNING id, email, username, hashed_password, created_at, updated_at, status, rbac_roles, login_type, avatar_url, deleted, last_seen_at, quiet_hours_schedule, name, github_com_user_id, hashed_one_time_passcode, one_time_passcode_expires_at, is_system
+RETURNING id, email, username, hashed_password, created_at, updated_at, status, rbac_roles, login_type, avatar_url, deleted, last_seen_at, quiet_hours_schedule, name, github_com_user_id, hashed_one_time_passcode, one_time_passcode_expires_at, is_system, is_service_account
 `
 
 type UpdateUserQuietHoursScheduleParams struct {
@@ -19618,6 +19680,7 @@ func (q *sqlQuerier) UpdateUserQuietHoursSchedule(ctx context.Context, arg Updat
 		&i.HashedOneTimePasscode,
 		&i.OneTimePasscodeExpiresAt,
 		&i.IsSystem,
+		&i.IsServiceAccount,
 	)
 	return i, err
 }
@@ -19630,7 +19693,7 @@ SET
 	rbac_roles = ARRAY(SELECT DISTINCT UNNEST($1 :: text[]))
 WHERE
 	id = $2
-RETURNING id, email, username, hashed_password, created_at, updated_at, status, rbac_roles, login_type, avatar_url, deleted, last_seen_at, quiet_hours_schedule, name, github_com_user_id, hashed_one_time_passcode, one_time_passcode_expires_at, is_system
+RETURNING id, email, username, hashed_password, created_at, updated_at, status, rbac_roles, login_type, avatar_url, deleted, last_seen_at, quiet_hours_schedule, name, github_com_user_id, hashed_one_time_passcode, one_time_passcode_expires_at, is_system, is_service_account
 `
 
 type UpdateUserRolesParams struct {
@@ -19660,6 +19723,7 @@ func (q *sqlQuerier) UpdateUserRoles(ctx context.Context, arg UpdateUserRolesPar
 		&i.HashedOneTimePasscode,
 		&i.OneTimePasscodeExpiresAt,
 		&i.IsSystem,
+		&i.IsServiceAccount,
 	)
 	return i, err
 }
@@ -19673,7 +19737,7 @@ SET
 	-- If the user is logging in, set last_seen_at to updated_at.
 	last_seen_at = CASE WHEN $4 :: boolean THEN $3 :: timestamptz ELSE last_seen_at END
 WHERE
-	id = $1 RETURNING id, email, username, hashed_password, created_at, updated_at, status, rbac_roles, login_type, avatar_url, deleted, last_seen_at, quiet_hours_schedule, name, github_com_user_id, hashed_one_time_passcode, one_time_passcode_expires_at, is_system
+	id = $1 RETURNING id, email, username, hashed_password, created_at, updated_at, status, rbac_roles, login_type, avatar_url, deleted, last_seen_at, quiet_hours_schedule, name, github_com_user_id, hashed_one_time_passcode, one_time_passcode_expires_at, is_system, is_service_account
 `
 
 type UpdateUserStatusParams struct {
@@ -19710,6 +19774,7 @@ func (q *sqlQuerier) UpdateUserStatus(ctx context.Context, arg UpdateUserStatusP
 		&i.HashedOneTimePasscode,
 		&i.OneTimePasscodeExpiresAt,
 		&i.IsSystem,
+		&i.IsServiceAccount,
 	)
 	return i, err
 }

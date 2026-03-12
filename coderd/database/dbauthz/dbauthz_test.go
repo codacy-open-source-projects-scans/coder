@@ -373,14 +373,15 @@ func (s *MethodTestSuite) TestConnectionLogs() {
 }
 
 func (s *MethodTestSuite) TestChats() {
-	s.Run("AcquireChat", s.Mocked(func(dbm *dbmock.MockStore, faker *gofakeit.Faker, check *expects) {
-		arg := database.AcquireChatParams{
+	s.Run("AcquireChats", s.Mocked(func(dbm *dbmock.MockStore, faker *gofakeit.Faker, check *expects) {
+		arg := database.AcquireChatsParams{
 			StartedAt: dbtime.Now(),
 			WorkerID:  uuid.New(),
+			NumChats:  1,
 		}
 		chat := testutil.Fake(s.T(), faker, database.Chat{})
-		dbm.EXPECT().AcquireChat(gomock.Any(), arg).Return(chat, nil).AnyTimes()
-		check.Args(arg).Asserts(rbac.ResourceChat, policy.ActionUpdate).Returns(chat)
+		dbm.EXPECT().AcquireChats(gomock.Any(), arg).Return([]database.Chat{chat}, nil).AnyTimes()
+		check.Args(arg).Asserts(rbac.ResourceChat, policy.ActionUpdate).Returns([]database.Chat{chat})
 	}))
 	s.Run("DeleteAllChatQueuedMessages", s.Mocked(func(dbm *dbmock.MockStore, faker *gofakeit.Faker, check *expects) {
 		chat := testutil.Fake(s.T(), faker, database.Chat{})
@@ -5458,6 +5459,10 @@ func TestAsChatd(t *testing.T) {
 		// DeploymentConfig read.
 		err = auth.Authorize(ctx, actor, policy.ActionRead, rbac.ResourceDeploymentConfig)
 		require.NoError(t, err, "deployment config read should be allowed")
+
+		// User read_personal (needed for GetUserChatCustomPrompt).
+		err = auth.Authorize(ctx, actor, policy.ActionReadPersonal, rbac.ResourceUser)
+		require.NoError(t, err, "user read_personal should be allowed")
 	})
 
 	t.Run("DeniedActions", func(t *testing.T) {

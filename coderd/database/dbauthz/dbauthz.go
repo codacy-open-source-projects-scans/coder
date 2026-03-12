@@ -707,6 +707,7 @@ var (
 					rbac.ResourceChat.Type:             {policy.ActionCreate, policy.ActionRead, policy.ActionUpdate, policy.ActionDelete},
 					rbac.ResourceWorkspace.Type:        {policy.ActionRead},
 					rbac.ResourceDeploymentConfig.Type: {policy.ActionRead},
+					rbac.ResourceUser.Type:             {policy.ActionReadPersonal},
 				}),
 				User:    []rbac.Permission{},
 				ByOrgID: map[string]rbac.OrgPermissions{},
@@ -1512,13 +1513,13 @@ func (q *querier) authorizeProvisionerJob(ctx context.Context, job database.Prov
 	return nil
 }
 
-func (q *querier) AcquireChat(ctx context.Context, arg database.AcquireChatParams) (database.Chat, error) {
-	// AcquireChat is a system-level operation used by the chat processor.
+func (q *querier) AcquireChats(ctx context.Context, arg database.AcquireChatsParams) ([]database.Chat, error) {
+	// AcquireChats is a system-level operation used by the chat processor.
 	// Authorization is done at the system level, not per-user.
 	if err := q.authorizeContext(ctx, policy.ActionUpdate, rbac.ResourceChat); err != nil {
-		return database.Chat{}, err
+		return nil, err
 	}
-	return q.db.AcquireChat(ctx, arg)
+	return q.db.AcquireChats(ctx, arg)
 }
 
 func (q *querier) AcquireLock(ctx context.Context, id int64) error {
