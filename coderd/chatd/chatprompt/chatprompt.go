@@ -516,15 +516,17 @@ func ToMessageParts(content []fantasy.Content) []fantasy.MessagePart {
 			})
 		case fantasy.ToolResultContent:
 			parts = append(parts, fantasy.ToolResultPart{
-				ToolCallID:      sanitizeToolCallID(value.ToolCallID),
-				Output:          value.Result,
-				ProviderOptions: fantasy.ProviderOptions(value.ProviderMetadata),
+				ToolCallID:       sanitizeToolCallID(value.ToolCallID),
+				ProviderExecuted: value.ProviderExecuted,
+				Output:           value.Result,
+				ProviderOptions:  fantasy.ProviderOptions(value.ProviderMetadata),
 			})
 		case *fantasy.ToolResultContent:
 			parts = append(parts, fantasy.ToolResultPart{
-				ToolCallID:      sanitizeToolCallID(value.ToolCallID),
-				Output:          value.Result,
-				ProviderOptions: fantasy.ProviderOptions(value.ProviderMetadata),
+				ToolCallID:       sanitizeToolCallID(value.ToolCallID),
+				ProviderExecuted: value.ProviderExecuted,
+				Output:           value.Result,
+				ProviderOptions:  fantasy.ProviderOptions(value.ProviderMetadata),
 			})
 		}
 	}
@@ -862,8 +864,17 @@ func injectMissingToolResults(prompt []fantasy.Message) []fantasy.Message {
 		}
 
 		// Build synthetic results for any unanswered tool calls.
+		// Provider-executed tool calls (e.g. web_search) are
+		// handled server-side by the LLM provider. Their results
+		// may arrive in a later step and end up stored out of
+		// position, so we must not inject synthetic error results
+		// for them. The provider will re-execute the tool when it
+		// sees the server_tool_use without a matching result.
 		var missing []fantasy.MessagePart
 		for _, tc := range toolCalls {
+			if tc.ProviderExecuted {
+				continue
+			}
 			if _, ok := answered[tc.ToolCallID]; !ok {
 				missing = append(missing, fantasy.ToolResultPart{
 					ToolCallID: tc.ToolCallID,
@@ -894,16 +905,34 @@ func injectMissingToolUses(
 			continue
 		}
 
-		toolResults := make([]fantasy.ToolResultPart, 0, len(msg.Content))
+		allToolResults := make([]fantasy.ToolResultPart, 0, len(msg.Content))
 		for _, part := range msg.Content {
 			toolResult, ok := fantasy.AsMessagePart[fantasy.ToolResultPart](part)
 			if !ok {
 				continue
 			}
-			toolResults = append(toolResults, toolResult)
+			allToolResults = append(allToolResults, toolResult)
+		}
+		if len(allToolResults) == 0 {
+			result = append(result, msg)
+			continue
+		}
+
+		// Provider-executed tool results (e.g. web_search) may be
+		// persisted in a later step than the assistant message that
+		// initiated the tool call. When that happens they appear as
+		// orphans after the wrong assistant message. Filter them
+		// out before matching — the provider will re-execute the
+		// tool, and the search results are already captured in the
+		// subsequent assistant message's sources/text.
+		toolResults := make([]fantasy.ToolResultPart, 0, len(allToolResults))
+		for _, tr := range allToolResults {
+			if !tr.ProviderExecuted {
+				toolResults = append(toolResults, tr)
+			}
 		}
 		if len(toolResults) == 0 {
-			result = append(result, msg)
+			// All results were provider-executed; drop the message.
 			continue
 		}
 
@@ -939,7 +968,9 @@ func injectMissingToolUses(
 		}
 
 		if len(orphanResults) == 0 {
-			result = append(result, msg)
+			// Rebuild the message from the filtered results so
+			// dropped provider-executed results are excluded.
+			result = append(result, toolMessageFromToolResultParts(matchingResults))
 			continue
 		}
 
