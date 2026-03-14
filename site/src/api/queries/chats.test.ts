@@ -2,12 +2,23 @@ import { API } from "api/api";
 import type * as TypesGen from "api/typesGenerated";
 import { QueryClient } from "react-query";
 import { describe, expect, it, vi } from "vitest";
-import { archiveChat, chatKey, chatsKey, unarchiveChat } from "./chats";
+import {
+	archiveChat,
+	chatCostSummary,
+	chatCostSummaryKey,
+	chatCostUsers,
+	chatCostUsersKey,
+	chatKey,
+	chatsKey,
+	unarchiveChat,
+} from "./chats";
 
 vi.mock("api/api", () => ({
 	API: {
 		archiveChat: vi.fn(),
 		unarchiveChat: vi.fn(),
+		getChatCostSummary: vi.fn(),
+		getChatCostUsers: vi.fn(),
 	},
 }));
 
@@ -55,15 +66,6 @@ const makeChat = (
 	...overrides,
 });
 
-const makeChatWithMessages = (
-	chatId: string,
-	overrides?: Partial<TypesGen.Chat>,
-): TypesGen.ChatWithMessages => ({
-	chat: makeChat(chatId, overrides),
-	messages: [],
-	queued_messages: [],
-});
-
 const createTestQueryClient = (): QueryClient =>
 	new QueryClient({
 		defaultOptions: {
@@ -99,17 +101,15 @@ describe("archiveChat optimistic update", () => {
 		const queryClient = createTestQueryClient();
 		const chatId = "chat-1";
 		seedInfiniteChats(queryClient, [makeChat(chatId)]);
-		queryClient.setQueryData(chatKey(chatId), makeChatWithMessages(chatId));
+		queryClient.setQueryData(chatKey(chatId), makeChat(chatId));
 
 		vi.mocked(API.archiveChat).mockResolvedValue();
 
 		const mutation = archiveChat(queryClient);
 		await mutation.onMutate(chatId);
 
-		const cachedChat = queryClient.getQueryData<TypesGen.ChatWithMessages>(
-			chatKey(chatId),
-		);
-		expect(cachedChat?.chat.archived).toBe(true);
+		const cachedChat = queryClient.getQueryData<TypesGen.Chat>(chatKey(chatId));
+		expect(cachedChat?.archived).toBe(true);
 	});
 
 	it("rolls back the chats list on error by invalidating", async () => {
@@ -117,7 +117,7 @@ describe("archiveChat optimistic update", () => {
 		const chatId = "chat-1";
 		const initialChats = [makeChat(chatId)];
 		seedInfiniteChats(queryClient, initialChats);
-		queryClient.setQueryData(chatKey(chatId), makeChatWithMessages(chatId));
+		queryClient.setQueryData(chatKey(chatId), makeChat(chatId));
 		const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
 
 		const mutation = archiveChat(queryClient);
@@ -139,22 +139,19 @@ describe("archiveChat optimistic update", () => {
 		const queryClient = createTestQueryClient();
 		const chatId = "chat-1";
 		seedInfiniteChats(queryClient, [makeChat(chatId)]);
-		queryClient.setQueryData(chatKey(chatId), makeChatWithMessages(chatId));
+		queryClient.setQueryData(chatKey(chatId), makeChat(chatId));
 
 		const mutation = archiveChat(queryClient);
 		const context = await mutation.onMutate(chatId);
 
 		expect(
-			queryClient.getQueryData<TypesGen.ChatWithMessages>(chatKey(chatId))?.chat
-				.archived,
+			queryClient.getQueryData<TypesGen.Chat>(chatKey(chatId))?.archived,
 		).toBe(true);
 
 		mutation.onError(new Error("server error"), chatId, context);
 
-		const rolledBack = queryClient.getQueryData<TypesGen.ChatWithMessages>(
-			chatKey(chatId),
-		);
-		expect(rolledBack?.chat.archived).toBe(false);
+		const rolledBack = queryClient.getQueryData<TypesGen.Chat>(chatKey(chatId));
+		expect(rolledBack?.archived).toBe(false);
 	});
 
 	it("handles error rollback gracefully when context is undefined", () => {
@@ -226,15 +223,14 @@ describe("unarchiveChat optimistic update", () => {
 		seedInfiniteChats(queryClient, [makeChat(chatId, { archived: true })]);
 		queryClient.setQueryData(
 			chatKey(chatId),
-			makeChatWithMessages(chatId, { archived: true }),
+			makeChat(chatId, { archived: true }),
 		);
 
 		const mutation = unarchiveChat(queryClient);
 		await mutation.onMutate(chatId);
 
 		expect(
-			queryClient.getQueryData<TypesGen.ChatWithMessages>(chatKey(chatId))?.chat
-				.archived,
+			queryClient.getQueryData<TypesGen.Chat>(chatKey(chatId))?.archived,
 		).toBe(false);
 	});
 
@@ -244,7 +240,7 @@ describe("unarchiveChat optimistic update", () => {
 		seedInfiniteChats(queryClient, [makeChat(chatId, { archived: true })]);
 		queryClient.setQueryData(
 			chatKey(chatId),
-			makeChatWithMessages(chatId, { archived: true }),
+			makeChat(chatId, { archived: true }),
 		);
 		const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
 
@@ -254,8 +250,7 @@ describe("unarchiveChat optimistic update", () => {
 		// Verify optimistic update.
 		expect(readInfiniteChats(queryClient)?.[0].archived).toBe(false);
 		expect(
-			queryClient.getQueryData<TypesGen.ChatWithMessages>(chatKey(chatId))?.chat
-				.archived,
+			queryClient.getQueryData<TypesGen.Chat>(chatKey(chatId))?.archived,
 		).toBe(false);
 
 		// Roll back.
@@ -267,8 +262,7 @@ describe("unarchiveChat optimistic update", () => {
 		});
 		// The individual chat cache is restored directly.
 		expect(
-			queryClient.getQueryData<TypesGen.ChatWithMessages>(chatKey(chatId))?.chat
-				.archived,
+			queryClient.getQueryData<TypesGen.Chat>(chatKey(chatId))?.archived,
 		).toBe(true);
 	});
 
@@ -286,5 +280,51 @@ describe("unarchiveChat optimistic update", () => {
 		expect(invalidateSpy).toHaveBeenCalledWith({
 			queryKey: chatKey(chatId),
 		});
+	});
+});
+
+describe("chat cost query factories", () => {
+	it("builds the summary query key and forwards snake_case params", async () => {
+		const user = "user-1";
+		const params = {
+			start_date: "2025-01-01",
+			end_date: "2025-01-31",
+		};
+		vi.mocked(API.getChatCostSummary).mockResolvedValue(
+			{} as TypesGen.ChatCostSummary,
+		);
+
+		const query = chatCostSummary(user, params);
+
+		expect(chatCostSummaryKey(user, params)).toEqual([
+			"chats",
+			"costSummary",
+			user,
+			params,
+		]);
+		expect(query.queryKey).toEqual(["chats", "costSummary", user, params]);
+		await query.queryFn();
+		expect(API.getChatCostSummary).toHaveBeenCalledWith(user, params);
+	});
+
+	it("builds a distinct users query key and forwards snake_case params", async () => {
+		const params = {
+			start_date: "2025-01-01",
+			end_date: "2025-01-31",
+			username: "alice",
+			limit: 10,
+			offset: 20,
+		};
+		vi.mocked(API.getChatCostUsers).mockResolvedValue(
+			{} as TypesGen.ChatCostUsersResponse,
+		);
+
+		const query = chatCostUsers(params);
+
+		expect(chatCostUsersKey(params)).toEqual(["chats", "costUsers", params]);
+		expect(query.queryKey).toEqual(["chats", "costUsers", params]);
+		expect(query.queryKey).not.toEqual(chatCostSummaryKey("me", params));
+		await query.queryFn();
+		expect(API.getChatCostUsers).toHaveBeenCalledWith(params);
 	});
 });
