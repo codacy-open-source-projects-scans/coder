@@ -432,15 +432,17 @@ func (api *API) chatCostSummary(rw http.ResponseWriter, r *http.Request) {
 	}
 
 	httpapi.Write(ctx, rw, http.StatusOK, codersdk.ChatCostSummary{
-		StartDate:            startDate,
-		EndDate:              endDate,
-		TotalCostMicros:      summary.TotalCostMicros,
-		PricedMessageCount:   summary.PricedMessageCount,
-		UnpricedMessageCount: summary.UnpricedMessageCount,
-		TotalInputTokens:     summary.TotalInputTokens,
-		TotalOutputTokens:    summary.TotalOutputTokens,
-		ByModel:              modelBreakdowns,
-		ByChat:               chatBreakdowns,
+		StartDate:                startDate,
+		EndDate:                  endDate,
+		TotalCostMicros:          summary.TotalCostMicros,
+		PricedMessageCount:       summary.PricedMessageCount,
+		UnpricedMessageCount:     summary.UnpricedMessageCount,
+		TotalInputTokens:         summary.TotalInputTokens,
+		TotalOutputTokens:        summary.TotalOutputTokens,
+		TotalCacheReadTokens:     summary.TotalCacheReadTokens,
+		TotalCacheCreationTokens: summary.TotalCacheCreationTokens,
+		ByModel:                  modelBreakdowns,
+		ByChat:                   chatBreakdowns,
 	})
 }
 
@@ -759,6 +761,19 @@ func (api *API) watchChatDesktop(rw http.ResponseWriter, r *http.Request) {
 		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
 			Message: "Chat has no workspace.",
 		})
+		return
+	}
+
+	workspace, err := api.Database.GetWorkspaceByID(ctx, chat.WorkspaceID.UUID)
+	if err != nil {
+		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
+			Message: "Chat workspace not found.",
+		})
+		return
+	}
+	if !api.Authorize(r, policy.ActionApplicationConnect, workspace) &&
+		!api.Authorize(r, policy.ActionSSH, workspace) {
+		httpapi.Forbidden(rw)
 		return
 	}
 
@@ -2488,39 +2503,45 @@ func convertChatCostModelBreakdown(model database.GetChatCostPerModelRow) coders
 		displayName = model.Model
 	}
 	return codersdk.ChatCostModelBreakdown{
-		ModelConfigID:     model.ModelConfigID,
-		DisplayName:       displayName,
-		Provider:          model.Provider,
-		Model:             model.Model,
-		TotalCostMicros:   model.TotalCostMicros,
-		MessageCount:      model.MessageCount,
-		TotalInputTokens:  model.TotalInputTokens,
-		TotalOutputTokens: model.TotalOutputTokens,
+		ModelConfigID:            model.ModelConfigID,
+		DisplayName:              displayName,
+		Provider:                 model.Provider,
+		Model:                    model.Model,
+		TotalCostMicros:          model.TotalCostMicros,
+		MessageCount:             model.MessageCount,
+		TotalInputTokens:         model.TotalInputTokens,
+		TotalOutputTokens:        model.TotalOutputTokens,
+		TotalCacheReadTokens:     model.TotalCacheReadTokens,
+		TotalCacheCreationTokens: model.TotalCacheCreationTokens,
 	}
 }
 
 func convertChatCostChatBreakdown(chat database.GetChatCostPerChatRow) codersdk.ChatCostChatBreakdown {
 	return codersdk.ChatCostChatBreakdown{
-		RootChatID:        chat.RootChatID,
-		ChatTitle:         chat.ChatTitle,
-		TotalCostMicros:   chat.TotalCostMicros,
-		MessageCount:      chat.MessageCount,
-		TotalInputTokens:  chat.TotalInputTokens,
-		TotalOutputTokens: chat.TotalOutputTokens,
+		RootChatID:               chat.RootChatID,
+		ChatTitle:                chat.ChatTitle,
+		TotalCostMicros:          chat.TotalCostMicros,
+		MessageCount:             chat.MessageCount,
+		TotalInputTokens:         chat.TotalInputTokens,
+		TotalOutputTokens:        chat.TotalOutputTokens,
+		TotalCacheReadTokens:     chat.TotalCacheReadTokens,
+		TotalCacheCreationTokens: chat.TotalCacheCreationTokens,
 	}
 }
 
 func convertChatCostUserRollup(user database.GetChatCostPerUserRow) codersdk.ChatCostUserRollup {
 	return codersdk.ChatCostUserRollup{
-		UserID:            user.UserID,
-		Username:          user.Username,
-		Name:              user.Name,
-		AvatarURL:         user.AvatarURL,
-		TotalCostMicros:   user.TotalCostMicros,
-		MessageCount:      user.MessageCount,
-		ChatCount:         user.ChatCount,
-		TotalInputTokens:  user.TotalInputTokens,
-		TotalOutputTokens: user.TotalOutputTokens,
+		UserID:                   user.UserID,
+		Username:                 user.Username,
+		Name:                     user.Name,
+		AvatarURL:                user.AvatarURL,
+		TotalCostMicros:          user.TotalCostMicros,
+		MessageCount:             user.MessageCount,
+		ChatCount:                user.ChatCount,
+		TotalInputTokens:         user.TotalInputTokens,
+		TotalOutputTokens:        user.TotalOutputTokens,
+		TotalCacheReadTokens:     user.TotalCacheReadTokens,
+		TotalCacheCreationTokens: user.TotalCacheCreationTokens,
 	}
 }
 
@@ -2607,6 +2628,9 @@ func convertChatDiffStatus(chatID uuid.UUID, status *database.ChatDiffStatus) co
 	}
 	if status.BaseBranch.Valid {
 		result.BaseBranch = &status.BaseBranch.String
+	}
+	if status.HeadBranch.Valid {
+		result.HeadBranch = &status.HeadBranch.String
 	}
 	if status.PrNumber.Valid {
 		result.PRNumber = &status.PrNumber.Int32

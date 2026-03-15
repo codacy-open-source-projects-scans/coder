@@ -3030,10 +3030,10 @@ WITH acquired AS (
             LIMIT
                 $1::int
         )
-    RETURNING chat_id, url, pull_request_state, changes_requested, additions, deletions, changed_files, refreshed_at, stale_at, created_at, updated_at, git_branch, git_remote_origin, pull_request_title, pull_request_draft, author_login, author_avatar_url, base_branch, pr_number, commits, approved, reviewer_count
+    RETURNING chat_id, url, pull_request_state, changes_requested, additions, deletions, changed_files, refreshed_at, stale_at, created_at, updated_at, git_branch, git_remote_origin, pull_request_title, pull_request_draft, author_login, author_avatar_url, base_branch, pr_number, commits, approved, reviewer_count, head_branch
 )
 SELECT
-    acquired.chat_id, acquired.url, acquired.pull_request_state, acquired.changes_requested, acquired.additions, acquired.deletions, acquired.changed_files, acquired.refreshed_at, acquired.stale_at, acquired.created_at, acquired.updated_at, acquired.git_branch, acquired.git_remote_origin, acquired.pull_request_title, acquired.pull_request_draft, acquired.author_login, acquired.author_avatar_url, acquired.base_branch, acquired.pr_number, acquired.commits, acquired.approved, acquired.reviewer_count,
+    acquired.chat_id, acquired.url, acquired.pull_request_state, acquired.changes_requested, acquired.additions, acquired.deletions, acquired.changed_files, acquired.refreshed_at, acquired.stale_at, acquired.created_at, acquired.updated_at, acquired.git_branch, acquired.git_remote_origin, acquired.pull_request_title, acquired.pull_request_draft, acquired.author_login, acquired.author_avatar_url, acquired.base_branch, acquired.pr_number, acquired.commits, acquired.approved, acquired.reviewer_count, acquired.head_branch,
     c.owner_id
 FROM
     acquired
@@ -3064,6 +3064,7 @@ type AcquireStaleChatDiffStatusesRow struct {
 	Commits          sql.NullInt32  `db:"commits" json:"commits"`
 	Approved         sql.NullBool   `db:"approved" json:"approved"`
 	ReviewerCount    sql.NullInt32  `db:"reviewer_count" json:"reviewer_count"`
+	HeadBranch       sql.NullString `db:"head_branch" json:"head_branch"`
 	OwnerID          uuid.UUID      `db:"owner_id" json:"owner_id"`
 }
 
@@ -3099,6 +3100,7 @@ func (q *sqlQuerier) AcquireStaleChatDiffStatuses(ctx context.Context, limitVal 
 			&i.Commits,
 			&i.Approved,
 			&i.ReviewerCount,
+			&i.HeadBranch,
 			&i.OwnerID,
 		); err != nil {
 			return nil, err
@@ -3259,7 +3261,9 @@ WITH chat_costs AS (
                 OR cm.cache_read_tokens IS NOT NULL
         )::bigint AS message_count,
         COALESCE(SUM(cm.input_tokens), 0)::bigint AS total_input_tokens,
-        COALESCE(SUM(cm.output_tokens), 0)::bigint AS total_output_tokens
+        COALESCE(SUM(cm.output_tokens), 0)::bigint AS total_output_tokens,
+        COALESCE(SUM(cm.cache_read_tokens), 0)::bigint AS total_cache_read_tokens,
+        COALESCE(SUM(cm.cache_creation_tokens), 0)::bigint AS total_cache_creation_tokens
     FROM chat_messages cm
     JOIN chats c ON c.id = cm.chat_id
     WHERE c.owner_id = $1::uuid
@@ -3274,7 +3278,9 @@ SELECT
     cc.total_cost_micros,
     cc.message_count,
     cc.total_input_tokens,
-    cc.total_output_tokens
+    cc.total_output_tokens,
+    cc.total_cache_read_tokens,
+    cc.total_cache_creation_tokens
 FROM chat_costs cc
 LEFT JOIN chats rc ON rc.id = cc.root_chat_id
 ORDER BY cc.total_cost_micros DESC
@@ -3287,12 +3293,14 @@ type GetChatCostPerChatParams struct {
 }
 
 type GetChatCostPerChatRow struct {
-	RootChatID        uuid.UUID `db:"root_chat_id" json:"root_chat_id"`
-	ChatTitle         string    `db:"chat_title" json:"chat_title"`
-	TotalCostMicros   int64     `db:"total_cost_micros" json:"total_cost_micros"`
-	MessageCount      int64     `db:"message_count" json:"message_count"`
-	TotalInputTokens  int64     `db:"total_input_tokens" json:"total_input_tokens"`
-	TotalOutputTokens int64     `db:"total_output_tokens" json:"total_output_tokens"`
+	RootChatID               uuid.UUID `db:"root_chat_id" json:"root_chat_id"`
+	ChatTitle                string    `db:"chat_title" json:"chat_title"`
+	TotalCostMicros          int64     `db:"total_cost_micros" json:"total_cost_micros"`
+	MessageCount             int64     `db:"message_count" json:"message_count"`
+	TotalInputTokens         int64     `db:"total_input_tokens" json:"total_input_tokens"`
+	TotalOutputTokens        int64     `db:"total_output_tokens" json:"total_output_tokens"`
+	TotalCacheReadTokens     int64     `db:"total_cache_read_tokens" json:"total_cache_read_tokens"`
+	TotalCacheCreationTokens int64     `db:"total_cache_creation_tokens" json:"total_cache_creation_tokens"`
 }
 
 // Per-root-chat cost breakdown for a single user within a date range.
@@ -3314,6 +3322,8 @@ func (q *sqlQuerier) GetChatCostPerChat(ctx context.Context, arg GetChatCostPerC
 			&i.MessageCount,
 			&i.TotalInputTokens,
 			&i.TotalOutputTokens,
+			&i.TotalCacheReadTokens,
+			&i.TotalCacheCreationTokens,
 		); err != nil {
 			return nil, err
 		}
@@ -3343,7 +3353,9 @@ SELECT
             OR cm.cache_read_tokens IS NOT NULL
     )::bigint AS message_count,
     COALESCE(SUM(cm.input_tokens), 0)::bigint AS total_input_tokens,
-    COALESCE(SUM(cm.output_tokens), 0)::bigint AS total_output_tokens
+    COALESCE(SUM(cm.output_tokens), 0)::bigint AS total_output_tokens,
+    COALESCE(SUM(cm.cache_read_tokens), 0)::bigint AS total_cache_read_tokens,
+    COALESCE(SUM(cm.cache_creation_tokens), 0)::bigint AS total_cache_creation_tokens
 FROM
     chat_messages cm
 JOIN
@@ -3368,14 +3380,16 @@ type GetChatCostPerModelParams struct {
 }
 
 type GetChatCostPerModelRow struct {
-	ModelConfigID     uuid.UUID `db:"model_config_id" json:"model_config_id"`
-	DisplayName       string    `db:"display_name" json:"display_name"`
-	Provider          string    `db:"provider" json:"provider"`
-	Model             string    `db:"model" json:"model"`
-	TotalCostMicros   int64     `db:"total_cost_micros" json:"total_cost_micros"`
-	MessageCount      int64     `db:"message_count" json:"message_count"`
-	TotalInputTokens  int64     `db:"total_input_tokens" json:"total_input_tokens"`
-	TotalOutputTokens int64     `db:"total_output_tokens" json:"total_output_tokens"`
+	ModelConfigID            uuid.UUID `db:"model_config_id" json:"model_config_id"`
+	DisplayName              string    `db:"display_name" json:"display_name"`
+	Provider                 string    `db:"provider" json:"provider"`
+	Model                    string    `db:"model" json:"model"`
+	TotalCostMicros          int64     `db:"total_cost_micros" json:"total_cost_micros"`
+	MessageCount             int64     `db:"message_count" json:"message_count"`
+	TotalInputTokens         int64     `db:"total_input_tokens" json:"total_input_tokens"`
+	TotalOutputTokens        int64     `db:"total_output_tokens" json:"total_output_tokens"`
+	TotalCacheReadTokens     int64     `db:"total_cache_read_tokens" json:"total_cache_read_tokens"`
+	TotalCacheCreationTokens int64     `db:"total_cache_creation_tokens" json:"total_cache_creation_tokens"`
 }
 
 // Per-model cost breakdown for a single user within a date range.
@@ -3398,6 +3412,8 @@ func (q *sqlQuerier) GetChatCostPerModel(ctx context.Context, arg GetChatCostPer
 			&i.MessageCount,
 			&i.TotalInputTokens,
 			&i.TotalOutputTokens,
+			&i.TotalCacheReadTokens,
+			&i.TotalCacheCreationTokens,
 		); err != nil {
 			return nil, err
 		}
@@ -3429,7 +3445,9 @@ WITH chat_cost_users AS (
         )::bigint AS message_count,
         COUNT(DISTINCT COALESCE(c.root_chat_id, c.id))::bigint AS chat_count,
         COALESCE(SUM(cm.input_tokens), 0)::bigint AS total_input_tokens,
-        COALESCE(SUM(cm.output_tokens), 0)::bigint AS total_output_tokens
+        COALESCE(SUM(cm.output_tokens), 0)::bigint AS total_output_tokens,
+        COALESCE(SUM(cm.cache_read_tokens), 0)::bigint AS total_cache_read_tokens,
+        COALESCE(SUM(cm.cache_creation_tokens), 0)::bigint AS total_cache_creation_tokens
     FROM
         chat_messages cm
     JOIN
@@ -3460,6 +3478,8 @@ SELECT
     chat_count,
     total_input_tokens,
     total_output_tokens,
+    total_cache_read_tokens,
+    total_cache_creation_tokens,
     COUNT(*) OVER()::bigint AS total_count
 FROM
     chat_cost_users
@@ -3481,16 +3501,18 @@ type GetChatCostPerUserParams struct {
 }
 
 type GetChatCostPerUserRow struct {
-	UserID            uuid.UUID `db:"user_id" json:"user_id"`
-	Username          string    `db:"username" json:"username"`
-	Name              string    `db:"name" json:"name"`
-	AvatarURL         string    `db:"avatar_url" json:"avatar_url"`
-	TotalCostMicros   int64     `db:"total_cost_micros" json:"total_cost_micros"`
-	MessageCount      int64     `db:"message_count" json:"message_count"`
-	ChatCount         int64     `db:"chat_count" json:"chat_count"`
-	TotalInputTokens  int64     `db:"total_input_tokens" json:"total_input_tokens"`
-	TotalOutputTokens int64     `db:"total_output_tokens" json:"total_output_tokens"`
-	TotalCount        int64     `db:"total_count" json:"total_count"`
+	UserID                   uuid.UUID `db:"user_id" json:"user_id"`
+	Username                 string    `db:"username" json:"username"`
+	Name                     string    `db:"name" json:"name"`
+	AvatarURL                string    `db:"avatar_url" json:"avatar_url"`
+	TotalCostMicros          int64     `db:"total_cost_micros" json:"total_cost_micros"`
+	MessageCount             int64     `db:"message_count" json:"message_count"`
+	ChatCount                int64     `db:"chat_count" json:"chat_count"`
+	TotalInputTokens         int64     `db:"total_input_tokens" json:"total_input_tokens"`
+	TotalOutputTokens        int64     `db:"total_output_tokens" json:"total_output_tokens"`
+	TotalCacheReadTokens     int64     `db:"total_cache_read_tokens" json:"total_cache_read_tokens"`
+	TotalCacheCreationTokens int64     `db:"total_cache_creation_tokens" json:"total_cache_creation_tokens"`
+	TotalCount               int64     `db:"total_count" json:"total_count"`
 }
 
 // Deployment-wide per-user cost rollup within a date range.
@@ -3520,6 +3542,8 @@ func (q *sqlQuerier) GetChatCostPerUser(ctx context.Context, arg GetChatCostPerU
 			&i.ChatCount,
 			&i.TotalInputTokens,
 			&i.TotalOutputTokens,
+			&i.TotalCacheReadTokens,
+			&i.TotalCacheCreationTokens,
 			&i.TotalCount,
 		); err != nil {
 			return nil, err
@@ -3552,7 +3576,9 @@ SELECT
             )
     )::bigint AS unpriced_message_count,
     COALESCE(SUM(cm.input_tokens), 0)::bigint AS total_input_tokens,
-    COALESCE(SUM(cm.output_tokens), 0)::bigint AS total_output_tokens
+    COALESCE(SUM(cm.output_tokens), 0)::bigint AS total_output_tokens,
+    COALESCE(SUM(cm.cache_read_tokens), 0)::bigint AS total_cache_read_tokens,
+    COALESCE(SUM(cm.cache_creation_tokens), 0)::bigint AS total_cache_creation_tokens
 FROM
     chat_messages cm
 JOIN
@@ -3571,11 +3597,13 @@ type GetChatCostSummaryParams struct {
 }
 
 type GetChatCostSummaryRow struct {
-	TotalCostMicros      int64 `db:"total_cost_micros" json:"total_cost_micros"`
-	PricedMessageCount   int64 `db:"priced_message_count" json:"priced_message_count"`
-	UnpricedMessageCount int64 `db:"unpriced_message_count" json:"unpriced_message_count"`
-	TotalInputTokens     int64 `db:"total_input_tokens" json:"total_input_tokens"`
-	TotalOutputTokens    int64 `db:"total_output_tokens" json:"total_output_tokens"`
+	TotalCostMicros          int64 `db:"total_cost_micros" json:"total_cost_micros"`
+	PricedMessageCount       int64 `db:"priced_message_count" json:"priced_message_count"`
+	UnpricedMessageCount     int64 `db:"unpriced_message_count" json:"unpriced_message_count"`
+	TotalInputTokens         int64 `db:"total_input_tokens" json:"total_input_tokens"`
+	TotalOutputTokens        int64 `db:"total_output_tokens" json:"total_output_tokens"`
+	TotalCacheReadTokens     int64 `db:"total_cache_read_tokens" json:"total_cache_read_tokens"`
+	TotalCacheCreationTokens int64 `db:"total_cache_creation_tokens" json:"total_cache_creation_tokens"`
 }
 
 // Aggregate cost summary for a single user within a date range.
@@ -3589,13 +3617,15 @@ func (q *sqlQuerier) GetChatCostSummary(ctx context.Context, arg GetChatCostSumm
 		&i.UnpricedMessageCount,
 		&i.TotalInputTokens,
 		&i.TotalOutputTokens,
+		&i.TotalCacheReadTokens,
+		&i.TotalCacheCreationTokens,
 	)
 	return i, err
 }
 
 const getChatDiffStatusByChatID = `-- name: GetChatDiffStatusByChatID :one
 SELECT
-    chat_id, url, pull_request_state, changes_requested, additions, deletions, changed_files, refreshed_at, stale_at, created_at, updated_at, git_branch, git_remote_origin, pull_request_title, pull_request_draft, author_login, author_avatar_url, base_branch, pr_number, commits, approved, reviewer_count
+    chat_id, url, pull_request_state, changes_requested, additions, deletions, changed_files, refreshed_at, stale_at, created_at, updated_at, git_branch, git_remote_origin, pull_request_title, pull_request_draft, author_login, author_avatar_url, base_branch, pr_number, commits, approved, reviewer_count, head_branch
 FROM
     chat_diff_statuses
 WHERE
@@ -3628,13 +3658,14 @@ func (q *sqlQuerier) GetChatDiffStatusByChatID(ctx context.Context, chatID uuid.
 		&i.Commits,
 		&i.Approved,
 		&i.ReviewerCount,
+		&i.HeadBranch,
 	)
 	return i, err
 }
 
 const getChatDiffStatusesByChatIDs = `-- name: GetChatDiffStatusesByChatIDs :many
 SELECT
-    chat_id, url, pull_request_state, changes_requested, additions, deletions, changed_files, refreshed_at, stale_at, created_at, updated_at, git_branch, git_remote_origin, pull_request_title, pull_request_draft, author_login, author_avatar_url, base_branch, pr_number, commits, approved, reviewer_count
+    chat_id, url, pull_request_state, changes_requested, additions, deletions, changed_files, refreshed_at, stale_at, created_at, updated_at, git_branch, git_remote_origin, pull_request_title, pull_request_draft, author_login, author_avatar_url, base_branch, pr_number, commits, approved, reviewer_count, head_branch
 FROM
     chat_diff_statuses
 WHERE
@@ -3673,6 +3704,7 @@ func (q *sqlQuerier) GetChatDiffStatusesByChatIDs(ctx context.Context, chatIds [
 			&i.Commits,
 			&i.Approved,
 			&i.ReviewerCount,
+			&i.HeadBranch,
 		); err != nil {
 			return nil, err
 		}
@@ -4558,6 +4590,7 @@ INSERT INTO chat_diff_statuses (
     author_login,
     author_avatar_url,
     base_branch,
+    head_branch,
     pr_number,
     commits,
     approved,
@@ -4577,12 +4610,13 @@ INSERT INTO chat_diff_statuses (
     $10::text,
     $11::text,
     $12::text,
-    $13::integer,
+    $13::text,
     $14::integer,
-    $15::boolean,
-    $16::integer,
-    $17::timestamptz,
-    $18::timestamptz
+    $15::integer,
+    $16::boolean,
+    $17::integer,
+    $18::timestamptz,
+    $19::timestamptz
 )
 ON CONFLICT (chat_id) DO UPDATE
 SET
@@ -4597,6 +4631,7 @@ SET
     author_login = EXCLUDED.author_login,
     author_avatar_url = EXCLUDED.author_avatar_url,
     base_branch = EXCLUDED.base_branch,
+    head_branch = EXCLUDED.head_branch,
     pr_number = EXCLUDED.pr_number,
     commits = EXCLUDED.commits,
     approved = EXCLUDED.approved,
@@ -4605,7 +4640,7 @@ SET
     stale_at = EXCLUDED.stale_at,
     updated_at = NOW()
 RETURNING
-    chat_id, url, pull_request_state, changes_requested, additions, deletions, changed_files, refreshed_at, stale_at, created_at, updated_at, git_branch, git_remote_origin, pull_request_title, pull_request_draft, author_login, author_avatar_url, base_branch, pr_number, commits, approved, reviewer_count
+    chat_id, url, pull_request_state, changes_requested, additions, deletions, changed_files, refreshed_at, stale_at, created_at, updated_at, git_branch, git_remote_origin, pull_request_title, pull_request_draft, author_login, author_avatar_url, base_branch, pr_number, commits, approved, reviewer_count, head_branch
 `
 
 type UpsertChatDiffStatusParams struct {
@@ -4621,6 +4656,7 @@ type UpsertChatDiffStatusParams struct {
 	AuthorLogin      sql.NullString `db:"author_login" json:"author_login"`
 	AuthorAvatarUrl  sql.NullString `db:"author_avatar_url" json:"author_avatar_url"`
 	BaseBranch       sql.NullString `db:"base_branch" json:"base_branch"`
+	HeadBranch       sql.NullString `db:"head_branch" json:"head_branch"`
 	PrNumber         sql.NullInt32  `db:"pr_number" json:"pr_number"`
 	Commits          sql.NullInt32  `db:"commits" json:"commits"`
 	Approved         sql.NullBool   `db:"approved" json:"approved"`
@@ -4643,6 +4679,7 @@ func (q *sqlQuerier) UpsertChatDiffStatus(ctx context.Context, arg UpsertChatDif
 		arg.AuthorLogin,
 		arg.AuthorAvatarUrl,
 		arg.BaseBranch,
+		arg.HeadBranch,
 		arg.PrNumber,
 		arg.Commits,
 		arg.Approved,
@@ -4674,6 +4711,7 @@ func (q *sqlQuerier) UpsertChatDiffStatus(ctx context.Context, arg UpsertChatDif
 		&i.Commits,
 		&i.Approved,
 		&i.ReviewerCount,
+		&i.HeadBranch,
 	)
 	return i, err
 }
@@ -4709,7 +4747,7 @@ SET
     stale_at = EXCLUDED.stale_at,
     updated_at = NOW()
 RETURNING
-    chat_id, url, pull_request_state, changes_requested, additions, deletions, changed_files, refreshed_at, stale_at, created_at, updated_at, git_branch, git_remote_origin, pull_request_title, pull_request_draft, author_login, author_avatar_url, base_branch, pr_number, commits, approved, reviewer_count
+    chat_id, url, pull_request_state, changes_requested, additions, deletions, changed_files, refreshed_at, stale_at, created_at, updated_at, git_branch, git_remote_origin, pull_request_title, pull_request_draft, author_login, author_avatar_url, base_branch, pr_number, commits, approved, reviewer_count, head_branch
 `
 
 type UpsertChatDiffStatusReferenceParams struct {
@@ -4752,6 +4790,7 @@ func (q *sqlQuerier) UpsertChatDiffStatusReference(ctx context.Context, arg Upse
 		&i.Commits,
 		&i.Approved,
 		&i.ReviewerCount,
+		&i.HeadBranch,
 	)
 	return i, err
 }
