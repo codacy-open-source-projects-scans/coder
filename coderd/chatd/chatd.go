@@ -14,6 +14,7 @@ import (
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/anthropic"
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 	"github.com/sqlc-dev/pqtype"
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/xerrors"
@@ -172,6 +173,27 @@ var (
 	errChatTakenByOtherWorker = xerrors.New("chat acquired by another worker")
 )
 
+// UsageLimitExceededError indicates the user has exceeded their chat spend
+// limit.
+type UsageLimitExceededError struct {
+	LimitMicros    int64
+	ConsumedMicros int64
+	PeriodEnd      time.Time
+}
+
+func formatMicrosAsDollars(micros int64) string {
+	return "$" + decimal.NewFromInt(micros).Shift(-6).StringFixed(2)
+}
+
+func (e *UsageLimitExceededError) Error() string {
+	return fmt.Sprintf(
+		"usage limit exceeded: spent %s of %s limit, resets at %s",
+		formatMicrosAsDollars(e.ConsumedMicros),
+		formatMicrosAsDollars(e.LimitMicros),
+		e.PeriodEnd.Format(time.RFC3339),
+	)
+}
+
 // CreateOptions controls chat creation in the shared chat mutation path.
 type CreateOptions struct {
 	OwnerID            uuid.UUID
@@ -257,6 +279,10 @@ func (p *Server) CreateChat(ctx context.Context, opts CreateOptions) (database.C
 
 	var chat database.Chat
 	txErr := p.db.InTx(func(tx database.Store) error {
+		if limitErr := p.checkUsageLimit(ctx, tx, opts.OwnerID); limitErr != nil {
+			return limitErr
+		}
+
 		insertedChat, err := tx.InsertChat(ctx, database.InsertChatParams{
 			OwnerID:           opts.OwnerID,
 			WorkspaceID:       opts.WorkspaceID,
@@ -347,7 +373,7 @@ func (p *Server) CreateChat(ctx context.Context, opts CreateOptions) (database.C
 		return database.Chat{}, txErr
 	}
 
-	p.publishChatPubsubEvent(chat, coderdpubsub.ChatEventKindCreated)
+	p.publishChatPubsubEvent(chat, coderdpubsub.ChatEventKindCreated, nil)
 	return chat, nil
 }
 
@@ -389,24 +415,33 @@ func (p *Server) SendMessage(
 		if err != nil {
 			return xerrors.Errorf("lock chat: %w", err)
 		}
+
+		// Enforce usage limits before queueing or inserting.
+		if limitErr := p.checkUsageLimit(ctx, tx, lockedChat.OwnerID); limitErr != nil {
+			return limitErr
+		}
+
 		modelConfigID := lockedChat.LastModelConfigID
 		if opts.ModelConfigID != nil {
 			modelConfigID = *opts.ModelConfigID
 		}
 
+		existingQueued, err := tx.GetChatQueuedMessages(ctx, opts.ChatID)
+		if err != nil {
+			return xerrors.Errorf("get queued messages: %w", err)
+		}
+
 		// Both queue and interrupt behaviors queue messages
-		// when the chat is busy. Interrupt additionally
-		// signals the running loop to stop so the queued
-		// message is promoted sooner. Crucially, this
-		// guarantees the interrupted assistant response is
-		// persisted (with a lower id/created_at) before the
-		// user message is promoted into chat_messages,
-		// preserving correct conversation order.
-		if shouldQueueUserMessage(lockedChat.Status) {
-			existingQueued, err := tx.GetChatQueuedMessages(ctx, opts.ChatID)
-			if err != nil {
-				return xerrors.Errorf("get queued messages: %w", err)
-			}
+		// when the chat is busy. We also keep queueing while a
+		// backlog exists so waiting chats blocked by spend limits
+		// preserve FIFO user-message order. Interrupt additionally
+		// signals the running loop to stop so the queued message
+		// is promoted sooner. Crucially, this guarantees the
+		// interrupted assistant response is persisted (with a
+		// lower id/created_at) before the user message is
+		// promoted into chat_messages, preserving correct
+		// conversation order.
+		if shouldQueueUserMessage(lockedChat.Status) || len(existingQueued) > 0 {
 			if len(existingQueued) >= MaxQueueSize {
 				return ErrMessageQueueFull
 			}
@@ -488,8 +523,33 @@ func (p *Server) SendMessage(
 
 	p.publishMessage(opts.ChatID, result.Message)
 	p.publishStatus(opts.ChatID, result.Chat.Status, result.Chat.WorkerID)
-	p.publishChatPubsubEvent(result.Chat, coderdpubsub.ChatEventKindStatusChange)
+	p.publishChatPubsubEvent(result.Chat, coderdpubsub.ChatEventKindStatusChange, nil)
 	return result, nil
+}
+
+func (p *Server) checkUsageLimit(ctx context.Context, store database.Store, ownerID uuid.UUID) error {
+	status, err := ResolveUsageLimitStatus(ctx, store, ownerID, time.Now())
+	if err != nil {
+		// Fail open: never block chat due to a limit-resolution failure.
+		p.logger.Warn(ctx, "usage limit check failed, allowing message",
+			slog.F("owner_id", ownerID),
+			slog.Error(err),
+		)
+		return nil
+	}
+	if status == nil {
+		return nil
+	}
+	// Block when current spend reaches or exceeds limit (>= ensures
+	// the user cannot start new conversations once the limit is hit).
+	if status.SpendLimitMicros != nil && status.CurrentSpend >= *status.SpendLimitMicros {
+		return &UsageLimitExceededError{
+			LimitMicros:    *status.SpendLimitMicros,
+			ConsumedMicros: status.CurrentSpend,
+			PeriodEnd:      status.PeriodEnd,
+		}
+	}
+	return nil
 }
 
 // EditMessage updates a user message in-place, truncates all following messages,
@@ -515,9 +575,13 @@ func (p *Server) EditMessage(
 
 	var result EditMessageResult
 	txErr := p.db.InTx(func(tx database.Store) error {
-		_, err := tx.GetChatByIDForUpdate(ctx, opts.ChatID)
+		lockedChat, err := tx.GetChatByIDForUpdate(ctx, opts.ChatID)
 		if err != nil {
 			return xerrors.Errorf("lock chat: %w", err)
+		}
+
+		if limitErr := p.checkUsageLimit(ctx, tx, lockedChat.OwnerID); limitErr != nil {
+			return limitErr
 		}
 
 		existing, err := tx.GetChatMessageByID(ctx, opts.EditedMessageID)
@@ -585,7 +649,7 @@ func (p *Server) EditMessage(
 		QueueUpdate: true,
 	})
 	p.publishStatus(opts.ChatID, result.Chat.Status, result.Chat.WorkerID)
-	p.publishChatPubsubEvent(result.Chat, coderdpubsub.ChatEventKindStatusChange)
+	p.publishChatPubsubEvent(result.Chat, coderdpubsub.ChatEventKindStatusChange, nil)
 
 	return result, nil
 }
@@ -605,7 +669,7 @@ func (p *Server) ArchiveChat(ctx context.Context, chatID uuid.UUID) error {
 		return xerrors.Errorf("archive chat: %w", err)
 	}
 
-	p.publishChatPubsubEvent(chat, coderdpubsub.ChatEventKindDeleted)
+	p.publishChatPubsubEvent(chat, coderdpubsub.ChatEventKindDeleted, nil)
 	return nil
 }
 
@@ -625,7 +689,7 @@ func (p *Server) UnarchiveChat(ctx context.Context, chatID uuid.UUID) error {
 		return xerrors.Errorf("unarchive chat: %w", err)
 	}
 
-	p.publishChatPubsubEvent(chat, coderdpubsub.ChatEventKindCreated)
+	p.publishChatPubsubEvent(chat, coderdpubsub.ChatEventKindCreated, nil)
 	return nil
 }
 
@@ -780,7 +844,7 @@ func (p *Server) PromoteQueued(
 	})
 	p.publishMessage(opts.ChatID, promoted)
 	p.publishStatus(opts.ChatID, updatedChat.Status, updatedChat.WorkerID)
-	p.publishChatPubsubEvent(updatedChat, coderdpubsub.ChatEventKindStatusChange)
+	p.publishChatPubsubEvent(updatedChat, coderdpubsub.ChatEventKindStatusChange, nil)
 
 	return result, nil
 }
@@ -877,7 +941,7 @@ func (p *Server) setChatWaiting(ctx context.Context, chatID uuid.UUID) (database
 		return database.Chat{}, err
 	}
 	p.publishStatus(chatID, updatedChat.Status, updatedChat.WorkerID)
-	p.publishChatPubsubEvent(updatedChat, coderdpubsub.ChatEventKindStatusChange)
+	p.publishChatPubsubEvent(updatedChat, coderdpubsub.ChatEventKindStatusChange, nil)
 	return updatedChat, nil
 }
 
@@ -1611,7 +1675,7 @@ func (p *Server) publishChatStreamNotify(chatID uuid.UUID, notify coderdpubsub.C
 
 // publishChatPubsubEvent broadcasts a chat lifecycle event via PostgreSQL
 // pubsub so that all replicas can push updates to watching clients.
-func (p *Server) publishChatPubsubEvent(chat database.Chat, kind coderdpubsub.ChatEventKind) {
+func (p *Server) publishChatPubsubEvent(chat database.Chat, kind coderdpubsub.ChatEventKind, diffStatus *codersdk.ChatDiffStatus) {
 	if p.pubsub == nil {
 		return
 	}
@@ -1636,6 +1700,9 @@ func (p *Server) publishChatPubsubEvent(chat database.Chat, kind coderdpubsub.Ch
 	}
 	if chat.WorkspaceID.Valid {
 		sdkChat.WorkspaceID = &chat.WorkspaceID.UUID
+	}
+	if diffStatus != nil {
+		sdkChat.DiffStatus = diffStatus
 	}
 	event := coderdpubsub.ChatEvent{
 		Kind: kind,
@@ -1672,7 +1739,13 @@ func (p *Server) PublishDiffStatusChange(ctx context.Context, chatID uuid.UUID) 
 		return xerrors.Errorf("get chat: %w", err)
 	}
 
-	p.publishChatPubsubEvent(chat, coderdpubsub.ChatEventKindDiffStatusChange)
+	dbStatus, err := p.db.GetChatDiffStatusByChatID(ctx, chatID)
+	if err != nil {
+		return xerrors.Errorf("get chat diff status: %w", err)
+	}
+
+	sdkStatus := db2sdk.ChatDiffStatus(chatID, &dbStatus)
+	p.publishChatPubsubEvent(chat, coderdpubsub.ChatEventKindDiffStatusChange, &sdkStatus)
 	return nil
 }
 
@@ -1840,6 +1913,62 @@ func (p *Server) chatFileResolver() chatprompt.FileResolver {
 	}
 }
 
+// tryAutoPromoteQueuedMessage pops the next queued message and converts it
+// into a pending user message inside the caller's transaction. Queued
+// messages were already admitted through SendMessage, so this preserves FIFO
+// order without re-checking usage limits.
+func (p *Server) tryAutoPromoteQueuedMessage(
+	ctx context.Context,
+	tx database.Store,
+	chat database.Chat,
+) (*database.ChatMessage, []database.ChatQueuedMessage, bool, error) {
+	logger := p.logger.With(slog.F("chat_id", chat.ID))
+
+	nextQueued, err := tx.PopNextQueuedMessage(ctx, chat.ID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil, false, nil
+	}
+	if err != nil {
+		return nil, nil, false, xerrors.Errorf("pop next queued message: %w", err)
+	}
+
+	msg, err := insertChatMessageWithStore(ctx, tx, database.InsertChatMessageParams{
+		ChatID:         chat.ID,
+		ModelConfigID:  uuid.NullUUID{UUID: chat.LastModelConfigID, Valid: true},
+		Role:           database.ChatMessageRoleUser,
+		ContentVersion: chatprompt.CurrentContentVersion,
+		Content: pqtype.NullRawMessage{
+			RawMessage: nextQueued.Content,
+			Valid:      len(nextQueued.Content) > 0,
+		},
+		CreatedBy:           uuid.NullUUID{UUID: chat.OwnerID, Valid: chat.OwnerID != uuid.Nil},
+		Visibility:          database.ChatMessageVisibilityBoth,
+		InputTokens:         sql.NullInt64{},
+		OutputTokens:        sql.NullInt64{},
+		TotalTokens:         sql.NullInt64{},
+		ReasoningTokens:     sql.NullInt64{},
+		CacheCreationTokens: sql.NullInt64{},
+		CacheReadTokens:     sql.NullInt64{},
+		ContextLimit:        sql.NullInt64{},
+		TotalCostMicros:     sql.NullInt64{},
+		Compressed:          sql.NullBool{},
+	})
+	if err != nil {
+		logger.Error(ctx, "failed to promote queued message",
+			slog.F("queued_message_id", nextQueued.ID), slog.Error(err))
+		return nil, nil, false, nil
+	}
+
+	remainingQueuedMessages, err := tx.GetChatQueuedMessages(ctx, chat.ID)
+	if err != nil {
+		logger.Error(ctx, "failed to load remaining queued messages after auto-promotion",
+			slog.F("queued_message_id", nextQueued.ID), slog.Error(err))
+		return &msg, nil, false, nil
+	}
+
+	return &msg, remainingQueuedMessages, true, nil
+}
+
 func (p *Server) processChat(ctx context.Context, chat database.Chat) {
 	logger := p.logger.With(slog.F("chat_id", chat.ID))
 	logger.Info(ctx, "processing chat request")
@@ -1955,43 +2084,14 @@ func (p *Server) processChat(ctx context.Context, chat database.Chat) {
 			if latestChat.Status == database.ChatStatusPending {
 				status = database.ChatStatusPending
 			} else if status == database.ChatStatusWaiting {
-				// Try to auto-promote the next queued message.
-				nextQueued, popErr := tx.PopNextQueuedMessage(cleanupCtx, chat.ID)
-				if popErr == nil {
-					msg, insertErr := tx.InsertChatMessage(cleanupCtx, database.InsertChatMessageParams{
-						ChatID:         chat.ID,
-						ModelConfigID:  uuid.NullUUID{UUID: latestChat.LastModelConfigID, Valid: true},
-						Role:           database.ChatMessageRoleUser,
-						ContentVersion: chatprompt.CurrentContentVersion,
-						Content: pqtype.NullRawMessage{
-							RawMessage: nextQueued.Content,
-							Valid:      len(nextQueued.Content) > 0,
-						},
-						CreatedBy:           uuid.NullUUID{UUID: chat.OwnerID, Valid: chat.OwnerID != uuid.Nil},
-						Visibility:          database.ChatMessageVisibilityBoth,
-						InputTokens:         sql.NullInt64{},
-						OutputTokens:        sql.NullInt64{},
-						TotalTokens:         sql.NullInt64{},
-						ReasoningTokens:     sql.NullInt64{},
-						CacheCreationTokens: sql.NullInt64{},
-						CacheReadTokens:     sql.NullInt64{},
-						ContextLimit:        sql.NullInt64{},
-						TotalCostMicros:     sql.NullInt64{},
-						Compressed:          sql.NullBool{},
-					})
-					if insertErr != nil {
-						logger.Error(cleanupCtx, "failed to promote queued message",
-							slog.F("queued_message_id", nextQueued.ID), slog.Error(insertErr))
-					} else {
-						status = database.ChatStatusPending
-						promotedMessage = &msg
-
-						remaining, qErr := tx.GetChatQueuedMessages(cleanupCtx, chat.ID)
-						if qErr == nil {
-							remainingQueuedMessages = remaining
-							shouldPublishQueueUpdate = true
-						}
-					}
+				// Queued messages were already admitted through SendMessage,
+				// so auto-promotion only preserves FIFO order here.
+				var promoteErr error
+				promotedMessage, remainingQueuedMessages, shouldPublishQueueUpdate, promoteErr = p.tryAutoPromoteQueuedMessage(cleanupCtx, tx, latestChat)
+				if promoteErr != nil {
+					logger.Error(cleanupCtx, "failed to auto-promote queued message", slog.Error(promoteErr))
+				} else if promotedMessage != nil {
+					status = database.ChatStatusPending
 				}
 			}
 
@@ -2041,7 +2141,7 @@ func (p *Server) processChat(ctx context.Context, chat database.Chat) {
 				slog.F("chat_id", chat.ID), slog.Error(readErr))
 		}
 		chat.Status = status
-		p.publishChatPubsubEvent(chat, coderdpubsub.ChatEventKindStatusChange)
+		p.publishChatPubsubEvent(chat, coderdpubsub.ChatEventKindStatusChange, nil)
 
 		if !wasInterrupted {
 			p.maybeSendPushNotification(cleanupCtx, chat, status, lastError, logger)
