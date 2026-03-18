@@ -638,7 +638,7 @@ func TestCreateChatRejectsWhenUsageLimitReached(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	beforeChats, err := db.GetChatsByOwnerID(ctx, database.GetChatsByOwnerIDParams{
+	beforeChats, err := db.GetChats(ctx, database.GetChatsParams{
 		OwnerID:   user.ID,
 		AfterID:   uuid.Nil,
 		OffsetOpt: 0,
@@ -660,7 +660,7 @@ func TestCreateChatRejectsWhenUsageLimitReached(t *testing.T) {
 	require.Equal(t, int64(100), limitErr.LimitMicros)
 	require.Equal(t, int64(100), limitErr.ConsumedMicros)
 
-	afterChats, err := db.GetChatsByOwnerID(ctx, database.GetChatsByOwnerIDParams{
+	afterChats, err := db.GetChats(ctx, database.GetChatsParams{
 		OwnerID:   user.ID,
 		AfterID:   uuid.Nil,
 		OffsetOpt: 0,
@@ -867,6 +867,19 @@ func TestInterruptAutoPromotionIgnoresLaterUsageLimitIncrease(t *testing.T) {
 	require.True(t, queuedResult.Queued)
 	require.NotNil(t, queuedResult.QueuedMessage)
 
+	// Send "later queued" immediately after "queued" while the first
+	// message is still in chat_queued_messages. The existing backlog
+	// (len(existingQueued) > 0) guarantees this is queued regardless
+	// of chat status, avoiding a race where the auto-promoted "queued"
+	// message finishes processing before we can send this.
+	laterQueuedResult, err := server.SendMessage(ctx, chatd.SendMessageOptions{
+		ChatID:  chat.ID,
+		Content: []codersdk.ChatMessagePart{codersdk.ChatMessageText("later queued")},
+	})
+	require.NoError(t, err)
+	require.True(t, laterQueuedResult.Queued)
+	require.NotNil(t, laterQueuedResult.QueuedMessage)
+
 	require.Eventually(t, func() bool {
 		select {
 		case <-interrupted:
@@ -875,14 +888,6 @@ func TestInterruptAutoPromotionIgnoresLaterUsageLimitIncrease(t *testing.T) {
 			return false
 		}
 	}, testutil.WaitMedium, testutil.IntervalFast)
-
-	laterQueuedResult, err := server.SendMessage(ctx, chatd.SendMessageOptions{
-		ChatID:  chat.ID,
-		Content: []codersdk.ChatMessagePart{codersdk.ChatMessageText("later queued")},
-	})
-	require.NoError(t, err)
-	require.True(t, laterQueuedResult.Queued)
-	require.NotNil(t, laterQueuedResult.QueuedMessage)
 
 	spendChat, err := db.InsertChat(ctx, database.InsertChatParams{
 		OwnerID:           user.ID,
@@ -2234,12 +2239,10 @@ func TestSuccessfulChatSendsWebPushWithSummary(t *testing.T) {
 	const assistantText = "I have completed the task successfully and all tests are passing now."
 	const summaryText = "Completed task and verified all tests pass."
 
+	var nonStreamingRequests atomic.Int32
 	openAIURL := chattest.NewOpenAI(t, func(req *chattest.OpenAIRequest) chattest.OpenAIResponse {
 		if !req.Stream {
-			// Non-streaming calls are used for title
-			// generation and push summary generation.
-			// Return the summary text for both — the title
-			// result is irrelevant to this test.
+			nonStreamingRequests.Add(1)
 			return chattest.OpenAINonStreamingResponse(summaryText)
 		}
 		return chattest.OpenAIStreamingResponse(
@@ -2286,6 +2289,63 @@ func TestSuccessfulChatSendsWebPushWithSummary(t *testing.T) {
 		"push body should be the LLM-generated summary")
 	require.NotEqual(t, "Agent has finished running.", msg.Body,
 		"push body should not use the default fallback text")
+	require.Equal(t, int32(1), nonStreamingRequests.Load(),
+		"expected exactly one non-streaming request for push summary generation")
+}
+
+func TestSuccessfulChatSendsWebPushFallbackWithoutSummaryForEmptyAssistantText(t *testing.T) {
+	t.Parallel()
+
+	db, ps := dbtestutil.NewDB(t)
+	ctx := testutil.Context(t, testutil.WaitLong)
+
+	var nonStreamingRequests atomic.Int32
+	openAIURL := chattest.NewOpenAI(t, func(req *chattest.OpenAIRequest) chattest.OpenAIResponse {
+		if !req.Stream {
+			nonStreamingRequests.Add(1)
+			return chattest.OpenAINonStreamingResponse("unexpected summary request")
+		}
+		return chattest.OpenAIStreamingResponse(
+			chattest.OpenAITextChunks("   ")...,
+		)
+	})
+
+	mockPush := &mockWebpushDispatcher{}
+
+	logger := slogtest.Make(t, &slogtest.Options{IgnoreErrors: true})
+	server := chatd.New(chatd.Config{
+		Logger:                     logger,
+		Database:                   db,
+		ReplicaID:                  uuid.New(),
+		Pubsub:                     ps,
+		PendingChatAcquireInterval: 10 * time.Millisecond,
+		InFlightChatStaleAfter:     testutil.WaitSuperLong,
+		WebpushDispatcher:          mockPush,
+	})
+	t.Cleanup(func() {
+		require.NoError(t, server.Close())
+	})
+
+	user, model := seedChatDependencies(ctx, t, db)
+	setOpenAIProviderBaseURL(ctx, t, db, openAIURL)
+
+	_, err := server.CreateChat(ctx, chatd.CreateOptions{
+		OwnerID:            user.ID,
+		Title:              "empty-summary-push-test",
+		ModelConfigID:      model.ID,
+		InitialUserContent: []codersdk.ChatMessagePart{codersdk.ChatMessageText("do the thing")},
+	})
+	require.NoError(t, err)
+
+	testutil.Eventually(ctx, t, func(ctx context.Context) bool {
+		return mockPush.dispatchCount.Load() >= 1
+	}, testutil.IntervalFast)
+
+	msg := mockPush.getLastMessage()
+	require.Equal(t, "Agent has finished running.", msg.Body,
+		"push body should fall back when the final assistant text is empty")
+	require.Equal(t, int32(0), nonStreamingRequests.Load(),
+		"push summary should not be requested when final assistant text has no usable text")
 }
 
 func TestComputerUseSubagentToolsAndModel(t *testing.T) {
@@ -2618,7 +2678,7 @@ func TestComputerUseSubagentToolsAndModel(t *testing.T) {
 
 	// 6. Verify the child chat has Mode = computer_use in
 	//    the DB.
-	allChats, err := db.GetChatsByOwnerID(ctx, database.GetChatsByOwnerIDParams{
+	allChats, err := db.GetChats(ctx, database.GetChatsParams{
 		OwnerID: user.ID,
 	})
 	require.NoError(t, err)

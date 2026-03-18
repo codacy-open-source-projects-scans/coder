@@ -25,12 +25,10 @@ import {
 import { ConversationTimeline } from "./AgentDetail/ConversationTimeline";
 import { getLatestContextUsage } from "./AgentDetail/chatHelpers";
 import {
-	buildParsedMessageSections,
 	buildSubagentTitles,
 	parseMessagesWithMergedTools,
 } from "./AgentDetail/messageParsing";
 import { buildStreamTools } from "./AgentDetail/streamState";
-import { useMessageWindow } from "./AgentDetail/useMessageWindow";
 import type { ChatDetailError } from "./usageLimitMessage";
 import { useFileAttachments } from "./useFileAttachments";
 
@@ -42,13 +40,12 @@ const isChatMessage = (
 
 interface AgentDetailTimelineProps {
 	store: ChatStoreHandle;
-	chatID: string;
 	persistedErrorReason: ChatDetailError | undefined;
 	onOpenAnalytics?: () => void;
 	onEditUserMessage?: (
 		messageId: number,
 		text: string,
-		fileBlocks?: readonly { mediaType: string; data?: string }[],
+		fileBlocks?: readonly TypesGen.ChatMessagePart[],
 	) => void;
 	editingMessageId?: number | null;
 	savingMessageId?: number | null;
@@ -57,7 +54,6 @@ interface AgentDetailTimelineProps {
 
 export const AgentDetailTimeline: FC<AgentDetailTimelineProps> = ({
 	store,
-	chatID,
 	persistedErrorReason,
 	onOpenAnalytics,
 	onEditUserMessage,
@@ -87,21 +83,12 @@ export const AgentDetailTimeline: FC<AgentDetailTimelineProps> = ({
 		() => buildStreamTools(streamState),
 		[streamState],
 	);
-	const { hasMoreMessages, windowedMessages, loadMoreSentinelRef } =
-		useMessageWindow({
-			messages,
-			resetKey: chatID,
-		});
 	const parsedMessages = useMemo(
-		() => parseMessagesWithMergedTools(windowedMessages),
-		[windowedMessages],
+		() => parseMessagesWithMergedTools(messages),
+		[messages],
 	);
 	const subagentTitles = useMemo(
 		() => buildSubagentTitles(parsedMessages),
-		[parsedMessages],
-	);
-	const parsedSections = useMemo(
-		() => buildParsedMessageSections(parsedMessages),
 		[parsedMessages],
 	);
 	const detailError: ChatDetailError | undefined =
@@ -123,9 +110,7 @@ export const AgentDetailTimeline: FC<AgentDetailTimelineProps> = ({
 	return (
 		<ConversationTimeline
 			isEmpty={messages.length === 0}
-			hasMoreMessages={hasMoreMessages}
-			loadMoreSentinelRef={loadMoreSentinelRef}
-			parsedSections={parsedSections}
+			parsedMessages={parsedMessages}
 			hasStreamOutput={hasStreamOutput}
 			streamState={streamState}
 			streamTools={streamTools}
@@ -166,17 +151,17 @@ interface AgentDetailInputProps {
 	initialValue?: string;
 	onContentChange?: (content: string) => void;
 	editingQueuedMessageID: number | null;
-	onStartQueueEdit: (id: number, text: string) => void;
+	onStartQueueEdit: (
+		id: number,
+		text: string,
+		fileBlocks: readonly TypesGen.ChatMessagePart[],
+	) => void;
 	onCancelQueueEdit: () => void;
 	isEditingHistoryMessage: boolean;
 	onCancelHistoryEdit: () => void;
-	// File blocks from the message being edited, converted to
+	// File parts from the message being edited, converted to
 	// File objects and pre-populated into attachments.
-	editingFileBlocks?: readonly {
-		mediaType: string;
-		data?: string;
-		fileId?: string;
-	}[];
+	editingFileBlocks?: readonly TypesGen.ChatMessagePart[];
 }
 
 export const AgentDetailInput: FC<AgentDetailInputProps> = ({
@@ -250,29 +235,28 @@ export const AgentDetailInput: FC<AgentDetailInputProps> = ({
 			return;
 		}
 		const files = editingFileBlocks.map((block, i) => {
-			const ext = block.mediaType.split("/")[1] ?? "png";
+			const mt = block.media_type ?? "application/octet-stream";
+			const ext = mt.split("/")[1] ?? "png";
 			// Empty File used as a Map key only, its content is never
-			// read because the existing fileId is reused at send time.
-			return new File([], `attachment-${i}.${ext}`, {
-				type: block.mediaType,
-			});
+			// read because the existing file_id is reused at send time.
+			return new File([], `attachment-${i}.${ext}`, { type: mt });
 		});
 		setAttachments(files);
 		setPreviewUrls(
 			new Map(
 				files.map((f, i) => [
 					f,
-					`/api/experimental/chats/files/${editingFileBlocks[i].fileId}`,
+					`/api/experimental/chats/files/${editingFileBlocks[i].file_id}`,
 				]),
 			),
 		);
 		const newUploadStates = new Map<File, UploadState>();
 		for (const [i, file] of files.entries()) {
 			const block = editingFileBlocks[i];
-			if (block.fileId) {
+			if (block.file_id) {
 				newUploadStates.set(file, {
 					status: "uploaded",
-					fileId: block.fileId,
+					fileId: block.file_id,
 				});
 			}
 		}

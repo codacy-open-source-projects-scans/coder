@@ -512,6 +512,12 @@ CREATE TYPE resource_type AS ENUM (
     'ai_seat'
 );
 
+CREATE TYPE shareable_workspace_owners AS ENUM (
+    'none',
+    'everyone',
+    'service_accounts'
+);
+
 CREATE TYPE startup_script_behavior AS ENUM (
     'blocking',
     'non-blocking'
@@ -792,7 +798,7 @@ BEGIN
 END;
 $$;
 
-CREATE FUNCTION insert_org_member_system_role() RETURNS trigger
+CREATE FUNCTION insert_organization_system_roles() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN
@@ -807,8 +813,21 @@ BEGIN
         is_system,
         created_at,
         updated_at
-    ) VALUES (
+    ) VALUES
+    (
         'organization-member',
+        '',
+        NEW.id,
+        '[]'::jsonb,
+        '[]'::jsonb,
+        '[]'::jsonb,
+        '[]'::jsonb,
+        true,
+        NOW(),
+        NOW()
+    ),
+    (
+        'organization-service-account',
         '',
         NEW.id,
         '[]'::jsonb,
@@ -1085,6 +1104,15 @@ COMMENT ON COLUMN aibridge_interceptions.thread_parent_id IS 'The interception w
 COMMENT ON COLUMN aibridge_interceptions.thread_root_id IS 'The root interception of the thread that this interception belongs to.';
 
 COMMENT ON COLUMN aibridge_interceptions.client_session_id IS 'The session ID supplied by the client (optional and not universally supported).';
+
+CREATE TABLE aibridge_model_thoughts (
+    interception_id uuid NOT NULL,
+    content text NOT NULL,
+    metadata jsonb,
+    created_at timestamp with time zone NOT NULL
+);
+
+COMMENT ON TABLE aibridge_model_thoughts IS 'Audit log of model thinking in intercepted requests in AI Bridge';
 
 CREATE TABLE aibridge_token_usages (
     id uuid NOT NULL,
@@ -1823,8 +1851,10 @@ CREATE TABLE organizations (
     display_name text NOT NULL,
     icon text DEFAULT ''::text NOT NULL,
     deleted boolean DEFAULT false NOT NULL,
-    workspace_sharing_disabled boolean DEFAULT false NOT NULL
+    shareable_workspace_owners shareable_workspace_owners DEFAULT 'everyone'::shareable_workspace_owners NOT NULL
 );
+
+COMMENT ON COLUMN organizations.shareable_workspace_owners IS 'Controls whose workspaces can be shared: none, everyone, or service_accounts.';
 
 CREATE TABLE parameter_schemas (
     id uuid NOT NULL,
@@ -3562,6 +3592,8 @@ CREATE INDEX idx_aibridge_interceptions_thread_parent_id ON aibridge_interceptio
 
 CREATE INDEX idx_aibridge_interceptions_thread_root_id ON aibridge_interceptions USING btree (thread_root_id);
 
+CREATE INDEX idx_aibridge_model_thoughts_interception_id ON aibridge_model_thoughts USING btree (interception_id);
+
 CREATE INDEX idx_aibridge_token_usages_interception_id ON aibridge_token_usages USING btree (interception_id);
 
 CREATE INDEX idx_aibridge_token_usages_provider_response_id ON aibridge_token_usages USING btree (provider_response_id);
@@ -3852,7 +3884,7 @@ CREATE TRIGGER trigger_delete_oauth2_provider_app_token AFTER DELETE ON oauth2_p
 
 CREATE TRIGGER trigger_insert_apikeys BEFORE INSERT ON api_keys FOR EACH ROW EXECUTE FUNCTION insert_apikey_fail_if_user_deleted();
 
-CREATE TRIGGER trigger_insert_org_member_system_role AFTER INSERT ON organizations FOR EACH ROW EXECUTE FUNCTION insert_org_member_system_role();
+CREATE TRIGGER trigger_insert_organization_system_roles AFTER INSERT ON organizations FOR EACH ROW EXECUTE FUNCTION insert_organization_system_roles();
 
 CREATE TRIGGER trigger_nullify_next_start_at_on_workspace_autostart_modificati AFTER UPDATE ON workspaces FOR EACH ROW EXECUTE FUNCTION nullify_next_start_at_on_workspace_autostart_modification();
 

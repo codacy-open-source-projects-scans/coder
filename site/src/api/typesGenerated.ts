@@ -1538,7 +1538,7 @@ export interface ChatModelOpenRouterProvider {
  * ChatModelOpenRouterProviderOptions configures OpenRouter provider behavior.
  */
 export interface ChatModelOpenRouterProviderOptions {
-	readonly reasoning?: ChatModelOpenRouterReasoningOptions;
+	readonly reasoning?: ChatModelReasoningOptions;
 	// empty interface{} type, falling back to unknown
 	readonly extra_body?: Record<string, unknown>;
 	readonly include_usage?: boolean;
@@ -1547,17 +1547,6 @@ export interface ChatModelOpenRouterProviderOptions {
 	readonly parallel_tool_calls?: boolean;
 	readonly user?: string;
 	readonly provider?: ChatModelOpenRouterProvider;
-}
-
-// From codersdk/chats.go
-/**
- * ChatModelOpenRouterReasoningOptions configures OpenRouter reasoning behavior.
- */
-export interface ChatModelOpenRouterReasoningOptions {
-	readonly enabled?: boolean;
-	readonly exclude?: boolean;
-	readonly max_tokens?: number;
-	readonly effort?: string;
 }
 
 // From codersdk/chats.go
@@ -1597,6 +1586,18 @@ export const ChatModelProviderUnavailableReasons: ChatModelProviderUnavailableRe
 
 // From codersdk/chats.go
 /**
+ * ChatModelReasoningOptions configures reasoning behavior for model
+ * providers that support it.
+ */
+export interface ChatModelReasoningOptions {
+	readonly enabled?: boolean;
+	readonly exclude?: boolean;
+	readonly max_tokens?: number;
+	readonly effort?: string;
+}
+
+// From codersdk/chats.go
+/**
  * ChatModelVercelGatewayProviderOptions configures Vercel routing behavior.
  */
 export interface ChatModelVercelGatewayProviderOptions {
@@ -1609,7 +1610,7 @@ export interface ChatModelVercelGatewayProviderOptions {
  * ChatModelVercelProviderOptions configures Vercel provider behavior.
  */
 export interface ChatModelVercelProviderOptions {
-	readonly reasoning?: ChatModelVercelReasoningOptions;
+	readonly reasoning?: ChatModelReasoningOptions;
 	readonly providerOptions?: ChatModelVercelGatewayProviderOptions;
 	readonly user?: string;
 	readonly logit_bias?: Record<string, number>;
@@ -1618,17 +1619,6 @@ export interface ChatModelVercelProviderOptions {
 	readonly parallel_tool_calls?: boolean;
 	// empty interface{} type, falling back to unknown
 	readonly extra_body?: Record<string, unknown>;
-}
-
-// From codersdk/chats.go
-/**
- * ChatModelVercelReasoningOptions configures Vercel reasoning behavior.
- */
-export interface ChatModelVercelReasoningOptions {
-	readonly enabled?: boolean;
-	readonly max_tokens?: number;
-	readonly effort?: string;
-	readonly exclude?: boolean;
 }
 
 // From codersdk/chats.go
@@ -1777,9 +1767,10 @@ export interface ChatStreamStatus {
 
 // From codersdk/chats.go
 /**
- * ChatSystemPromptResponse is the response for getting the chat system prompt.
+ * ChatSystemPrompt is the request and response body for the chat
+ * system prompt configuration endpoint.
  */
-export interface ChatSystemPromptResponse {
+export interface ChatSystemPrompt {
 	readonly system_prompt: string;
 }
 
@@ -5166,6 +5157,7 @@ export interface ReducedUser extends MinimalUser {
 	readonly last_seen_at?: string;
 	readonly status: UserStatus;
 	readonly login_type: LoginType;
+	readonly is_service_account?: boolean;
 	/**
 	 * Deprecated: this value should be retrieved from
 	 * `codersdk.UserPreferenceSettings` instead.
@@ -5715,6 +5707,15 @@ export interface SessionLifetime {
  * SessionTokenHeader is the custom header to use for authentication.
  */
 export const SessionTokenHeader = "Coder-Session-Token";
+
+// From codersdk/workspacesharing.go
+export type ShareableWorkspaceOwners = "everyone" | "none" | "service_accounts";
+
+export const ShareableWorkspaceOwnerses: ShareableWorkspaceOwners[] = [
+	"everyone",
+	"none",
+	"service_accounts",
+];
 
 // From codersdk/workspaces.go
 export interface SharedWorkspaceActor {
@@ -6608,15 +6609,8 @@ export interface UpdateChatProviderConfigRequest {
  * UpdateChatRequest is the request to update a chat.
  */
 export interface UpdateChatRequest {
-	readonly title: string;
-}
-
-// From codersdk/chats.go
-/**
- * UpdateChatSystemPromptRequest is the request to update the chat system prompt.
- */
-export interface UpdateChatSystemPromptRequest {
-	readonly system_prompt: string;
+	readonly title?: string;
+	readonly archived?: boolean;
 }
 
 // From codersdk/chats.go
@@ -6795,15 +6789,6 @@ export interface UpdateUserAppearanceSettingsRequest {
 	readonly terminal_font: TerminalFontName;
 }
 
-// From codersdk/chats.go
-/**
- * UpdateUserChatCustomPromptRequest is the request to update a user's
- * custom chat prompt.
- */
-export interface UpdateUserChatCustomPromptRequest {
-	readonly custom_prompt: string;
-}
-
 // From codersdk/notifications.go
 export interface UpdateUserNotificationPreferences {
 	readonly template_disabled_map: Record<string, boolean>;
@@ -6916,7 +6901,17 @@ export interface UpdateWorkspaceRequest {
  * that can be updated for an organization.
  */
 export interface UpdateWorkspaceSharingSettingsRequest {
+	/**
+	 * SharingDisabled is deprecated and left for backward compatibility
+	 * purposes.
+	 * Deprecated: use `ShareableWorkspaceOwners` instead
+	 */
 	readonly sharing_disabled: boolean;
+	/**
+	 * ShareableWorkspaceOwners controls whose workspaces can be shared
+	 * within the organization.
+	 */
+	readonly shareable_workspace_owners?: ShareableWorkspaceOwners;
 }
 
 // From codersdk/workspaces.go
@@ -7048,10 +7043,10 @@ export interface UserAppearanceSettings {
 
 // From codersdk/chats.go
 /**
- * UserChatCustomPromptResponse is the response for getting a user's
- * custom chat prompt.
+ * UserChatCustomPrompt is the request and response body for the
+ * user chat custom prompt configuration endpoint.
  */
-export interface UserChatCustomPromptResponse {
+export interface UserChatCustomPrompt {
 	readonly custom_prompt: string;
 }
 
@@ -8068,7 +8063,17 @@ export interface WorkspaceSharingSettings {
 	 * organization because of a deployment-wide setting.
 	 */
 	readonly sharing_globally_disabled: boolean;
+	/**
+	 * SharingDisabled is deprecated and left for backward compatibility
+	 * purposes.
+	 * Deprecated: use `ShareableWorkspaceOwners` instead
+	 */
 	readonly sharing_disabled: boolean;
+	/**
+	 * ShareableWorkspaceOwners controls whose workspaces can be shared
+	 * within the organization.
+	 */
+	readonly shareable_workspace_owners: ShareableWorkspaceOwners;
 }
 
 // From codersdk/workspacebuilds.go

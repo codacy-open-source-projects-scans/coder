@@ -15,6 +15,7 @@ import {
 import { deploymentSSHConfig } from "api/queries/deployment";
 import { workspaceById, workspaceByIdKey } from "api/queries/workspaces";
 import type * as TypesGen from "api/typesGenerated";
+import type { ChatMessagePart } from "api/typesGenerated";
 import { useProxy } from "contexts/ProxyContext";
 import {
 	getTerminalHref,
@@ -38,6 +39,7 @@ import {
 import { useNavigate, useOutletContext, useParams } from "react-router";
 import { toast } from "sonner";
 import type { UrlTransform } from "streamdown";
+import { isMobileViewport } from "utils/mobile";
 import { pageTitle } from "utils/page";
 import { portForwardURL } from "utils/portForward";
 import type { ChatMessageInputRef } from "./AgentChatInput";
@@ -102,18 +104,14 @@ export function useConversationEditingState(deps: {
 		string | null
 	>(null);
 	const [editingFileBlocks, setEditingFileBlocks] = useState<
-		readonly { mediaType: string; data?: string; fileId?: string }[]
+		readonly ChatMessagePart[]
 	>([]);
 
 	const handleEditUserMessage = useCallback(
 		(
 			messageId: number,
 			text: string,
-			fileBlocks?: readonly {
-				mediaType: string;
-				data?: string;
-				fileId?: string;
-			}[],
+			fileBlocks?: readonly ChatMessagePart[],
 		) => {
 			setDraftBeforeHistoryEdit((prev) =>
 				editingMessageId !== null ? prev : inputValueRef.current,
@@ -132,7 +130,11 @@ export function useConversationEditingState(deps: {
 		setEditingMessageId(null);
 		setDraftBeforeHistoryEdit(null);
 		setEditingFileBlocks([]);
-	}, [draftBeforeHistoryEdit, inputValueRef]);
+		chatInputRef.current?.clear();
+		if (draftBeforeHistoryEdit) {
+			chatInputRef.current?.insertText(draftBeforeHistoryEdit);
+		}
+	}, [draftBeforeHistoryEdit, inputValueRef, chatInputRef]);
 
 	// -- Queue editing state --
 	const [editingQueuedMessageID, setEditingQueuedMessageID] = useState<
@@ -143,13 +145,14 @@ export function useConversationEditingState(deps: {
 	>(null);
 
 	const handleStartQueueEdit = useCallback(
-		(id: number, text: string) => {
+		(id: number, text: string, fileBlocks: readonly ChatMessagePart[]) => {
 			setDraftBeforeQueueEdit((prev) =>
 				editingQueuedMessageID === null ? inputValueRef.current : prev,
 			);
 			setEditingQueuedMessageID(id);
 			setEditorInitialValue(text);
 			inputValueRef.current = text;
+			setEditingFileBlocks(fileBlocks);
 		},
 		[editingQueuedMessageID, inputValueRef],
 	);
@@ -159,6 +162,7 @@ export function useConversationEditingState(deps: {
 		inputValueRef.current = draftBeforeQueueEdit ?? "";
 		setEditingQueuedMessageID(null);
 		setDraftBeforeQueueEdit(null);
+		setEditingFileBlocks([]);
 	}, [draftBeforeQueueEdit, inputValueRef]);
 
 	// Wraps the parent onSend to clear local input/editing state
@@ -172,7 +176,9 @@ export function useConversationEditingState(deps: {
 			await onSend(message, fileIds, editedMessageID);
 			// Clear input and editing state on success.
 			chatInputRef.current?.clear();
-			chatInputRef.current?.focus();
+			if (!isMobileViewport()) {
+				chatInputRef.current?.focus();
+			}
 			inputValueRef.current = "";
 			if (typeof window !== "undefined" && draftStorageKey) {
 				localStorage.removeItem(draftStorageKey);
@@ -185,6 +191,7 @@ export function useConversationEditingState(deps: {
 			if (queueEditID !== null) {
 				setEditingQueuedMessageID(null);
 				setDraftBeforeQueueEdit(null);
+				setEditingFileBlocks([]);
 				void onDeleteQueuedMessage(queueEditID);
 			}
 		},
