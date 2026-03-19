@@ -51,6 +51,7 @@ import {
 	SquarePenIcon,
 	Trash2Icon,
 	UserIcon,
+	WandSparklesIcon,
 } from "lucide-react";
 import { UserDropdownContent } from "modules/dashboard/Navbar/UserDropdown/UserDropdownContent";
 import { useDashboard } from "modules/dashboard/useDashboard";
@@ -412,7 +413,7 @@ const ChatTreeNode = memo<ChatTreeNodeProps>(({ chat, isChildNode }) => {
 			<div
 				data-testid={`agents-tree-node-${chat.id}`}
 				className={cn(
-					"group relative flex min-w-0 items-start gap-1.5 rounded-md px-1 text-content-secondary",
+					"group relative flex min-w-0 items-start gap-1.5 rounded-md pl-1 pr-1.5 text-content-secondary",
 					"transition-none [@media(hover:hover)]:hover:bg-surface-tertiary/50 [@media(hover:hover)]:hover:text-content-primary has-[[data-state=open]]:bg-surface-tertiary",
 					"has-[[aria-current=page]]:bg-surface-quaternary/25 has-[[aria-current=page]]:text-content-primary [@media(hover:hover)]:has-[[aria-current=page]]:hover:bg-surface-quaternary/50",
 					isChildNode &&
@@ -709,7 +710,7 @@ export const AgentsSidebar: FC<AgentsSidebarProps> = (props) => {
 				aria-hidden={sidebarView.panel === "settings"}
 				inert={sidebarView.panel === "settings" ? true : undefined}
 			>
-				<div className="hidden border-b border-border-default px-3 pb-3 pt-1.5 md:block md:px-3.5">
+				<div className="hidden border-b border-border-default px-2 pb-3 pt-1.5 md:block">
 					<div className="mb-2.5 flex items-center justify-between">
 						<NavLink to="/workspaces" className="inline-flex">
 							{logoUrl ? (
@@ -961,7 +962,6 @@ export const AgentsSidebar: FC<AgentsSidebarProps> = (props) => {
 							label="Behavior"
 							active={sidebarView.section === "behavior"}
 							to="/agents/settings/behavior"
-							replace
 							state={location.state}
 						/>
 						{isAdmin && (
@@ -971,7 +971,6 @@ export const AgentsSidebar: FC<AgentsSidebarProps> = (props) => {
 									label="Providers"
 									active={sidebarView.section === "providers"}
 									to="/agents/settings/providers"
-									replace
 									state={location.state}
 									adminOnly
 								/>
@@ -980,7 +979,6 @@ export const AgentsSidebar: FC<AgentsSidebarProps> = (props) => {
 									label="Models"
 									active={sidebarView.section === "models"}
 									to="/agents/settings/models"
-									replace
 									state={location.state}
 									adminOnly
 								/>
@@ -989,7 +987,6 @@ export const AgentsSidebar: FC<AgentsSidebarProps> = (props) => {
 									label="Limits"
 									active={sidebarView.section === "limits"}
 									to="/agents/settings/limits"
-									replace
 									state={location.state}
 									adminOnly
 								/>
@@ -998,10 +995,17 @@ export const AgentsSidebar: FC<AgentsSidebarProps> = (props) => {
 									label="Usage"
 									active={sidebarView.section === "usage"}
 									to="/agents/settings/usage"
-									replace
 									state={location.state}
 									adminOnly
 								/>
+								<SettingsNavItem
+									icon={WandSparklesIcon}
+									label="Analytics"
+									active={sidebarView.section === "insights"}
+									to="/agents/settings/insights"
+									state={location.state}
+									adminOnly
+								/>{" "}
 							</>
 						)}
 					</nav>
@@ -1102,13 +1106,8 @@ const LoadMoreSentinel: FC<{
 	// Keep refs in sync with the latest prop values so the
 	// observer callback always reads current state without
 	// needing to tear down and re-create the observer.
-	useEffect(() => {
-		onLoadMoreRef.current = onLoadMore;
-	}, [onLoadMore]);
-
-	useEffect(() => {
-		isFetchingNextPageRef.current = isFetchingNextPage;
-	}, [isFetchingNextPage]);
+	onLoadMoreRef.current = onLoadMore;
+	isFetchingNextPageRef.current = isFetchingNextPage;
 
 	useEffect(() => {
 		const el = sentinelRef.current;

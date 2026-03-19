@@ -10,6 +10,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	httppprof "net/http/pprof"
 	"net/url"
@@ -766,17 +767,27 @@ func New(options *Options) *API {
 	}
 	api.agentProvider = stn
 
+	maxChatsPerAcquire := options.DeploymentValues.AI.Chat.AcquireBatchSize.Value()
+	if maxChatsPerAcquire > math.MaxInt32 {
+		maxChatsPerAcquire = math.MaxInt32
+	}
+	if maxChatsPerAcquire < math.MinInt32 {
+		maxChatsPerAcquire = math.MinInt32
+	}
+
 	api.chatDaemon = chatd.New(chatd.Config{
-		Logger:            options.Logger.Named("chats"),
-		Database:          options.Database,
-		ReplicaID:         api.ID,
-		SubscribeFn:       options.ChatSubscribeFn,
-		ProviderAPIKeys:   chatProviderAPIKeysFromDeploymentValues(options.DeploymentValues),
-		AgentConn:         api.agentProvider.AgentConn,
-		CreateWorkspace:   api.chatCreateWorkspace,
-		StartWorkspace:    api.chatStartWorkspace,
-		Pubsub:            options.Pubsub,
-		WebpushDispatcher: options.WebPushDispatcher,
+		Logger:             options.Logger.Named("chatd"),
+		Database:           options.Database,
+		ReplicaID:          api.ID,
+		SubscribeFn:        options.ChatSubscribeFn,
+		MaxChatsPerAcquire: int32(maxChatsPerAcquire), //nolint:gosec // maxChatsPerAcquire is clamped to int32 range above.
+		ProviderAPIKeys:    chatProviderAPIKeysFromDeploymentValues(options.DeploymentValues),
+		AgentConn:          api.agentProvider.AgentConn,
+		CreateWorkspace:    api.chatCreateWorkspace,
+		StartWorkspace:     api.chatStartWorkspace,
+		Pubsub:             options.Pubsub,
+		WebpushDispatcher:  options.WebPushDispatcher,
+		UsageTracker:       options.WorkspaceUsageTracker,
 	})
 	gitSyncLogger := options.Logger.Named("gitsync")
 	refresher := gitsync.NewRefresher(
@@ -1149,6 +1160,9 @@ func New(options *Options) *API {
 					r.Get("/summary", api.chatCostSummary)
 				})
 			})
+			r.Route("/insights", func(r chi.Router) {
+				r.Get("/pull-requests", api.prInsights)
+			})
 			r.Route("/files", func(r chi.Router) {
 				r.Use(httpmw.RateLimit(options.FilesRateLimit, time.Minute))
 				r.Post("/", api.postChatFile)
@@ -1157,6 +1171,8 @@ func New(options *Options) *API {
 			r.Route("/config", func(r chi.Router) {
 				r.Get("/system-prompt", api.getChatSystemPrompt)
 				r.Put("/system-prompt", api.putChatSystemPrompt)
+				r.Get("/desktop-enabled", api.getChatDesktopEnabled)
+				r.Put("/desktop-enabled", api.putChatDesktopEnabled)
 				r.Get("/user-prompt", api.getUserChatCustomPrompt)
 				r.Put("/user-prompt", api.putUserChatCustomPrompt)
 			})
@@ -1194,13 +1210,15 @@ func New(options *Options) *API {
 			r.Route("/{chat}", func(r chi.Router) {
 				r.Use(httpmw.ExtractChatParam(options.Database))
 				r.Get("/", api.getChat)
-				r.Get("/git/watch", api.watchChatGit)
-				r.Get("/desktop", api.watchChatDesktop)
 				r.Patch("/", api.patchChat)
 				r.Get("/messages", api.getChatMessages)
 				r.Post("/messages", api.postChatMessages)
 				r.Patch("/messages/{message}", api.patchChatMessage)
-				r.Get("/stream", api.streamChat)
+				r.Route("/stream", func(r chi.Router) {
+					r.Get("/", api.streamChat)
+					r.Get("/desktop", api.watchChatDesktop)
+					r.Get("/git", api.watchChatGit)
+				})
 				r.Post("/interrupt", api.interruptChat)
 				r.Get("/diff", api.getChatDiffContents)
 				r.Route("/queue/{queuedMessage}", func(r chi.Router) {
@@ -1478,6 +1496,7 @@ func New(options *Options) *API {
 				r.Post("/", api.postUser)
 				r.Get("/", api.users)
 				r.Post("/logout", api.postLogout)
+				r.Get("/oidc-claims", api.userOIDCClaims)
 				// These routes query information about site wide roles.
 				r.Route("/roles", func(r chi.Router) {
 					r.Get("/", api.AssignableSiteRoles)

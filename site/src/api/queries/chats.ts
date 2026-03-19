@@ -395,6 +395,22 @@ export const updateChatSystemPrompt = (queryClient: QueryClient) => ({
 	},
 });
 
+const chatDesktopEnabledKey = ["chat-desktop-enabled"] as const;
+
+export const chatDesktopEnabled = () => ({
+	queryKey: chatDesktopEnabledKey,
+	queryFn: () => API.getChatDesktopEnabled(),
+});
+
+export const updateChatDesktopEnabled = (queryClient: QueryClient) => ({
+	mutationFn: API.updateChatDesktopEnabled,
+	onSuccess: async () => {
+		await queryClient.invalidateQueries({
+			queryKey: chatDesktopEnabledKey,
+		});
+	},
+});
+
 const chatUserCustomPromptKey = ["chat-user-custom-prompt"] as const;
 
 export const chatUserCustomPrompt = () => ({
@@ -528,6 +544,18 @@ export const chatCostUsersKey = (params?: ChatCostUsersParams) =>
 export const chatCostUsers = (params?: ChatCostUsersParams) => ({
 	queryKey: chatCostUsersKey(params),
 	queryFn: () => API.getChatCostUsers(params),
+	staleTime: 60_000,
+});
+
+const prInsightsKey = (params?: { start_date?: string; end_date?: string }) =>
+	[...chatsKey, "prInsights", params] as const;
+
+export const prInsights = (params?: {
+	start_date?: string;
+	end_date?: string;
+}) => ({
+	queryKey: prInsightsKey(params),
+	queryFn: () => API.getPRInsights(params),
 	staleTime: 60_000,
 });
 

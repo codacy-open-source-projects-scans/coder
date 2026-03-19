@@ -98,6 +98,19 @@ const (
 	ChatMessagePartTypeFileReference ChatMessagePartType = "file-reference"
 )
 
+// AllChatMessagePartTypes returns all known ChatMessagePartType values.
+func AllChatMessagePartTypes() []ChatMessagePartType {
+	return []ChatMessagePartType{
+		ChatMessagePartTypeText,
+		ChatMessagePartTypeReasoning,
+		ChatMessagePartTypeToolCall,
+		ChatMessagePartTypeToolResult,
+		ChatMessagePartTypeSource,
+		ChatMessagePartTypeFile,
+		ChatMessagePartTypeFileReference,
+	}
+}
+
 // ChatMessagePart is a structured chunk of a chat message.
 //
 // WARNING: This type is both an API wire type and a database
@@ -106,37 +119,50 @@ const (
 // changes, and omitempty behavior all affect backward-compatible
 // deserialization of stored rows. Treat changes to this struct
 // with the same care as a database migration.
+//
+// The variants struct tag declares which discriminated-union
+// variants include each field in the generated TypeScript. Bare
+// name = required, ? suffix = optional. Fields without a variants
+// tag are excluded from the generated union. See
+// scripts/apitypings/main.go for the codegen that reads these.
+//
+// omitempty rules (enforced by TestChatMessagePartVariantTags):
+//   - If a field is required (no ? suffix) in ANY variant, it
+//     must NOT use omitempty. Go would silently drop zero values
+//     that TypeScript expects to always be present.
+//   - If a field is optional (? suffix) in ALL of its variants,
+//     it MUST use omitempty. Sending zero values for fields that
+//     the frontend does not expect adds noise to the wire format
+//     and wastes space in persisted chat_messages rows.
 type ChatMessagePart struct {
 	Type        ChatMessagePartType `json:"type"`
-	Text        string              `json:"text,omitempty"`
+	Text        string              `json:"text" variants:"text,reasoning"`
 	Signature   string              `json:"signature,omitempty"`
-	ToolCallID  string              `json:"tool_call_id,omitempty"`
-	ToolName    string              `json:"tool_name,omitempty"`
-	Args        json.RawMessage     `json:"args,omitempty"`
-	ArgsDelta   string              `json:"args_delta,omitempty"`
-	Result      json.RawMessage     `json:"result,omitempty"`
+	ToolCallID  string              `json:"tool_call_id,omitempty" variants:"tool-call?,tool-result?"`
+	ToolName    string              `json:"tool_name,omitempty" variants:"tool-call?,tool-result?"`
+	Args        json.RawMessage     `json:"args,omitempty" variants:"tool-call?"`
+	ArgsDelta   string              `json:"args_delta,omitempty" variants:"tool-call?"`
+	Result      json.RawMessage     `json:"result,omitempty" variants:"tool-result?"`
 	ResultDelta string              `json:"result_delta,omitempty"`
-	IsError     bool                `json:"is_error,omitempty"`
-	SourceID    string              `json:"source_id,omitempty"`
-	URL         string              `json:"url,omitempty"`
-	Title       string              `json:"title,omitempty"`
-	MediaType   string              `json:"media_type,omitempty"`
-	Data        []byte              `json:"data,omitempty"`
-	FileID      uuid.NullUUID       `json:"file_id,omitempty" format:"uuid"`
-	// The following fields are only set when Type is
-	// ChatInputPartTypeFileReference.
-	FileName  string `json:"file_name,omitempty"`
-	StartLine int    `json:"start_line,omitempty"`
-	EndLine   int    `json:"end_line,omitempty"`
+	IsError     bool                `json:"is_error,omitempty" variants:"tool-result?"`
+	SourceID    string              `json:"source_id,omitempty" variants:"source?"`
+	URL         string              `json:"url" variants:"source"`
+	Title       string              `json:"title,omitempty" variants:"source?"`
+	MediaType   string              `json:"media_type" variants:"file"`
+	Data        []byte              `json:"data,omitempty" variants:"file?"`
+	FileID      uuid.NullUUID       `json:"file_id,omitempty" format:"uuid" variants:"file?"`
+	FileName    string              `json:"file_name" variants:"file-reference"`
+	StartLine   int                 `json:"start_line" variants:"file-reference"`
+	EndLine     int                 `json:"end_line" variants:"file-reference"`
 	// The code content from the diff that was commented on.
-	Content string `json:"content,omitempty"`
+	Content string `json:"content" variants:"file-reference"`
 	// ProviderMetadata holds provider-specific response metadata
 	// (e.g. Anthropic cache control hints) as raw JSON. Internal
 	// only: stripped by db2sdk before API responses.
 	ProviderMetadata json.RawMessage `json:"provider_metadata,omitempty" typescript:"-"`
 	// ProviderExecuted indicates the tool call was executed by
 	// the provider (e.g. Anthropic computer use).
-	ProviderExecuted bool `json:"provider_executed,omitempty"`
+	ProviderExecuted bool `json:"provider_executed,omitempty" variants:"tool-call?,tool-result?"`
 }
 
 // StripInternal removes internal-only fields that must not be
@@ -318,6 +344,16 @@ type ChatSystemPrompt struct {
 // user chat custom prompt configuration endpoint.
 type UserChatCustomPrompt struct {
 	CustomPrompt string `json:"custom_prompt"`
+}
+
+// ChatDesktopEnabledResponse is the response for getting the desktop setting.
+type ChatDesktopEnabledResponse struct {
+	EnableDesktop bool `json:"enable_desktop"`
+}
+
+// UpdateChatDesktopEnabledRequest is the request to update the desktop setting.
+type UpdateChatDesktopEnabledRequest struct {
+	EnableDesktop bool `json:"enable_desktop"`
 }
 
 // ChatProviderConfigSource describes how a provider entry is sourced.
@@ -1270,6 +1306,33 @@ func (c *Client) GetUserChatCustomPrompt(ctx context.Context) (UserChatCustomPro
 	return resp, json.NewDecoder(res.Body).Decode(&resp)
 }
 
+// GetChatDesktopEnabled returns the deployment-wide desktop setting.
+func (c *Client) GetChatDesktopEnabled(ctx context.Context) (ChatDesktopEnabledResponse, error) {
+	res, err := c.Request(ctx, http.MethodGet, "/api/experimental/chats/config/desktop-enabled", nil)
+	if err != nil {
+		return ChatDesktopEnabledResponse{}, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return ChatDesktopEnabledResponse{}, ReadBodyAsError(res)
+	}
+	var resp ChatDesktopEnabledResponse
+	return resp, json.NewDecoder(res.Body).Decode(&resp)
+}
+
+// UpdateChatDesktopEnabled updates the deployment-wide desktop setting.
+func (c *Client) UpdateChatDesktopEnabled(ctx context.Context, req UpdateChatDesktopEnabledRequest) error {
+	res, err := c.Request(ctx, http.MethodPut, "/api/experimental/chats/config/desktop-enabled", req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusNoContent {
+		return ReadBodyAsError(res)
+	}
+	return nil
+}
+
 // UpdateUserChatCustomPrompt updates the user's custom chat prompt.
 func (c *Client) UpdateUserChatCustomPrompt(ctx context.Context, req UserChatCustomPrompt) (UserChatCustomPrompt, error) {
 	res, err := c.Request(ctx, http.MethodPut, "/api/experimental/chats/config/user-prompt", req)
@@ -1739,4 +1802,76 @@ func formatChatStreamResponseError(response Response) string {
 	default:
 		return fmt.Sprintf("%s: %s", message, detail)
 	}
+}
+
+// PRInsightsResponse is the response from the PR insights endpoint.
+type PRInsightsResponse struct {
+	Summary    PRInsightsSummary           `json:"summary"`
+	TimeSeries []PRInsightsTimeSeriesEntry `json:"time_series"`
+	ByModel    []PRInsightsModelBreakdown  `json:"by_model"`
+	RecentPRs  []PRInsightsPullRequest     `json:"recent_prs"`
+}
+
+// PRInsightsSummary contains aggregate PR metrics for a time period,
+// plus the previous period's metrics for trend calculation.
+type PRInsightsSummary struct {
+	TotalPRsCreated           int64   `json:"total_prs_created"`
+	TotalPRsMerged            int64   `json:"total_prs_merged"`
+	MergeRate                 float64 `json:"merge_rate"`
+	TotalAdditions            int64   `json:"total_additions"`
+	TotalDeletions            int64   `json:"total_deletions"`
+	TotalCostMicros           int64   `json:"total_cost_micros"`
+	CostPerMergedPRMicros     int64   `json:"cost_per_merged_pr_micros"`
+	ApprovalRate              float64 `json:"approval_rate"`
+	PrevTotalPRsCreated       int64   `json:"prev_total_prs_created"`
+	PrevTotalPRsMerged        int64   `json:"prev_total_prs_merged"`
+	PrevMergeRate             float64 `json:"prev_merge_rate"`
+	PrevCostPerMergedPRMicros int64   `json:"prev_cost_per_merged_pr_micros"`
+}
+
+// PRInsightsTimeSeriesEntry is a single data point in the PR
+// activity time series chart.
+type PRInsightsTimeSeriesEntry struct {
+	Date       time.Time `json:"date" format:"date-time"`
+	PRsCreated int64     `json:"prs_created"`
+	PRsMerged  int64     `json:"prs_merged"`
+	PRsClosed  int64     `json:"prs_closed"`
+}
+
+// PRInsightsModelBreakdown contains PR metrics for a single model.
+type PRInsightsModelBreakdown struct {
+	ModelConfigID         uuid.UUID `json:"model_config_id" format:"uuid"`
+	DisplayName           string    `json:"display_name"`
+	Provider              string    `json:"provider"`
+	TotalPRs              int64     `json:"total_prs"`
+	MergedPRs             int64     `json:"merged_prs"`
+	MergeRate             float64   `json:"merge_rate"`
+	TotalAdditions        int64     `json:"total_additions"`
+	TotalDeletions        int64     `json:"total_deletions"`
+	TotalCostMicros       int64     `json:"total_cost_micros"`
+	CostPerMergedPRMicros int64     `json:"cost_per_merged_pr_micros"`
+}
+
+// PRInsightsPullRequest represents a single PR in the recent PRs
+// table.
+type PRInsightsPullRequest struct {
+	ChatID           uuid.UUID `json:"chat_id" format:"uuid"`
+	PRTitle          string    `json:"pr_title"`
+	PRURL            *string   `json:"pr_url,omitempty"`
+	PRNumber         *int32    `json:"pr_number,omitempty"`
+	State            string    `json:"state"`
+	Draft            bool      `json:"draft"`
+	Additions        int32     `json:"additions"`
+	Deletions        int32     `json:"deletions"`
+	ChangedFiles     int32     `json:"changed_files"`
+	Commits          *int32    `json:"commits,omitempty"`
+	Approved         *bool     `json:"approved,omitempty"`
+	ChangesRequested bool      `json:"changes_requested"`
+	ReviewerCount    *int32    `json:"reviewer_count,omitempty"`
+	AuthorLogin      *string   `json:"author_login,omitempty"`
+	AuthorAvatarURL  *string   `json:"author_avatar_url,omitempty"`
+	BaseBranch       string    `json:"base_branch"`
+	ModelDisplayName string    `json:"model_display_name"`
+	CostMicros       int64     `json:"cost_micros"`
+	CreatedAt        time.Time `json:"created_at" format:"date-time"`
 }
