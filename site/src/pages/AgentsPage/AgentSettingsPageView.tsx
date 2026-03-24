@@ -3,6 +3,7 @@ import {
 	chatCostSummary,
 	chatCostUsers,
 	chatDesktopEnabled,
+	chatModelConfigs,
 	chatSystemPrompt,
 	chatUserCustomPrompt,
 	chatWorkspaceTTL,
@@ -11,7 +12,7 @@ import {
 	updateChatWorkspaceTTL,
 	updateUserChatCustomPrompt,
 } from "api/queries/chats";
-import { userByName } from "api/queries/users";
+import { user } from "api/queries/users";
 import type * as TypesGen from "api/typesGenerated";
 import { AvatarData } from "components/Avatar/AvatarData";
 import { Button } from "components/Button/Button";
@@ -62,6 +63,7 @@ import { InsightsContent } from "./components/InsightsContent";
 import { LimitsTab } from "./components/LimitsTab";
 import { MCPServerAdminPanel } from "./components/MCPServerAdminPanel";
 import { SectionHeader } from "./components/SectionHeader";
+import { UserCompactionThresholdSettings } from "./UserCompactionThresholdSettings";
 
 const AdminBadge: FC = () => (
 	<TooltipProvider delayDuration={0}>
@@ -236,7 +238,7 @@ const UsageContent: FC<UsageContentProps> = ({ now }) => {
 
 	const selectedUserId = searchParams.get("user");
 	const selectedUserQuery = useQuery({
-		...userByName(selectedUserId ?? ""),
+		...user(selectedUserId ?? ""),
 		enabled: selectedUserId !== null,
 	});
 	const selectedUser = selectedUserQuery.data ?? null;
@@ -526,6 +528,10 @@ export const AgentSettingsPageView: FC<AgentSettingsPageViewProps> = ({
 	} = useMutation(updateChatDesktopEnabled(queryClient));
 
 	const workspaceTTLQuery = useQuery(chatWorkspaceTTL());
+	const modelConfigsQuery = useQuery({
+		...chatModelConfigs(),
+		enabled: activeSection === "behavior",
+	});
 	const {
 		mutate: saveWorkspaceTTL,
 		isPending: isSavingWorkspaceTTL,
@@ -635,6 +641,13 @@ export const AgentSettingsPageView: FC<AgentSettingsPageViewProps> = ({
 								</p>
 							)}
 						</form>
+
+						<hr className="my-5 border-0 border-t border-solid border-border" />
+						<UserCompactionThresholdSettings
+							modelConfigs={modelConfigsQuery.data ?? []}
+							modelConfigsError={modelConfigsQuery.error}
+							isLoadingModelConfigs={modelConfigsQuery.isLoading}
+						/>
 
 						{/* ── Admin system prompt (admin only) ── */}
 						{canSetSystemPrompt && (

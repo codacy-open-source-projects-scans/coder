@@ -83,7 +83,6 @@ interface AgentDetailViewProps {
 	// Sidebar / panel state.
 	isSidebarCollapsed: boolean;
 	onToggleSidebarCollapsed: () => void;
-	onOpenAnalytics?: () => void;
 
 	// Right panel state (owned by the parent so loading and
 	// loaded views share the same layout).
@@ -106,9 +105,6 @@ interface AgentDetailViewProps {
 	handleViewWorkspace: () => void;
 	handleOpenTerminal: () => void;
 	handleCommit: (repoRoot: string) => void;
-
-	// Navigation.
-	onNavigateToChat: (chatId: string) => void;
 
 	// Chat action handlers.
 	handleInterrupt: () => void;
@@ -158,7 +154,6 @@ export const AgentDetailView: FC<AgentDetailViewProps> = ({
 	isInterruptPending,
 	isSidebarCollapsed,
 	onToggleSidebarCollapsed,
-	onOpenAnalytics,
 	showSidebarPanel,
 	onSetShowSidebarPanel,
 	prNumber,
@@ -171,7 +166,6 @@ export const AgentDetailView: FC<AgentDetailViewProps> = ({
 	handleViewWorkspace,
 	handleOpenTerminal,
 	handleCommit,
-	onNavigateToChat,
 	handleInterrupt,
 	handleDeleteQueuedMessage,
 	handlePromoteQueuedMessage,
@@ -221,7 +215,6 @@ export const AgentDetailView: FC<AgentDetailViewProps> = ({
 					<AgentDetailTopBar
 						chatTitle={chatTitle}
 						parentChat={parentChat}
-						onOpenParentChat={(chatId) => onNavigateToChat(chatId)}
 						panel={{
 							showSidebarPanel,
 							onToggleSidebar: () => onSetShowSidebarPanel((prev) => !prev),
@@ -275,7 +268,6 @@ export const AgentDetailView: FC<AgentDetailViewProps> = ({
 									? { kind: "generic" as const, message: chatRecord.last_error }
 									: undefined)
 							}
-							onOpenAnalytics={onOpenAnalytics}
 							onEditUserMessage={editing.handleEditUserMessage}
 							editingMessageId={editing.editingMessageId}
 							savingMessageId={pendingEditMessageId}
@@ -283,7 +275,7 @@ export const AgentDetailView: FC<AgentDetailViewProps> = ({
 						/>
 					</div>
 				</ScrollAnchoredContainer>
-				<div className="shrink-0 overflow-y-auto px-4 [scrollbar-gutter:stable] [scrollbar-width:thin]">
+				<div className="shrink-0 overflow-y-auto px-4 pb-4 md:pb-0 [scrollbar-gutter:stable] [scrollbar-width:thin]">
 					<AgentDetailInput
 						store={store}
 						compressionThreshold={compressionThreshold}
@@ -408,7 +400,6 @@ export const AgentDetailLoadingView: FC<AgentDetailLoadingViewProps> = ({
 						onOpenTerminal: () => {},
 						sshCommand: undefined,
 					}}
-					onOpenParentChat={() => {}}
 					onArchiveAgent={() => {}}
 					onUnarchiveAgent={() => {}}
 					onArchiveAndDeleteWorkspace={() => {}}
@@ -423,7 +414,7 @@ export const AgentDetailLoadingView: FC<AgentDetailLoadingViewProps> = ({
 						</div>
 					</div>
 				</div>
-				<div className="shrink-0 overflow-y-auto px-4 [scrollbar-gutter:stable] [scrollbar-width:thin]">
+				<div className="shrink-0 overflow-y-auto px-4 pb-4 md:pb-0 [scrollbar-gutter:stable] [scrollbar-width:thin]">
 					<AgentChatInput
 						onSend={() => {}}
 						initialValue=""
@@ -482,7 +473,6 @@ export const AgentDetailNotFoundView: FC<AgentDetailNotFoundViewProps> = ({
 					onOpenTerminal: () => {},
 					sshCommand: undefined,
 				}}
-				onOpenParentChat={() => {}}
 				onArchiveAgent={() => {}}
 				onUnarchiveAgent={() => {}}
 				onArchiveAndDeleteWorkspace={() => {}}

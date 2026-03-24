@@ -2,7 +2,7 @@ import { MockUserOwner } from "testHelpers/entities";
 import { withAuthProvider, withDashboardProvider } from "testHelpers/storybook";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { API } from "api/api";
-import { userByNameKey } from "api/queries/users";
+import { userKey } from "api/queries/users";
 import type * as TypesGen from "api/typesGenerated";
 import dayjs from "dayjs";
 import { expect, spyOn, userEvent, waitFor, within } from "storybook/test";
@@ -107,18 +107,21 @@ const mockCostSummary: TypesGen.ChatCostSummary = {
 const setupUsageSpies = (opts?: {
 	usersResponse?: TypesGen.ChatCostUsersResponse;
 }) => {
-	spyOn(API, "getChatCostUsers").mockResolvedValue(
+	spyOn(API.experimental, "getChatCostUsers").mockResolvedValue(
 		opts?.usersResponse ?? mockUsersResponse,
 	);
 	spyOn(API, "getUser").mockResolvedValue(mockUserProfile);
-	spyOn(API, "getChatCostSummary").mockResolvedValue(mockCostSummary);
+	spyOn(API.experimental, "getChatCostSummary").mockResolvedValue(
+		mockCostSummary,
+	);
 };
 
 const getChatCostUsersCalls = () =>
 	(
-		API.getChatCostUsers as typeof API.getChatCostUsers & {
+		API.experimental
+			.getChatCostUsers as typeof API.experimental.getChatCostUsers & {
 			mock: {
-				calls: Array<[Parameters<typeof API.getChatCostUsers>[0]]>;
+				calls: Array<[Parameters<typeof API.experimental.getChatCostUsers>[0]]>;
 			};
 		}
 	).mock.calls;
@@ -142,24 +145,31 @@ const meta = {
 		layout: "fullscreen",
 	},
 	beforeEach: () => {
-		spyOn(API, "getChatSystemPrompt").mockResolvedValue({
+		spyOn(API.experimental, "getChatSystemPrompt").mockResolvedValue({
 			system_prompt: "",
 		});
-		spyOn(API, "updateChatSystemPrompt").mockResolvedValue();
-		spyOn(API, "getChatDesktopEnabled").mockResolvedValue({
+		spyOn(API.experimental, "updateChatSystemPrompt").mockResolvedValue();
+		spyOn(API.experimental, "getChatDesktopEnabled").mockResolvedValue({
 			enable_desktop: false,
 		});
-		spyOn(API, "updateChatDesktopEnabled").mockResolvedValue();
-		spyOn(API, "getUserChatCustomPrompt").mockResolvedValue({
+		spyOn(API.experimental, "updateChatDesktopEnabled").mockResolvedValue();
+		spyOn(API.experimental, "getUserChatCustomPrompt").mockResolvedValue({
 			custom_prompt: "",
 		});
-		spyOn(API, "updateUserChatCustomPrompt").mockResolvedValue({
+		spyOn(API.experimental, "updateUserChatCustomPrompt").mockResolvedValue({
 			custom_prompt: "",
 		});
-		spyOn(API, "getChatWorkspaceTTL").mockResolvedValue({
+		spyOn(API.experimental, "getChatModelConfigs").mockResolvedValue([]);
+		spyOn(
+			API.experimental,
+			"getUserChatCompactionThresholds",
+		).mockResolvedValue({
+			thresholds: [],
+		});
+		spyOn(API.experimental, "getChatWorkspaceTTL").mockResolvedValue({
 			workspace_ttl_ms: 0,
 		});
-		spyOn(API, "updateChatWorkspaceTTL").mockResolvedValue();
+		spyOn(API.experimental, "updateChatWorkspaceTTL").mockResolvedValue();
 	},
 } satisfies Meta<typeof AgentSettingsPageView>;
 
@@ -189,7 +199,7 @@ export const TogglesDesktop: Story = {
 
 		await userEvent.click(toggle);
 		await waitFor(() => {
-			expect(API.updateChatDesktopEnabled).toHaveBeenCalledWith({
+			expect(API.experimental.updateChatDesktopEnabled).toHaveBeenCalledWith({
 				enable_desktop: true,
 			});
 		});
@@ -220,7 +230,7 @@ export const DefaultAutostopDefault: Story = {
 export const DefaultAutostopCustomValue: Story = {
 	beforeEach: () => {
 		// 2h = 2 hours exactly, shows cleanly in DurationField.
-		spyOn(API, "getChatWorkspaceTTL").mockResolvedValue({
+		spyOn(API.experimental, "getChatWorkspaceTTL").mockResolvedValue({
 			workspace_ttl_ms: 7_200_000,
 		});
 	},
@@ -256,7 +266,7 @@ export const DefaultAutostopSave: Story = {
 
 		await userEvent.click(saveButton);
 		await waitFor(() => {
-			expect(API.updateChatWorkspaceTTL).toHaveBeenCalledWith({
+			expect(API.experimental.updateChatWorkspaceTTL).toHaveBeenCalledWith({
 				workspace_ttl_ms: 10_800_000,
 			});
 		});
@@ -349,7 +359,7 @@ export const UsageDateFilter: Story = {
 		const defaultEndLabel = fixedNow.format("MMM D, YYYY");
 
 		await waitFor(() => {
-			expect(API.getChatCostUsers).toHaveBeenCalled();
+			expect(API.experimental.getChatCostUsers).toHaveBeenCalled();
 		});
 		const initialCallCount = getChatCostUsersCalls().length;
 
@@ -396,7 +406,7 @@ export const UsageDateFilterRefetchOverlay: Story = {
 			},
 		);
 
-		spyOn(API, "getChatCostUsers").mockImplementation(async () => {
+		spyOn(API.experimental, "getChatCostUsers").mockImplementation(async () => {
 			requestCount += 1;
 			if (requestCount === 1) {
 				return mockUsersResponse;
@@ -405,7 +415,9 @@ export const UsageDateFilterRefetchOverlay: Story = {
 			return refetchPromise;
 		});
 		spyOn(API, "getUser").mockResolvedValue(mockUserProfile);
-		spyOn(API, "getChatCostSummary").mockResolvedValue(mockCostSummary);
+		spyOn(API.experimental, "getChatCostSummary").mockResolvedValue(
+			mockCostSummary,
+		);
 
 		return () => {
 			resolveRefetch?.({
@@ -476,7 +488,7 @@ export const UsageUserDrillIn: Story = {
 		canManageChatModelConfigs: true,
 	},
 	parameters: {
-		queries: [{ key: userByNameKey("user-1"), data: mockUserProfile }],
+		queries: [{ key: userKey("user-1"), data: mockUserProfile }],
 	},
 	beforeEach: () => {
 		setupUsageSpies();
@@ -484,24 +496,19 @@ export const UsageUserDrillIn: Story = {
 	play: async ({ canvasElement }) => {
 		const body = within(canvasElement.ownerDocument.body);
 
-		// Wait for the user list to load.
+		// Click Alice's row to drill into the detail view.
 		await userEvent.click(await body.findByText("Alice Liddell"));
 
-		// The detail view should show the user header with name
-		// and username subtitle.
-		await expect(await body.findByText("Alice Liddell")).toBeInTheDocument();
-		await expect(body.getByText("@alice")).toBeInTheDocument();
+		// Wait for the detail view to mount. "User ID:" only
+		// renders in the detail panel, not the list.
+		await body.findByText(`User ID: ${mockUserProfile.id}`);
 
-		// The user profile was pre-seeded in the query cache via
-		// parameters.queries, so the detail header should show the
-		// user ID from that data.
-		await expect(
-			body.getByText(`User ID: ${mockUserProfile.id}`),
-		).toBeInTheDocument();
+		await expect(body.getByText("Alice Liddell")).toBeInTheDocument();
+		await expect(body.getByText("@alice")).toBeInTheDocument();
 
 		// The cost summary should have been fetched.
 		await waitFor(() => {
-			expect(API.getChatCostSummary).toHaveBeenCalled();
+			expect(API.experimental.getChatCostSummary).toHaveBeenCalled();
 		});
 
 		// The Back button should be visible.
@@ -515,7 +522,7 @@ export const UsageUserDrillInAndBack: Story = {
 		canManageChatModelConfigs: true,
 	},
 	parameters: {
-		queries: [{ key: userByNameKey("user-1"), data: mockUserProfile }],
+		queries: [{ key: userKey("user-1"), data: mockUserProfile }],
 	},
 	beforeEach: () => {
 		setupUsageSpies();
@@ -523,11 +530,12 @@ export const UsageUserDrillInAndBack: Story = {
 	play: async ({ canvasElement }) => {
 		const body = within(canvasElement.ownerDocument.body);
 
-		// Click Alice's row to drill in.
+		// Click Alice's row to drill into the detail view.
 		await userEvent.click(await body.findByText("Alice Liddell"));
 
-		// Wait for the detail view to appear.
-		await body.findByText("@alice");
+		// Wait for the detail view to mount. "User ID:" only
+		// renders in the detail panel, not the list.
+		await body.findByText(`User ID: ${mockUserProfile.id}`);
 
 		// Click Back to return to the list.
 		await userEvent.click(body.getByText("Back"));

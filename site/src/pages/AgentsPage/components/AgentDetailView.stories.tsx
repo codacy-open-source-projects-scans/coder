@@ -128,7 +128,6 @@ const meta: Meta<typeof AgentDetailView> = {
 		handleViewWorkspace: fn(),
 		handleOpenTerminal: fn(),
 		handleCommit: fn(),
-		onNavigateToChat: fn(),
 		handleInterrupt: fn(),
 		handleDeleteQueuedMessage: fn(),
 		handlePromoteQueuedMessage: fn(),
@@ -208,7 +207,7 @@ export const WithSidebarPanel: Story = {
 		} satisfies ChatDiffStatus,
 	},
 	beforeEach: () => {
-		spyOn(API, "getChatDiffContents").mockResolvedValue({
+		spyOn(API.experimental, "getChatDiffContents").mockResolvedValue({
 			chat_id: AGENT_ID,
 			diff: `diff --git a/src/main.ts b/src/main.ts
 index abc1234..def5678 100644
