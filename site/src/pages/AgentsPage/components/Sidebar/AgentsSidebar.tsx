@@ -4,27 +4,6 @@ import type {
 	ChatModelConfig,
 	ChatStatus,
 } from "api/typesGenerated";
-import { ErrorAlert } from "components/Alert/ErrorAlert";
-import { Avatar } from "components/Avatar/Avatar";
-import type { ModelSelectorOption } from "components/ai-elements";
-import { asString } from "components/ai-elements/runtimeTypeUtils";
-import { Button } from "components/Button/Button";
-import {
-	DropdownMenu,
-	DropdownMenuContent,
-	DropdownMenuItem,
-	DropdownMenuTrigger,
-} from "components/DropdownMenu/DropdownMenu";
-import { ExternalImage } from "components/ExternalImage/ExternalImage";
-import { CoderIcon } from "components/Icons/CoderIcon";
-import { ScrollArea } from "components/ScrollArea/ScrollArea";
-import { Skeleton } from "components/Skeleton/Skeleton";
-import { Spinner } from "components/Spinner/Spinner";
-import {
-	Tooltip,
-	TooltipContent,
-	TooltipTrigger,
-} from "components/Tooltip/Tooltip";
 import { useAuthenticated } from "hooks";
 import {
 	AlertTriangleIcon,
@@ -59,7 +38,6 @@ import { useDashboard } from "modules/dashboard/useDashboard";
 import {
 	createContext,
 	type FC,
-	memo,
 	useContext,
 	useEffect,
 	useRef,
@@ -68,6 +46,27 @@ import {
 import { Link, NavLink, useLocation, useParams } from "react-router";
 import { cn } from "utils/cn";
 import { shortRelativeTime } from "utils/time";
+import { ErrorAlert } from "#/components/Alert/ErrorAlert";
+import { Avatar } from "#/components/Avatar/Avatar";
+import type { ModelSelectorOption } from "#/components/ai-elements";
+import { asString } from "#/components/ai-elements/runtimeTypeUtils";
+import { Button } from "#/components/Button/Button";
+import {
+	DropdownMenu,
+	DropdownMenuContent,
+	DropdownMenuItem,
+	DropdownMenuTrigger,
+} from "#/components/DropdownMenu/DropdownMenu";
+import { ExternalImage } from "#/components/ExternalImage/ExternalImage";
+import { CoderIcon } from "#/components/Icons/CoderIcon";
+import { ScrollArea } from "#/components/ScrollArea/ScrollArea";
+import { Skeleton } from "#/components/Skeleton/Skeleton";
+import { Spinner } from "#/components/Spinner/Spinner";
+import {
+	Tooltip,
+	TooltipContent,
+	TooltipTrigger,
+} from "#/components/Tooltip/Tooltip";
 import { getNormalizedModelRef } from "../../utils/modelOptions";
 import { getTimeGroup, TIME_GROUPS } from "../../utils/timeGroups";
 import { UsageIndicator } from "../UsageIndicator";
@@ -354,7 +353,7 @@ interface ChatTreeNodeProps {
 	readonly isChildNode: boolean;
 }
 
-const ChatTreeNode = memo<ChatTreeNodeProps>(({ chat, isChildNode }) => {
+const ChatTreeNode: FC<ChatTreeNodeProps> = ({ chat, isChildNode }) => {
 	const {
 		chatTree,
 		chatById,
@@ -578,7 +577,7 @@ const ChatTreeNode = memo<ChatTreeNodeProps>(({ chat, isChildNode }) => {
 			)}
 		</div>
 	);
-});
+};
 
 export const AgentsSidebar: FC<AgentsSidebarProps> = (props) => {
 	const {
@@ -626,6 +625,15 @@ export const AgentsSidebar: FC<AgentsSidebarProps> = (props) => {
 	});
 	const visibleRootIDs = chatTree.rootIds.filter((chatID) =>
 		visibleChatIDs.has(chatID),
+	);
+
+	// Pre-compute the first non-empty time group so the filter
+	// dropdown renders next to it without needing a mutable IIFE.
+	const firstNonEmptyGroup = TIME_GROUPS.find((group) =>
+		visibleRootIDs.some((id) => {
+			const chat = chatById.get(id);
+			return chat !== undefined && getTimeGroup(chat.updated_at) === group;
+		}),
 	);
 
 	// Auto-expand ancestors of the active chat so it's always visible.
@@ -719,53 +727,6 @@ export const AgentsSidebar: FC<AgentsSidebarProps> = (props) => {
 									<SettingsIcon />
 								</Link>
 							</Button>
-							<Button
-								asChild
-								variant="subtle"
-								size="icon"
-								aria-label="Analytics"
-								className={cn(
-									"h-7 w-7 min-w-0 text-content-secondary hover:text-content-primary",
-									sidebarView.panel === "analytics" && "text-content-primary",
-								)}
-							>
-								<Link to="/agents/analytics">
-									<BarChart3Icon />
-								</Link>
-							</Button>{" "}
-							<DropdownMenu>
-								<DropdownMenuTrigger asChild>
-									<Button
-										variant="subtle"
-										size="icon"
-										aria-label="Filter agents"
-										className={cn(
-											"h-7 w-7 min-w-0 text-content-secondary hover:text-content-primary",
-											archivedFilter === "archived" && "text-content-primary",
-										)}
-									>
-										<FilterIcon />
-									</Button>
-								</DropdownMenuTrigger>
-								<DropdownMenuContent align="end">
-									<DropdownMenuItem
-										onSelect={() => onArchivedFilterChange?.("active")}
-									>
-										Active
-										{archivedFilter === "active" && (
-											<CheckIcon className="ml-auto h-3.5 w-3.5" />
-										)}
-									</DropdownMenuItem>
-									<DropdownMenuItem
-										onSelect={() => onArchivedFilterChange?.("archived")}
-									>
-										Archived
-										{archivedFilter === "archived" && (
-											<CheckIcon className="ml-auto h-3.5 w-3.5" />
-										)}
-									</DropdownMenuItem>
-								</DropdownMenuContent>
-							</DropdownMenu>
 							{onCollapse && (
 								<Button
 									variant="subtle"
@@ -824,14 +785,25 @@ export const AgentsSidebar: FC<AgentsSidebarProps> = (props) => {
 								</div>
 							</>
 						) : (
-							<ChatTreeContext.Provider value={chatTreeCtx}>
+							<ChatTreeContext value={chatTreeCtx}>
 								{visibleRootIDs.length === 0 ? (
 									<div className="rounded-lg border border-dashed border-border-default bg-surface-primary p-4 text-center text-xs text-content-secondary">
-										{normalizedSearch
-											? "No matching agents"
-											: archivedFilter === "archived"
-												? "No archived agents"
-												: "No agents yet"}
+										<p className="m-0">
+											{normalizedSearch
+												? "No matching agents"
+												: archivedFilter === "archived"
+													? "No archived agents"
+													: "No agents yet"}
+										</p>
+										{archivedFilter === "archived" && (
+											<button
+												type="button"
+												className="mt-2 cursor-pointer border-none bg-transparent p-0 text-xs text-content-secondary hover:text-content-primary hover:underline"
+												onClick={() => onArchivedFilterChange?.("active")}
+											>
+												← Back to active
+											</button>
+										)}
 									</div>
 								) : (
 									<div>
@@ -851,8 +823,48 @@ export const AgentsSidebar: FC<AgentsSidebarProps> = (props) => {
 															key={group}
 															className="[&:not(:first-child)]:mt-3"
 														>
-															<div className="mb-1 ml-2.5 flex items-center justify-between text-xs font-medium text-content-secondary">
+															<div className="mb-1 ml-2.5 -mr-0.5 flex items-center justify-between text-xs font-medium text-content-secondary">
 																<span>{group}</span>
+																{group === firstNonEmptyGroup && (
+																	<DropdownMenu>
+																		<DropdownMenuTrigger asChild>
+																			<Button
+																				variant="subtle"
+																				size="icon"
+																				aria-label="Filter agents"
+																				className={cn(
+																					"h-7 w-7 min-w-0 text-content-secondary hover:text-content-primary",
+																					archivedFilter === "archived" &&
+																						"text-content-primary",
+																				)}
+																			>
+																				<FilterIcon />
+																			</Button>
+																		</DropdownMenuTrigger>
+																		<DropdownMenuContent align="end">
+																			<DropdownMenuItem
+																				onSelect={() =>
+																					onArchivedFilterChange?.("active")
+																				}
+																			>
+																				Active
+																				{archivedFilter === "active" && (
+																					<CheckIcon className="ml-auto h-3.5 w-3.5" />
+																				)}
+																			</DropdownMenuItem>
+																			<DropdownMenuItem
+																				onSelect={() =>
+																					onArchivedFilterChange?.("archived")
+																				}
+																			>
+																				Archived
+																				{archivedFilter === "archived" && (
+																					<CheckIcon className="ml-auto h-3.5 w-3.5" />
+																				)}
+																			</DropdownMenuItem>
+																		</DropdownMenuContent>
+																	</DropdownMenu>
+																)}
 															</div>
 															<div className="flex flex-col gap-0.5">
 																{groupChats.map((chat) => (
@@ -865,7 +877,7 @@ export const AgentsSidebar: FC<AgentsSidebarProps> = (props) => {
 															</div>
 														</div>
 													);
-												})}
+												})}{" "}
 											</div>
 										)}
 									</div>
@@ -876,7 +888,7 @@ export const AgentsSidebar: FC<AgentsSidebarProps> = (props) => {
 										isFetchingNextPage={isFetchingNextPage}
 									/>
 								)}
-							</ChatTreeContext.Provider>
+							</ChatTreeContext>
 						)}
 					</div>
 				</ScrollArea>

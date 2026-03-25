@@ -8,8 +8,6 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { API } from "api/api";
 import type * as TypesGen from "api/typesGenerated";
 import type { Chat } from "api/typesGenerated";
-import type { ModelSelectorOption } from "components/ai-elements";
-import { DeleteDialog } from "components/Dialogs/DeleteDialog/DeleteDialog";
 import dayjs from "dayjs";
 import { useState } from "react";
 import {
@@ -22,6 +20,8 @@ import {
 	within,
 } from "storybook/test";
 import { reactRouterParameters } from "storybook-addon-remix-react-router";
+import type { ModelSelectorOption } from "#/components/ai-elements";
+import { DeleteDialog } from "#/components/Dialogs/DeleteDialog/DeleteDialog";
 import AgentAnalyticsPage from "./AgentAnalyticsPage";
 import AgentCreatePage from "./AgentCreatePage";
 import AgentSettingsPage from "./AgentSettingsPage";
@@ -486,11 +486,6 @@ export const WithErrorReasons: Story = {
 	},
 };
 
-const openAnalyticsView = async (canvasElement: HTMLElement) => {
-	const canvas = within(canvasElement);
-	await userEvent.click(canvas.getByRole("link", { name: "Analytics" }));
-};
-
 const openSettingsView = async (canvasElement: HTMLElement) => {
 	const canvas = within(canvasElement);
 	const link = await waitFor(() =>
@@ -503,9 +498,13 @@ export const OpensAnalyticsForAdmins: Story = {
 	args: {
 		isAgentsAdmin: true,
 	},
-	play: async ({ canvasElement }) => {
-		await openAnalyticsView(canvasElement);
-
+	parameters: {
+		reactRouter: reactRouterParameters({
+			location: { path: "/agents/analytics" },
+			routing: agentsRouting,
+		}),
+	},
+	play: async () => {
 		await waitFor(() => {
 			expect(
 				screen.getByText(
@@ -522,10 +521,12 @@ export const OpensAnalyticsForNonAdmins: Story = {
 	},
 	parameters: {
 		permissions: MockNoPermissions,
+		reactRouter: reactRouterParameters({
+			location: { path: "/agents/analytics" },
+			routing: agentsRouting,
+		}),
 	},
-	play: async ({ canvasElement }) => {
-		await openAnalyticsView(canvasElement);
-
+	play: async () => {
 		await waitFor(() => {
 			expect(
 				screen.getByText(

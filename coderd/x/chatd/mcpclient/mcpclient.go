@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strings"
 	"sync"
@@ -194,7 +195,7 @@ func connectOne(
 		}
 
 		tools = append(
-			tools, newMCPTool(cfg.Slug, mcpTool, mcpClient),
+			tools, newMCPTool(cfg.ID, cfg.Slug, mcpTool, mcpClient),
 		)
 	}
 
@@ -214,17 +215,30 @@ func createTransport(
 	cfg database.MCPServerConfig,
 	headers map[string]string,
 ) (transport.Interface, error) {
+	// Each connection gets its own HTTP client with a dedicated
+	// transport so that httptest.Server.Close() (which calls
+	// CloseIdleConnections on http.DefaultTransport) does not
+	// disrupt unrelated connections during parallel tests.
+	var httpClient *http.Client
+	if dt, ok := http.DefaultTransport.(*http.Transport); ok {
+		httpClient = &http.Client{Transport: dt.Clone()}
+	} else {
+		httpClient = &http.Client{}
+	}
+
 	switch cfg.Transport {
 	case "sse":
 		return transport.NewSSE(
 			cfg.Url,
 			transport.WithHeaders(headers),
+			transport.WithHTTPClient(httpClient),
 		)
 	case "", "streamable_http":
 		// Default to streamable HTTP, the newer transport.
 		return transport.NewStreamableHTTP(
 			cfg.Url,
 			transport.WithHTTPHeaders(headers),
+			transport.WithHTTPBasicClient(httpClient),
 		)
 	default:
 		return nil, xerrors.Errorf(
@@ -272,6 +286,12 @@ func buildAuthHeaders(
 		}
 		tokenType := tok.TokenType
 		if tokenType == "" {
+			tokenType = "Bearer"
+		}
+		// RFC 6750 says the scheme is case-insensitive, but
+		// some servers (e.g. Linear) reject lowercase
+		// "bearer". Normalize to the canonical form.
+		if strings.EqualFold(tokenType, "bearer") {
 			tokenType = "Bearer"
 		}
 		headers["Authorization"] = tokenType + " " + tok.AccessToken
@@ -363,10 +383,17 @@ func redactErrorURL(err error) string {
 	return err.Error()
 }
 
+// MCPToolIdentifier is implemented by tools that originate from
+// an MCP server config and can report the config's database ID.
+type MCPToolIdentifier interface {
+	MCPServerConfigID() uuid.UUID
+}
+
 // mcpToolWrapper adapts a single MCP tool into a
 // fantasy.AgentTool. It stores the prefixed name for Info() but
 // strips the prefix when forwarding calls to the remote server.
 type mcpToolWrapper struct {
+	configID        uuid.UUID
 	prefixedName    string
 	originalName    string
 	description     string
@@ -376,14 +403,22 @@ type mcpToolWrapper struct {
 	providerOptions fantasy.ProviderOptions
 }
 
+// MCPServerConfigID returns the database ID of the MCP server
+// config that this tool originates from.
+func (t *mcpToolWrapper) MCPServerConfigID() uuid.UUID {
+	return t.configID
+}
+
 // newMCPTool creates an mcpToolWrapper from an mcp.Tool
 // discovered on a remote server.
 func newMCPTool(
+	configID uuid.UUID,
 	serverSlug string,
 	tool mcp.Tool,
 	mcpClient *client.Client,
 ) *mcpToolWrapper {
 	return &mcpToolWrapper{
+		configID:     configID,
 		prefixedName: serverSlug + toolNameSep + tool.Name,
 		originalName: tool.Name,
 		description:  tool.Description,
@@ -394,11 +429,17 @@ func newMCPTool(
 }
 
 func (t *mcpToolWrapper) Info() fantasy.ToolInfo {
+	// Ensure Required is never nil so that it serializes to [] instead
+	// of null. OpenAI rejects null for the JSON Schema "required" field.
+	required := t.required
+	if required == nil {
+		required = []string{}
+	}
 	return fantasy.ToolInfo{
 		Name:        t.prefixedName,
 		Description: t.description,
 		Parameters:  t.parameters,
-		Required:    t.required,
+		Required:    required,
 		Parallel:    true,
 	}
 }

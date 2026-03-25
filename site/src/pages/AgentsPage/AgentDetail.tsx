@@ -11,6 +11,7 @@ import {
 	deleteChatQueuedMessage,
 	editChatMessage,
 	interruptChat,
+	mcpServerConfigs,
 	promoteChatQueuedMessage,
 	userCompactionThresholds,
 } from "api/queries/chats";
@@ -36,7 +37,7 @@ import { toast } from "sonner";
 import type { UrlTransform } from "streamdown";
 import { isMobileViewport } from "utils/mobile";
 import { pageTitle } from "utils/page";
-import { portForwardURL } from "utils/portForward";
+import { rewriteLocalhostURL } from "utils/portForward";
 import type { AgentsOutletContext } from "./AgentsPage";
 import type { ChatMessageInputRef } from "./components/AgentChatInput";
 import { useChatStore } from "./components/AgentDetail/ChatContext";
@@ -50,6 +51,7 @@ import {
 	AgentDetailNotFoundView,
 	AgentDetailView,
 } from "./components/AgentDetailView";
+import { getDefaultMCPSelection } from "./components/MCPServerPicker";
 import { useGitWatcher } from "./hooks/useGitWatcher";
 import {
 	buildModelConfigIDByModelID,
@@ -67,8 +69,6 @@ import {
 
 /** localStorage key controlling whether the right panel is visible. */
 export const RIGHT_PANEL_OPEN_KEY = "agents.right-panel-open";
-
-const localHosts = new Set(["localhost", "127.0.0.1", "0.0.0.0"]);
 
 const lastModelConfigIDStorageKey = "agents.last-model-config-id";
 /** @internal Exported for testing. */
@@ -315,7 +315,22 @@ const AgentDetail: FC = () => {
 	const chatModelConfigsQuery = useQuery(chatModelConfigs());
 	const userThresholdsQuery = useQuery(userCompactionThresholds());
 	const desktopEnabledQuery = useQuery(chatDesktopEnabled());
+	const mcpServersQuery = useQuery(mcpServerConfigs());
 	const desktopEnabled = desktopEnabledQuery.data?.enable_desktop ?? false;
+
+	// MCP server selection state.
+	const mcpServers = mcpServersQuery.data ?? [];
+	const [selectedMCPServerIds, setSelectedMCPServerIds] = useState<
+		string[] | null
+	>(null);
+
+	const handleMCPSelectionChange = (ids: string[]) => {
+		setSelectedMCPServerIds(ids);
+	};
+
+	const handleMCPAuthComplete = (_serverId: string) => {
+		void mcpServersQuery.refetch();
+	};
 
 	const modelOptions = getModelOptionsFromCatalog(
 		chatModelsQuery.data,
@@ -384,27 +399,25 @@ const AgentDetail: FC = () => {
 		if (!proxyHost || !agentName || !wsName || !wsOwner) {
 			return url;
 		}
-		try {
-			const parsed = new URL(url);
-			if (!localHosts.has(parsed.hostname)) {
-				return url;
-			}
-			return portForwardURL(
-				proxyHost,
-				Number.parseInt(parsed.port, 10),
-				agentName,
-				wsName,
-				wsOwner,
-				"http",
-				parsed.pathname,
-				parsed.search,
-			);
-		} catch {
-			return url;
-		}
+		return rewriteLocalhostURL(url, proxyHost, agentName, wsName, wsOwner);
 	};
 
 	const chatRecord = chatQuery.data;
+
+	// Initialize MCP selection from chat record or defaults.
+	const effectiveMCPServerIds = (() => {
+		if (selectedMCPServerIds !== null) {
+			return selectedMCPServerIds;
+		}
+		// If the chat has MCP server IDs recorded (even empty, meaning
+		// the user deliberately opted out), use those.
+		if (chatRecord?.mcp_server_ids) {
+			return chatRecord.mcp_server_ids;
+		}
+		// Otherwise, compute defaults from server availability.
+		return getDefaultMCPSelection(mcpServers);
+	})();
+
 	// Flatten paginated messages into chronological order.
 	// Pages arrive newest-first per page, and pages[0] is the
 	// most recent page.
@@ -640,6 +653,10 @@ const AgentDetail: FC = () => {
 		const request: TypesGen.CreateChatMessageRequest = {
 			content,
 			model_config_id: selectedModelConfigID,
+			mcp_server_ids:
+				effectiveMCPServerIds.length > 0
+					? [...effectiveMCPServerIds]
+					: undefined,
 		};
 		clearChatErrorReason(agentId);
 		clearStreamError();
@@ -909,6 +926,10 @@ const AgentDetail: FC = () => {
 			isFetchingMoreMessages={chatMessagesQuery.isFetchingNextPage}
 			onFetchMoreMessages={chatMessagesQuery.fetchNextPage}
 			desktopChatId={desktopEnabled ? agentId : undefined}
+			mcpServers={mcpServers}
+			selectedMCPServerIds={effectiveMCPServerIds}
+			onMCPSelectionChange={handleMCPSelectionChange}
+			onMCPAuthComplete={handleMCPAuthComplete}
 		/>
 	);
 };

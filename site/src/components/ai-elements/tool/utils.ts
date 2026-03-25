@@ -166,6 +166,7 @@ const SELECTION_OVERRIDE_CSS = [
 	"  --diffs-bg-selection-override: hsl(var(--content-link) / 0.08);",
 	"  --diffs-bg-selection-number-override: hsl(var(--content-link) / 0.13);",
 	"  --diffs-selection-number-fg: hsl(var(--content-link));",
+	"  --diffs-gap-style: 1px solid hsl(var(--border-default));",
 	"}",
 	// Direct rules that override both context and change-line
 	// selection backgrounds so every selected line looks the same.
@@ -209,23 +210,28 @@ const SEPARATOR_CSS = [
 	"[data-unified] [data-separator='line-info'] [data-separator-wrapper] {",
 	"  padding-inline: 0 !important;",
 	"}",
-	// The first separator in a file just says "N unmodified
-	// lines" before the first hunk — that's obvious context
-	// that adds no value, so hide it entirely.
-	"[data-separator='line-info'][data-separator-first] {",
-	"  display: none !important;",
-	"}",
-	// Thin single border and muted text so collapsed-line
-	// indicators read as a quiet hint, not a landmark.
+
+	// Centered text with horizontal rules on either side:
+	// ────── N unmodified lines ──────
 	"[data-separator='line-info'] {",
 	"  height: 28px !important;",
-	"  border-top: 1px solid hsl(var(--border-default));",
-	"  border-bottom: 1px solid hsl(var(--border-default));",
 	"}",
 	"[data-separator-content] {",
+	"  display: flex !important;",
+	"  align-items: center !important;",
+	"  gap: 12px !important;",
+	"  overflow: visible !important;",
+	"  height: auto !important;",
 	"  font-size: 11px !important;",
 	"  color: hsl(var(--content-secondary)) !important;",
 	"  opacity: 0.8;",
+	"}",
+	"[data-separator-content]::before,",
+	"[data-separator-content]::after {",
+	"  content: '' !important;",
+	"  flex: 1 !important;",
+	"  height: 1px !important;",
+	"  background: hsl(var(--border-default)) !important;",
 	"}",
 ].join(" ");
 
@@ -238,8 +244,8 @@ const DIFF_HEADER_CSS = [
 	"[data-diffs-header] {",
 	"  font-size: 13px;",
 	"  min-height: 32px !important;",
-	"  padding-block: 0 !important;",
-	"  padding-inline: 12px !important;",
+	"  padding-block: 8px !important;",
+	"  padding-inline: 10px 6px !important;",
 	"  border-bottom: 1px solid hsl(var(--border-default));",
 	"}",
 
@@ -256,7 +262,8 @@ const DIFF_HEADER_CSS = [
 	// text baselines match despite different font sizes (11px vs
 	// 12px). Without this the box-centering default shifts the
 	// badge a fraction of a pixel above the title.
-	"[data-diffs-header] [data-header-content] { align-items: baseline; }",
+	"[data-diffs-header] [data-header-content] { align-items: baseline; overflow: hidden; }",
+	"[data-diffs-header] [data-rename-icon] { align-self: center; }",
 	"[data-diffs-header] [data-header-content]::before {",
 	"  font-size: 11px;",
 	"  font-weight: 600;",
@@ -282,8 +289,14 @@ const DIFF_HEADER_CSS = [
 
 	// Stat counts styled as compact pill badges.
 	"[data-diffs-header] [data-metadata] {",
+	"  flex-shrink: 0;",
 	"  flex-direction: row-reverse;",
+	"  align-items: stretch;",
 	"  gap: 0 !important;",
+	"  padding: 0;",
+	"  border: 1px solid hsl(var(--border-default));",
+	"  border-radius: 3px;",
+	"  overflow: hidden;",
 	"}",
 	"[data-diffs-header] [data-additions-count],",
 	"[data-diffs-header] [data-deletions-count] {",
@@ -291,8 +304,8 @@ const DIFF_HEADER_CSS = [
 	"  font-size: 12px;",
 	"  font-weight: 500;",
 	"  line-height: 20px;",
-	"  padding-inline: 6px;",
-	"  border-radius: 3px;",
+	"  padding-inline: 4px;",
+	"  border-radius: 0;",
 	"}",
 	"[data-diffs-header] [data-additions-count] {",
 	"  color: hsl(var(--git-added-bright)) !important;",
@@ -301,14 +314,6 @@ const DIFF_HEADER_CSS = [
 	"[data-diffs-header] [data-deletions-count] {",
 	"  color: hsl(var(--git-deleted-bright)) !important;",
 	"  background-color: hsl(var(--surface-git-deleted));",
-	"}",
-	// Joined badge: flatten touching inner edges. DOM order is
-	// [deletions][additions]; row-reverse puts additions left.
-	"[data-deletions-count] + [data-additions-count] {",
-	"  border-radius: 3px 0 0 3px;",
-	"}",
-	"[data-deletions-count]:has(+ [data-additions-count]) {",
-	"  border-radius: 0 3px 3px 0;",
 	"}",
 ].join(" ");
 
@@ -319,6 +324,11 @@ export const diffViewerCSS = [
 	// tint and word-level emphasis highlights remain visible.
 	"pre, [data-line]:not([data-selected-line]):not([data-line-type='change-addition']):not([data-line-type='change-deletion']), [data-diffs-header] { background-color: transparent !important; }",
 	"[data-diffs-header] { border-left: 1px solid var(--border); }",
+	// The library reserves a 6 px horizontal scrollbar track on
+	// [data-code] via overflow: scroll clip. In wrap mode lines
+	// never overflow, so hide the track to remove the phantom gap.
+	"[data-code] { scrollbar-width: none !important; }",
+	"[data-code]::-webkit-scrollbar { height: 0 !important; }",
 	DIFF_HEADER_CSS,
 	SELECTION_OVERRIDE_CSS,
 	SEPARATOR_CSS,
@@ -329,10 +339,31 @@ export function getDiffViewerOptions(isDark: boolean) {
 	return {
 		diffStyle: "unified" as const,
 		diffIndicators: "bars" as const,
-		overflow: "scroll" as const,
+		overflow: "wrap" as const,
 		themeType: (isDark ? "dark" : "light") as "dark" | "light",
 		theme: isDark ? "github-dark-high-contrast" : "github-light",
 		unsafeCSS: diffViewerCSS,
+	};
+}
+
+/**
+ * Returns a shallow clone of the diff with the no-EOF-newline
+ * flags cleared on every hunk so the renderer never emits the
+ * "No newline at end of file" row.  Use for inline tool diffs
+ * where the indicator is visual noise.
+ */
+export function stripNoNewline(fileDiff: FileDiffMetadata): FileDiffMetadata {
+	const needsStrip = fileDiff.hunks.some(
+		(h) => h.noEOFCRDeletions || h.noEOFCRAdditions,
+	);
+	if (!needsStrip) return fileDiff;
+	return {
+		...fileDiff,
+		hunks: fileDiff.hunks.map((h) => ({
+			...h,
+			noEOFCRDeletions: false,
+			noEOFCRAdditions: false,
+		})),
 	};
 }
 
@@ -525,6 +556,26 @@ export const buildEditDiff = (
 	if (!parsed.length || !parsed[0].files.length) return null;
 	return parsed[0].files[0];
 };
+
+/**
+ * Converts an MCP-prefixed tool name into a human-readable label.
+ * E.g. "linear__list_issues" with slug "linear" → "List issues"
+ */
+export function humanizeMCPToolName(
+	slug: string,
+	prefixedName: string,
+): string {
+	const prefix = `${slug}__`;
+	const raw = prefixedName.startsWith(prefix)
+		? prefixedName.slice(prefix.length)
+		: prefixedName;
+	// Replace runs of underscores with a single space, then trim.
+	const words = raw.replace(/_+/g, " ").trim();
+	if (!words) {
+		return prefixedName;
+	}
+	return words.charAt(0).toUpperCase() + words.slice(1);
+}
 
 // Re-export runtime type utils used by sub-components so they
 // can import from a single location.
