@@ -1,6 +1,5 @@
 import Skeleton from "@mui/material/Skeleton";
 import { useAuthenticated } from "hooks";
-import { useClickableTableRow } from "hooks/useClickableTableRow";
 import {
 	BanIcon,
 	CloudIcon,
@@ -12,22 +11,6 @@ import {
 	SquareTerminalIcon,
 	StarIcon,
 } from "lucide-react";
-import {
-	getTerminalHref,
-	getVSCodeHref,
-	openAppInNewWindow,
-} from "modules/apps/apps";
-import { useAppLink } from "modules/apps/useAppLink";
-import { useDashboard } from "modules/dashboard/useDashboard";
-import { abilitiesByWorkspaceStatus } from "modules/workspaces/actions";
-import { WorkspaceBuildCancelDialog } from "modules/workspaces/WorkspaceBuildCancelDialog/WorkspaceBuildCancelDialog";
-import { WorkspaceMoreActions } from "modules/workspaces/WorkspaceMoreActions/WorkspaceMoreActions";
-import { WorkspaceOutdatedTooltip } from "modules/workspaces/WorkspaceOutdatedTooltip/WorkspaceOutdatedTooltip";
-import { WorkspaceStatus } from "modules/workspaces/WorkspaceStatus/WorkspaceStatus";
-import {
-	useWorkspaceUpdate,
-	WorkspaceUpdateDialogs,
-} from "modules/workspaces/WorkspaceUpdateDialogs";
 import type React from "react";
 import {
 	type FC,
@@ -36,9 +19,7 @@ import {
 	useState,
 } from "react";
 import { useMutation, useQuery, useQueryClient } from "react-query";
-import { useNavigate } from "react-router";
-import { cn } from "utils/cn";
-import { getDisplayWorkspaceTemplateName } from "utils/workspace";
+import { Link, useNavigate } from "react-router";
 import { API } from "#/api/api";
 import { templateVersion } from "#/api/queries/templates";
 import {
@@ -83,6 +64,25 @@ import {
 	TooltipProvider,
 	TooltipTrigger,
 } from "#/components/Tooltip/Tooltip";
+import { useClickableTableRow } from "#/hooks/useClickableTableRow";
+import {
+	getTerminalHref,
+	getVSCodeHref,
+	openAppInNewWindow,
+} from "#/modules/apps/apps";
+import { useAppLink } from "#/modules/apps/useAppLink";
+import { useDashboard } from "#/modules/dashboard/useDashboard";
+import { abilitiesByWorkspaceStatus } from "#/modules/workspaces/actions";
+import { WorkspaceBuildCancelDialog } from "#/modules/workspaces/WorkspaceBuildCancelDialog/WorkspaceBuildCancelDialog";
+import { WorkspaceMoreActions } from "#/modules/workspaces/WorkspaceMoreActions/WorkspaceMoreActions";
+import { WorkspaceOutdatedTooltip } from "#/modules/workspaces/WorkspaceOutdatedTooltip/WorkspaceOutdatedTooltip";
+import { WorkspaceStatus } from "#/modules/workspaces/WorkspaceStatus/WorkspaceStatus";
+import {
+	useWorkspaceUpdate,
+	WorkspaceUpdateDialogs,
+} from "#/modules/workspaces/WorkspaceUpdateDialogs";
+import { cn } from "#/utils/cn";
+import { getDisplayWorkspaceTemplateName } from "#/utils/workspace";
 import { WorkspaceSharingIndicator } from "./WorkspaceSharingIndicator";
 import { WorkspacesEmpty } from "./WorkspacesEmpty";
 
@@ -96,6 +96,7 @@ interface WorkspacesTableProps {
 	canCreateTemplate: boolean;
 	onActionSuccess: () => Promise<void>;
 	onActionError: (error: unknown) => void;
+	chatsByWorkspace?: Record<string, string>;
 }
 
 export const WorkspacesTable: FC<WorkspacesTableProps> = ({
@@ -107,6 +108,7 @@ export const WorkspacesTable: FC<WorkspacesTableProps> = ({
 	canCreateTemplate,
 	onActionSuccess,
 	onActionError,
+	chatsByWorkspace,
 }) => {
 	const dashboard = useDashboard();
 
@@ -209,6 +211,17 @@ export const WorkspacesTable: FC<WorkspacesTableProps> = ({
 												{workspace.task_id && (
 													<Badge size="xs" variant="default">
 														Task
+													</Badge>
+												)}
+												{chatsByWorkspace?.[workspace.id] && (
+													<Badge size="xs" variant="info" hover asChild>
+														<Link
+															to={`/agents/${chatsByWorkspace[workspace.id]}`}
+															onClick={(e) => e.stopPropagation()}
+															aria-label={`View agent chat for ${workspace.name}`}
+														>
+															Agent
+														</Link>
 													</Badge>
 												)}
 											</Stack>

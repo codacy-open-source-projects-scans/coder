@@ -1552,6 +1552,10 @@ func TestPersistToolResultWithBinaryData(t *testing.T) {
 		SetExtraHeaders(gomock.Any()).
 		AnyTimes()
 	mockConn.EXPECT().
+		ListMCPTools(gomock.Any()).
+		Return(workspacesdk.ListMCPToolsResponse{}, nil).
+		AnyTimes()
+	mockConn.EXPECT().
 		LS(gomock.Any(), gomock.Any(), gomock.Any()).
 		Return(workspacesdk.LSResponse{}, nil).
 		AnyTimes()
@@ -2280,7 +2284,7 @@ func TestHeartbeatBumpsWorkspaceUsage(t *testing.T) {
 
 	// Link the workspace to the chat in the DB, simulating what
 	// the create_workspace tool does mid-conversation.
-	_, err = db.UpdateChatWorkspace(ctx, database.UpdateChatWorkspaceParams{
+	_, err = db.UpdateChatWorkspaceBinding(ctx, database.UpdateChatWorkspaceBindingParams{
 		WorkspaceID: uuid.NullUUID{UUID: ws.ID, Valid: true},
 		ID:          chat.ID,
 	})
@@ -3152,6 +3156,10 @@ func TestComputerUseSubagentToolsAndModel(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	mockConn := agentconnmock.NewMockAgentConn(ctrl)
 	mockConn.EXPECT().
+		ListMCPTools(gomock.Any()).
+		Return(workspacesdk.ListMCPToolsResponse{}, nil).
+		AnyTimes()
+	mockConn.EXPECT().
 		ExecuteDesktopAction(gomock.Any(), gomock.Any()).
 		Return(workspacesdk.DesktopActionResponse{
 			ScreenshotWidth:  1920,
@@ -3595,6 +3603,8 @@ func TestMCPServerToolInvocation(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	mockConn := agentconnmock.NewMockAgentConn(ctrl)
 	mockConn.EXPECT().SetExtraHeaders(gomock.Any()).AnyTimes()
+	mockConn.EXPECT().ListMCPTools(gomock.Any()).
+		Return(workspacesdk.ListMCPToolsResponse{}, nil).AnyTimes()
 	mockConn.EXPECT().LS(gomock.Any(), gomock.Any(), gomock.Any()).
 		Return(workspacesdk.LSResponse{}, nil).AnyTimes()
 	mockConn.EXPECT().ReadFile(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).

@@ -53,6 +53,8 @@ const (
 	DefaultInFlightChatStaleAfter = 5 * time.Minute
 
 	homeInstructionLookupTimeout = 5 * time.Second
+	instructionCacheTTL          = 5 * time.Minute
+	workspaceDialValidationDelay = 5 * time.Second
 	// DefaultChatHeartbeatInterval is the default time between chat
 	// heartbeat updates while a chat is being processed.
 	DefaultChatHeartbeatInterval = 30 * time.Second
@@ -106,11 +108,18 @@ type Server struct {
 	pubsub                         pubsub.Pubsub
 	webpushDispatcher              webpush.Dispatcher
 	providerAPIKeys                chatprovider.ProviderAPIKeys
+	configCache                    *chatConfigCache
+	configCacheUnsubscribe         func()
 
 	// chatStreams stores per-chat stream state. Using sync.Map
 	// gives each chat independent locking — concurrent chats
 	// never contend with each other.
 	chatStreams sync.Map // uuid.UUID -> *chatStreamState
+
+	// workspaceMCPToolsCache caches workspace MCP tool definitions
+	// per chat to avoid re-fetching on every turn. The cache is
+	// keyed by chat ID and invalidated when the agent changes.
+	workspaceMCPToolsCache sync.Map // uuid.UUID -> *cachedWorkspaceMCPTools
 
 	usageTracker *workspacestats.UsageTracker
 	clock        quartz.Clock
@@ -152,29 +161,106 @@ func (p *Server) chatTemplateAllowlist() map[uuid.UUID]bool {
 	return m
 }
 
+// cachedWorkspaceMCPTools stores workspace MCP tools discovered
+// from a workspace agent, keyed by the agent ID that provided them.
+type cachedWorkspaceMCPTools struct {
+	agentID uuid.UUID
+	tools   []workspacesdk.MCPToolInfo
+}
+
 type turnWorkspaceContext struct {
 	server           *Server
 	chatStateMu      *sync.Mutex
 	currentChat      *database.Chat
 	loadChatSnapshot func(context.Context, uuid.UUID) (database.Chat, error)
 
-	mu          sync.Mutex
-	agent       database.WorkspaceAgent
-	agentLoaded bool
-	conn        workspacesdk.AgentConn
-	releaseConn func()
+	mu                sync.Mutex
+	agent             database.WorkspaceAgent
+	agentLoaded       bool
+	conn              workspacesdk.AgentConn
+	releaseConn       func()
+	cachedWorkspaceID uuid.NullUUID
 }
 
 func (c *turnWorkspaceContext) close() {
+	c.clearCachedWorkspaceState()
+}
+
+func (c *turnWorkspaceContext) clearCachedWorkspaceState() {
 	c.mu.Lock()
 	releaseConn := c.releaseConn
+	c.agent = database.WorkspaceAgent{}
+	c.agentLoaded = false
 	c.conn = nil
 	c.releaseConn = nil
+	c.cachedWorkspaceID = uuid.NullUUID{}
 	c.mu.Unlock()
 
 	if releaseConn != nil {
 		releaseConn()
 	}
+}
+
+func (c *turnWorkspaceContext) setCurrentChat(chat database.Chat) {
+	c.chatStateMu.Lock()
+	*c.currentChat = chat
+	c.chatStateMu.Unlock()
+}
+
+func (c *turnWorkspaceContext) currentChatSnapshot() database.Chat {
+	c.chatStateMu.Lock()
+	chatSnapshot := *c.currentChat
+	c.chatStateMu.Unlock()
+	return chatSnapshot
+}
+
+func (c *turnWorkspaceContext) selectWorkspace(chat database.Chat) {
+	c.setCurrentChat(chat)
+	c.clearCachedWorkspaceState()
+}
+
+func (c *turnWorkspaceContext) currentWorkspaceMatches(expected uuid.NullUUID) (database.Chat, bool) {
+	chatSnapshot := c.currentChatSnapshot()
+	return chatSnapshot, nullUUIDEqual(chatSnapshot.WorkspaceID, expected)
+}
+
+func nullUUIDEqual(left, right uuid.NullUUID) bool {
+	if left.Valid != right.Valid {
+		return false
+	}
+	if !left.Valid {
+		return true
+	}
+	return left.UUID == right.UUID
+}
+
+func (c *turnWorkspaceContext) persistBuildAgentBinding(
+	ctx context.Context,
+	chatSnapshot database.Chat,
+	buildID uuid.UUID,
+	agentID uuid.UUID,
+) (database.Chat, error) {
+	updatedChat, err := c.server.db.UpdateChatBuildAgentBinding(
+		ctx,
+		database.UpdateChatBuildAgentBindingParams{
+			ID: chatSnapshot.ID,
+			BuildID: uuid.NullUUID{
+				UUID:  buildID,
+				Valid: true,
+			},
+			AgentID: uuid.NullUUID{
+				UUID:  agentID,
+				Valid: true,
+			},
+		},
+	)
+	if err != nil {
+		return chatSnapshot, xerrors.Errorf(
+			"update chat build/agent binding: %w", err,
+		)
+	}
+	c.setCurrentChat(updatedChat)
+	return updatedChat, nil
 }
 
 func (c *turnWorkspaceContext) getWorkspaceAgent(ctx context.Context) (database.WorkspaceAgent, error) {
@@ -189,128 +275,245 @@ func (c *turnWorkspaceContext) ensureWorkspaceAgent(
 	defer c.mu.Unlock()
 
 	if c.agentLoaded {
-		c.chatStateMu.Lock()
-		chatSnapshot := *c.currentChat
-		c.chatStateMu.Unlock()
-		return chatSnapshot, c.agent, nil
+		chatSnapshot := c.currentChatSnapshot()
+		if nullUUIDEqual(c.cachedWorkspaceID, chatSnapshot.WorkspaceID) {
+			return chatSnapshot, c.agent, nil
+		}
+		c.agent = database.WorkspaceAgent{}
+		c.agentLoaded = false
 	}
 
-	return c.loadWorkspaceAgentLocked(ctx)
-}
-
-func (c *turnWorkspaceContext) refreshWorkspaceAgent(
-	ctx context.Context,
-) (database.Chat, database.WorkspaceAgent, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	c.agent = database.WorkspaceAgent{}
-	c.agentLoaded = false
 	return c.loadWorkspaceAgentLocked(ctx)
 }
 
 func (c *turnWorkspaceContext) loadWorkspaceAgentLocked(
 	ctx context.Context,
 ) (database.Chat, database.WorkspaceAgent, error) {
-	c.chatStateMu.Lock()
-	chatSnapshot := *c.currentChat
-	c.chatStateMu.Unlock()
+	chatSnapshot := c.currentChatSnapshot()
 
-	if !chatSnapshot.WorkspaceID.Valid {
-		refreshedChat, refreshErr := refreshChatWorkspaceSnapshot(
+	for attempt := 0; attempt < 2; attempt++ {
+		if !chatSnapshot.WorkspaceID.Valid {
+			refreshedChat, refreshErr := refreshChatWorkspaceSnapshot(
+				ctx,
+				chatSnapshot,
+				c.loadChatSnapshot,
+			)
+			if refreshErr != nil {
+				return chatSnapshot, database.WorkspaceAgent{}, refreshErr
+			}
+			if refreshedChat.WorkspaceID.Valid {
+				c.setCurrentChat(refreshedChat)
+				chatSnapshot = refreshedChat
+			}
+		}
+
+		if !chatSnapshot.WorkspaceID.Valid {
+			return chatSnapshot, database.WorkspaceAgent{}, xerrors.New("chat has no workspace")
+		}
+
+		if chatSnapshot.AgentID.Valid {
+			agent, err := c.server.db.GetWorkspaceAgentByID(ctx, chatSnapshot.AgentID.UUID)
+			if err == nil {
+				latestChat, workspaceMatches := c.currentWorkspaceMatches(chatSnapshot.WorkspaceID)
+				if !workspaceMatches {
+					chatSnapshot = latestChat
+					continue
+				}
+				c.agent = agent
+				c.agentLoaded = true
+				c.cachedWorkspaceID = chatSnapshot.WorkspaceID
+				return chatSnapshot, c.agent, nil
+			}
+			if !xerrors.Is(err, sql.ErrNoRows) {
+				c.server.logger.Warn(ctx, "agent binding lookup failed, re-resolving",
+					slog.F("agent_id", chatSnapshot.AgentID.UUID),
+					slog.Error(err),
+				)
+			}
+		}
+
+		agents, err := c.server.db.GetWorkspaceAgentsInLatestBuildByWorkspaceID(
+			ctx,
+			chatSnapshot.WorkspaceID.UUID,
+		)
+		if err != nil || len(agents) == 0 {
+			return chatSnapshot, database.WorkspaceAgent{}, xerrors.New("chat has no workspace agent")
+		}
+
+		build, err := c.server.db.GetLatestWorkspaceBuildByWorkspaceID(ctx, chatSnapshot.WorkspaceID.UUID)
+		if err != nil {
+			return chatSnapshot, database.WorkspaceAgent{}, xerrors.Errorf("get latest workspace build: %w", err)
+		}
+
+		updatedChat, err := c.persistBuildAgentBinding(
 			ctx,
 			chatSnapshot,
-			c.loadChatSnapshot,
+			build.ID,
+			agents[0].ID,
 		)
-		if refreshErr != nil {
-			return chatSnapshot, database.WorkspaceAgent{}, refreshErr
+		if err != nil {
+			return chatSnapshot, database.WorkspaceAgent{}, err
 		}
-		if refreshedChat.WorkspaceID.Valid {
-			c.chatStateMu.Lock()
-			*c.currentChat = refreshedChat
-			c.chatStateMu.Unlock()
-			chatSnapshot = refreshedChat
+
+		chatSnapshot = updatedChat
+		latestChat, workspaceMatches := c.currentWorkspaceMatches(chatSnapshot.WorkspaceID)
+		if !workspaceMatches {
+			chatSnapshot = latestChat
+			continue
 		}
+		c.agent = agents[0]
+		c.agentLoaded = true
+		c.cachedWorkspaceID = chatSnapshot.WorkspaceID
+		return chatSnapshot, c.agent, nil
 	}
 
-	if !chatSnapshot.WorkspaceID.Valid {
-		return chatSnapshot, database.WorkspaceAgent{}, xerrors.New("chat has no workspace")
-	}
-
-	agents, err := c.server.db.GetWorkspaceAgentsInLatestBuildByWorkspaceID(
-		ctx,
-		chatSnapshot.WorkspaceID.UUID,
+	return chatSnapshot, database.WorkspaceAgent{}, xerrors.New(
+		"chat workspace changed while resolving agent",
 	)
-	if err != nil || len(agents) == 0 {
-		return chatSnapshot, database.WorkspaceAgent{}, xerrors.New("chat has no workspace agent")
+}
+
+// getWorkspaceConnLocked returns the cached connection when it still matches
+// the current workspace. When the workspace changed, it clears the stale
+// cached state and returns the release func for the caller to run after
+// unlocking.
+func (c *turnWorkspaceContext) getWorkspaceConnLocked() (workspacesdk.AgentConn, func()) {
+	if c.conn == nil {
+		return nil, nil
 	}
 
-	c.agent = agents[0]
-	c.agentLoaded = true
-	return chatSnapshot, c.agent, nil
+	chatSnapshot := c.currentChatSnapshot()
+	if nullUUIDEqual(c.cachedWorkspaceID, chatSnapshot.WorkspaceID) {
+		return c.conn, nil
+	}
+
+	agentRelease := c.releaseConn
+	c.agent = database.WorkspaceAgent{}
+	c.agentLoaded = false
+	c.conn = nil
+	c.releaseConn = nil
+	c.cachedWorkspaceID = uuid.NullUUID{}
+	return nil, agentRelease
 }
 
 func (c *turnWorkspaceContext) getWorkspaceConn(ctx context.Context) (workspacesdk.AgentConn, error) {
-	c.mu.Lock()
-	if c.conn != nil {
-		currentConn := c.conn
-		c.mu.Unlock()
-		return currentConn, nil
-	}
-	c.mu.Unlock()
-
 	if c.server.agentConnFn == nil {
 		return nil, xerrors.New("workspace agent connector is not configured")
 	}
 
-	chatSnapshot, agent, err := c.ensureWorkspaceAgent(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	agentConn, agentRelease, err := c.server.agentConnFn(ctx, agent.ID)
-	if err != nil {
-		refreshedChat, refreshedAgent, refreshErr := c.refreshWorkspaceAgent(ctx)
-		if refreshErr != nil {
-			return nil, xerrors.Errorf("connect to workspace agent: %w", err)
-		}
-
-		retryConn, retryRelease, retryErr := c.server.agentConnFn(ctx, refreshedAgent.ID)
-		if retryErr != nil {
-			return nil, xerrors.Errorf("connect to workspace agent after refresh: %w", retryErr)
-		}
-
-		chatSnapshot = refreshedChat
-		agentConn = retryConn
-		agentRelease = retryRelease
-	}
-
-	c.mu.Lock()
-	if c.conn == nil {
-		c.conn = agentConn
-		c.releaseConn = agentRelease
-
-		var ancestorIDs []string
-		if chatSnapshot.ParentChatID.Valid {
-			ancestorIDs = append(ancestorIDs, chatSnapshot.ParentChatID.UUID.String())
-		}
-		ancestorJSON, marshalErr := json.Marshal(ancestorIDs)
-		if marshalErr != nil {
-			ancestorJSON = []byte("[]")
-		}
-		agentConn.SetExtraHeaders(http.Header{
-			workspacesdk.CoderChatIDHeader:          {chatSnapshot.ID.String()},
-			workspacesdk.CoderAncestorChatIDsHeader: {string(ancestorJSON)},
-		})
-
+	for attempt := 0; attempt < 2; attempt++ {
+		c.mu.Lock()
+		currentConn, staleRelease := c.getWorkspaceConnLocked()
 		c.mu.Unlock()
-		return agentConn, nil
-	}
-	currentConn := c.conn
-	c.mu.Unlock()
+		if currentConn != nil {
+			return currentConn, nil
+		}
+		if staleRelease != nil {
+			staleRelease()
+		}
 
-	agentRelease()
-	return currentConn, nil
+		chatSnapshot, agent, err := c.ensureWorkspaceAgent(ctx)
+		if err != nil {
+			return nil, err
+		}
+
+		dialResult, err := dialWithLazyValidation(
+			ctx,
+			agent.ID,
+			chatSnapshot.WorkspaceID.UUID,
+			DialFunc(c.server.agentConnFn),
+			func(ctx context.Context, workspaceID uuid.UUID) (uuid.UUID, error) {
+				agents, err := c.server.db.GetWorkspaceAgentsInLatestBuildByWorkspaceID(ctx, workspaceID)
+				if err != nil || len(agents) == 0 {
+					return uuid.Nil, xerrors.New("chat has no workspace agent")
+				}
+				return agents[0].ID, nil
+			},
+			workspaceDialValidationDelay,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		agentConn := dialResult.Conn
+		agentRelease := dialResult.Release
+		if dialResult.WasSwitched {
+			build, err := c.server.db.GetLatestWorkspaceBuildByWorkspaceID(ctx, chatSnapshot.WorkspaceID.UUID)
+			if err != nil {
+				if agentRelease != nil {
+					agentRelease()
+				}
+				return nil, xerrors.Errorf("get latest workspace build: %w", err)
+			}
+
+			switchedAgent, err := c.server.db.GetWorkspaceAgentByID(ctx, dialResult.AgentID)
+			if err != nil {
+				if agentRelease != nil {
+					agentRelease()
+				}
+				return nil, xerrors.Errorf("get workspace agent by id: %w", err)
+			}
+
+			updatedChat, err := c.persistBuildAgentBinding(
+				ctx,
+				chatSnapshot,
+				build.ID,
+				switchedAgent.ID,
+			)
+			if err != nil {
+				if agentRelease != nil {
+					agentRelease()
+				}
+				return nil, err
+			}
+			chatSnapshot = updatedChat
+
+			c.mu.Lock()
+			c.agent = switchedAgent
+			c.agentLoaded = true
+			c.cachedWorkspaceID = chatSnapshot.WorkspaceID
+			c.mu.Unlock()
+		}
+
+		if _, workspaceMatches := c.currentWorkspaceMatches(chatSnapshot.WorkspaceID); !workspaceMatches {
+			if agentRelease != nil {
+				agentRelease()
+			}
+			c.clearCachedWorkspaceState()
+			continue
+		}
+
+		c.mu.Lock()
+		if c.conn == nil {
+			c.conn = agentConn
+			c.releaseConn = agentRelease
+			c.cachedWorkspaceID = chatSnapshot.WorkspaceID
+
+			var ancestorIDs []string
+			if chatSnapshot.ParentChatID.Valid {
+				ancestorIDs = append(ancestorIDs, chatSnapshot.ParentChatID.UUID.String())
+			}
+			ancestorJSON, marshalErr := json.Marshal(ancestorIDs)
+			if marshalErr != nil {
+				ancestorJSON = []byte("[]")
+			}
+			agentConn.SetExtraHeaders(http.Header{
+				workspacesdk.CoderChatIDHeader:          {chatSnapshot.ID.String()},
+				workspacesdk.CoderAncestorChatIDsHeader: {string(ancestorJSON)},
+			})
+
+			c.mu.Unlock()
+			return agentConn, nil
+		}
+		currentConn = c.conn
+		c.mu.Unlock()
+
+		if agentRelease != nil {
+			agentRelease()
+		}
+		return currentConn, nil
+	}
+
+	return nil, xerrors.New("chat workspace changed while connecting")
 }
 
 // AgentConnFunc provides access to workspace agent connections.
@@ -420,6 +623,8 @@ func (e *UsageLimitExceededError) Error() string {
 type CreateOptions struct {
 	OwnerID            uuid.UUID
 	WorkspaceID        uuid.NullUUID
+	BuildID            uuid.NullUUID
+	AgentID            uuid.NullUUID
 	ParentChatID       uuid.NullUUID
 	RootChatID         uuid.NullUUID
 	Title              string
@@ -525,6 +730,8 @@ func (p *Server) CreateChat(ctx context.Context, opts CreateOptions) (database.C
 		insertedChat, err := tx.InsertChat(ctx, database.InsertChatParams{
 			OwnerID:           opts.OwnerID,
 			WorkspaceID:       opts.WorkspaceID,
+			BuildID:           opts.BuildID,
+			AgentID:           opts.AgentID,
 			ParentChatID:      opts.ParentChatID,
 			RootChatID:        opts.RootChatID,
 			LastModelConfigID: opts.ModelConfigID,
@@ -1126,6 +1333,477 @@ func (p *Server) InterruptChat(
 	return updatedChat
 }
 
+const manualTitleMessageWindowLimit = 50
+
+var ErrManualTitleRegenerationInProgress = xerrors.New(
+	"manual title regeneration already in progress",
+)
+
+type manualTitleGenerationError struct {
+	cause       error
+	modelConfig database.ChatModelConfig
+	usage       fantasy.Usage
+}
+
+func (e *manualTitleGenerationError) Error() string {
+	return e.cause.Error()
+}
+
+func (e *manualTitleGenerationError) Unwrap() error {
+	return e.cause
+}
+
+var manualTitleLockWorkerID = uuid.MustParse(
+	"00000000-0000-0000-0000-000000000001",
+)
+
+const manualTitleLockStaleAfter = time.Minute
+
+func isPendingOrRunningChatStatus(status database.ChatStatus) bool {
+	switch status {
+	case database.ChatStatusPending, database.ChatStatusRunning:
+		return true
+	default:
+		return false
+	}
+}
+
+func isFreshManualTitleLock(chat database.Chat, now time.Time) bool {
+	if !chat.WorkerID.Valid || chat.WorkerID.UUID != manualTitleLockWorkerID {
+		return false
+	}
+	leaseAt := chat.HeartbeatAt
+	if !leaseAt.Valid {
+		leaseAt = chat.StartedAt
+	}
+	return leaseAt.Valid && leaseAt.Time.After(now.Add(-manualTitleLockStaleAfter))
+}
+
+// updateChatStatusPreserveUpdatedAt applies internal lock transitions without
+// changing chat recency, because chat list ordering uses updated_at.
+func updateChatStatusPreserveUpdatedAt(
+	ctx context.Context,
+	store database.Store,
+	chat database.Chat,
+	workerID uuid.NullUUID,
+	startedAt sql.NullTime,
+	heartbeatAt sql.NullTime,
+) (database.Chat, error) {
+	return store.UpdateChatStatusPreserveUpdatedAt(
+		ctx,
+		database.UpdateChatStatusPreserveUpdatedAtParams{
+			ID:          chat.ID,
+			Status:      chat.Status,
+			WorkerID:    workerID,
+			StartedAt:   startedAt,
+			HeartbeatAt: heartbeatAt,
+			LastError:   chat.LastError,
+			UpdatedAt:   chat.UpdatedAt,
+		},
+	)
+}
+
+func (p *Server) acquireManualTitleLock(ctx context.Context, chatID uuid.UUID) error {
+	now := time.Now()
+	return p.db.InTx(func(tx database.Store) error {
+		lockedChat, err := tx.GetChatByIDForUpdate(ctx, chatID)
+		if err != nil {
+			return xerrors.Errorf("lock chat for manual title regeneration: %w", err)
+		}
+		if isPendingOrRunningChatStatus(lockedChat.Status) ||
+			isFreshManualTitleLock(lockedChat, now) {
+			return ErrManualTitleRegenerationInProgress
+		}
+		_, err = updateChatStatusPreserveUpdatedAt(
+			ctx,
+			tx,
+			lockedChat,
+			uuid.NullUUID{UUID: manualTitleLockWorkerID, Valid: true},
+			sql.NullTime{Time: now, Valid: true},
+			sql.NullTime{Time: now, Valid: true},
+		)
+		if err != nil {
+			return xerrors.Errorf("mark chat for manual title regeneration: %w", err)
+		}
+		return nil
+	}, database.DefaultTXOptions().WithID("chat_title_regenerate_lock"))
+}
+
+func (p *Server) releaseManualTitleLock(ctx context.Context, chatID uuid.UUID) {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+
+	err := p.db.InTx(func(tx database.Store) error {
+		lockedChat, err := tx.GetChatByIDForUpdate(cleanupCtx, chatID)
+		if err != nil {
+			return xerrors.Errorf("lock chat to release manual title regeneration: %w", err)
+		}
+		if !lockedChat.WorkerID.Valid || lockedChat.WorkerID.UUID != manualTitleLockWorkerID {
+			return nil
+		}
+		_, err = updateChatStatusPreserveUpdatedAt(
+			cleanupCtx,
+			tx,
+			lockedChat,
+			uuid.NullUUID{},
+			sql.NullTime{},
+			sql.NullTime{},
+		)
+		if err != nil {
+			return xerrors.Errorf("clear manual title regeneration marker: %w", err)
+		}
+		return nil
+	}, database.DefaultTXOptions().WithID("chat_title_regenerate_unlock"))
+	if err != nil {
+		p.logger.Warn(cleanupCtx, "failed to release manual title regeneration marker",
+			slog.F("chat_id", chatID),
+			slog.Error(err),
+		)
+	}
+}
+
+// RegenerateChatTitle regenerates a chat title from the chat's visible
+// messages, persists it when it changes, and broadcasts the update.
+func (p *Server) RegenerateChatTitle(
+	ctx context.Context,
+	chat database.Chat,
+) (database.Chat, error) {
+	// Reuse chatd's scoped auth context for deployment-config lookups while
+	// keeping chat ownership authorization at the HTTP layer.
+	//nolint:gocritic // Non-admin users need chatd-scoped config reads here.
+	chatdCtx := dbauthz.AsChatd(ctx)
+	keys, err := p.resolveProviderAPIKeys(chatdCtx)
+	if err != nil {
+		return database.Chat{}, xerrors.Errorf("resolve chat providers: %w", err)
+	}
+	if err := p.acquireManualTitleLock(ctx, chat.ID); err != nil {
+		return database.Chat{}, err
+	}
+	defer p.releaseManualTitleLock(chatdCtx, chat.ID)
+
+	updatedChat, err := p.regenerateChatTitleWithStore(
+		chatdCtx,
+		p.db,
+		chat,
+		keys,
+	)
+	if err != nil {
+		var generationErr *manualTitleGenerationError
+		if errors.As(err, &generationErr) {
+			// Reuse chatd's scoped auth context for failure accounting while
+			// detaching from request cancellation so usage is still recorded.
+			//nolint:gocritic // Failure accounting still needs chatd-scoped config reads.
+			recordCtx, recordCancel := context.WithTimeout(
+				dbauthz.AsChatd(context.WithoutCancel(ctx)),
+				5*time.Second,
+			)
+			defer recordCancel()
+			if _, recordErr := recordManualTitleUsage(
+				recordCtx,
+				p.db,
+				chat,
+				generationErr.modelConfig,
+				generationErr.usage,
+				"",
+			); recordErr != nil {
+				return database.Chat{}, errors.Join(
+					generationErr,
+					xerrors.Errorf("record manual title usage: %w", recordErr),
+				)
+			}
+			return database.Chat{}, generationErr
+		}
+		return database.Chat{}, err
+	}
+	return updatedChat, nil
+}
+
+func (p *Server) regenerateChatTitleWithStore(
+	ctx context.Context,
+	store database.Store,
+	chat database.Chat,
+	keys chatprovider.ProviderAPIKeys,
+) (database.Chat, error) {
+	if limitErr := p.checkUsageLimit(ctx, store, chat.OwnerID); limitErr != nil {
+		return database.Chat{}, limitErr
+	}
+
+	headMessages, err := store.GetChatMessagesByChatIDAscPaginated(
+		ctx,
+		database.GetChatMessagesByChatIDAscPaginatedParams{
+			ChatID:   chat.ID,
+			AfterID:  0,
+			LimitVal: manualTitleMessageWindowLimit,
+		},
+	)
+	if err != nil {
+		return database.Chat{}, xerrors.Errorf("get head chat messages: %w", err)
+	}
+	tailMessages, err := store.GetChatMessagesByChatIDDescPaginated(
+		ctx,
+		database.GetChatMessagesByChatIDDescPaginatedParams{
+			ChatID:   chat.ID,
+			BeforeID: 0,
+			LimitVal: manualTitleMessageWindowLimit,
+		},
+	)
+	if err != nil {
+		return database.Chat{}, xerrors.Errorf("get tail chat messages: %w", err)
+	}
+	messages := mergeManualTitleMessages(headMessages, tailMessages)
+	if len(messages) == 0 {
+		return chat, nil
+	}
+
+	model, modelConfig, err := p.resolveManualTitleModel(ctx, store, chat, keys)
+	if err != nil {
+		return database.Chat{}, err
+	}
+
+	title, usage, err := generateManualTitle(ctx, messages, model)
+	if err != nil {
+		wrappedErr := xerrors.Errorf("generate manual title: %w", err)
+		if usage == (fantasy.Usage{}) {
+			return database.Chat{}, wrappedErr
+		}
+		return database.Chat{}, &manualTitleGenerationError{
+			cause:       wrappedErr,
+			modelConfig: modelConfig,
+			usage:       usage,
+		}
+	}
+
+	recordCtx, recordCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer recordCancel()
+
+	updatedChat, recordErr := recordManualTitleUsage(
+		recordCtx,
+		store,
+		chat,
+		modelConfig,
+		usage,
+		title,
+	)
+	if recordErr != nil {
+		if title != "" {
+			return database.Chat{}, xerrors.Errorf("record manual title usage and update chat title: %w", recordErr)
+		}
+		return database.Chat{}, xerrors.Errorf("record manual title usage: %w", recordErr)
+	}
+	if updatedChat.Title == chat.Title {
+		return updatedChat, nil
+	}
+
+	p.publishChatPubsubEvent(updatedChat, coderdpubsub.ChatEventKindTitleChange, nil)
+	return updatedChat, nil
+}
+
+func (p *Server) resolveManualTitleModel(
+	ctx context.Context,
+	store database.Store,
+	chat database.Chat,
+	keys chatprovider.ProviderAPIKeys,
+) (fantasy.LanguageModel, database.ChatModelConfig, error) {
+	configs, err := store.GetEnabledChatModelConfigs(ctx)
+	if err != nil {
+		p.logger.Debug(ctx, "failed to list manual title model configs",
+			slog.F("chat_id", chat.ID),
+			slog.Error(err),
+		)
+		return p.resolveFallbackManualTitleModel(ctx, chat, keys)
+	}
+
+	config, ok := selectPreferredConfiguredShortTextModelConfig(configs)
+	if !ok {
+		return p.resolveFallbackManualTitleModel(ctx, chat, keys)
+	}
+
+	model, err := chatprovider.ModelFromConfig(
+		config.Provider,
+		config.Model,
+		keys,
+		chatprovider.UserAgent(),
+		chatprovider.CoderHeaders(chat),
+	)
+	if err != nil {
+		p.logger.Debug(ctx, "manual title preferred model unavailable",
+			slog.F("chat_id", chat.ID),
+			slog.F("provider", config.Provider),
+			slog.F("model", config.Model),
+			slog.Error(err),
+		)
+		return p.resolveFallbackManualTitleModel(ctx, chat, keys)
+	}
+
+	return model, config, nil
+}
+
+func (p *Server) resolveFallbackManualTitleModel(
+	ctx context.Context,
+	chat database.Chat,
+	keys chatprovider.ProviderAPIKeys,
+) (fantasy.LanguageModel, database.ChatModelConfig, error) {
+	config, err := p.resolveModelConfig(ctx, chat)
+	if err != nil {
+		return nil, database.ChatModelConfig{}, xerrors.Errorf(
+			"resolve fallback manual title model config: %w",
+			err,
+		)
+	}
+	model, err := chatprovider.ModelFromConfig(
+		config.Provider,
+		config.Model,
+		keys,
+		chatprovider.UserAgent(),
+		chatprovider.CoderHeaders(chat),
+	)
+	if err != nil {
+		return nil, database.ChatModelConfig{}, xerrors.Errorf(
+			"create fallback manual title model: %w",
+			err,
+		)
+	}
+	return model, config, nil
+}
+
+func mergeManualTitleMessages(
+	headMessages []database.ChatMessage,
+	tailMessagesDesc []database.ChatMessage,
+) []database.ChatMessage {
+	merged := make([]database.ChatMessage, 0, len(headMessages)+len(tailMessagesDesc))
+	seen := make(map[int64]struct{}, len(headMessages)+len(tailMessagesDesc))
+	appendUnique := func(message database.ChatMessage) {
+		if _, ok := seen[message.ID]; ok {
+			return
+		}
+		seen[message.ID] = struct{}{}
+		merged = append(merged, message)
+	}
+	for _, message := range headMessages {
+		appendUnique(message)
+	}
+	for i := len(tailMessagesDesc) - 1; i >= 0; i-- {
+		appendUnique(tailMessagesDesc[i])
+	}
+	return merged
+}
+
+func fantasyUsageToChatMessageUsage(usage fantasy.Usage) codersdk.ChatMessageUsage {
+	var chatUsage codersdk.ChatMessageUsage
+	if usage.InputTokens != 0 {
+		chatUsage.InputTokens = ptr.Ref(usage.InputTokens)
+	}
+	if usage.OutputTokens != 0 {
+		chatUsage.OutputTokens = ptr.Ref(usage.OutputTokens)
+	}
+	if usage.ReasoningTokens != 0 {
+		chatUsage.ReasoningTokens = ptr.Ref(usage.ReasoningTokens)
+	}
+	if usage.CacheCreationTokens != 0 {
+		chatUsage.CacheCreationTokens = ptr.Ref(usage.CacheCreationTokens)
+	}
+	if usage.CacheReadTokens != 0 {
+		chatUsage.CacheReadTokens = ptr.Ref(usage.CacheReadTokens)
+	}
+	return chatUsage
+}
+
+func recordManualTitleUsage(
+	ctx context.Context,
+	store database.Store,
+	chat database.Chat,
+	modelConfig database.ChatModelConfig,
+	usage fantasy.Usage,
+	newTitle string,
+) (database.Chat, error) {
+	hasUsage := usage != (fantasy.Usage{})
+	if !hasUsage && newTitle == "" {
+		return chat, nil
+	}
+
+	var totalCostMicros *int64
+	if hasUsage {
+		callConfig := codersdk.ChatModelCallConfig{}
+		if len(modelConfig.Options) > 0 {
+			if err := json.Unmarshal(modelConfig.Options, &callConfig); err != nil {
+				return database.Chat{}, xerrors.Errorf("parse model call config: %w", err)
+			}
+		}
+		totalCostMicros = chatcost.CalculateTotalCostMicros(
+			fantasyUsageToChatMessageUsage(usage),
+			callConfig.Cost,
+		)
+	}
+
+	// Use a valid empty JSON array for the content column.
+	// MarshalParts returns a null NullRawMessage for empty
+	// slices, which becomes an empty string that PostgreSQL
+	// rejects as invalid JSON.
+	content := "[]"
+
+	updatedChat := chat
+	err := store.InTx(func(tx database.Store) error {
+		lockedChat, err := tx.GetChatByIDForUpdate(ctx, chat.ID)
+		if err != nil {
+			return xerrors.Errorf("lock chat for manual title usage: %w", err)
+		}
+		updatedChat = lockedChat
+		if hasUsage {
+			messages, err := tx.InsertChatMessages(ctx, database.InsertChatMessagesParams{
+				ChatID:              chat.ID,
+				CreatedBy:           []uuid.UUID{chat.OwnerID},
+				ModelConfigID:       []uuid.UUID{modelConfig.ID},
+				Role:                []database.ChatMessageRole{database.ChatMessageRoleAssistant},
+				Content:             []string{content},
+				ContentVersion:      []int16{chatprompt.CurrentContentVersion},
+				Visibility:          []database.ChatMessageVisibility{database.ChatMessageVisibilityModel},
+				InputTokens:         []int64{usage.InputTokens},
+				OutputTokens:        []int64{usage.OutputTokens},
+				TotalTokens:         []int64{usage.TotalTokens},
+				ReasoningTokens:     []int64{usage.ReasoningTokens},
+				CacheCreationTokens: []int64{usage.CacheCreationTokens},
+				CacheReadTokens:     []int64{usage.CacheReadTokens},
+				ContextLimit:        []int64{modelConfig.ContextLimit},
+				Compressed:          []bool{false},
+				TotalCostMicros:     []int64{ptr.NilToDefault(totalCostMicros, 0)},
+				RuntimeMs:           []int64{0},
+				ProviderResponseID:  []string{""},
+			})
+			if err != nil {
+				return xerrors.Errorf("insert manual title usage message: %w", err)
+			}
+			if len(messages) != 1 {
+				return xerrors.Errorf("expected 1 manual title usage message, got %d", len(messages))
+			}
+			if err := tx.SoftDeleteChatMessageByID(ctx, messages[0].ID); err != nil {
+				return xerrors.Errorf("soft delete manual title usage message: %w", err)
+			}
+			if lockedChat.LastModelConfigID != modelConfig.ID {
+				if _, err := tx.UpdateChatLastModelConfigByID(ctx, database.UpdateChatLastModelConfigByIDParams{
+					ID:                chat.ID,
+					LastModelConfigID: lockedChat.LastModelConfigID,
+				}); err != nil {
+					return xerrors.Errorf("restore chat model config after manual title usage: %w", err)
+				}
+			}
+		}
+		if newTitle != "" && lockedChat.Title == chat.Title && newTitle != lockedChat.Title {
+			updatedChat, err = tx.UpdateChatByID(ctx, database.UpdateChatByIDParams{
+				ID:    chat.ID,
+				Title: newTitle,
+			})
+			if err != nil {
+				return xerrors.Errorf("update chat title: %w", err)
+			}
+		}
+		return nil
+	}, nil)
+	if err != nil {
+		return database.Chat{}, err
+	}
+	return updatedChat, nil
+}
+
 // RefreshStatus loads the latest chat status and publishes it to stream subscribers.
 func (p *Server) RefreshStatus(ctx context.Context, chatID uuid.UUID) error {
 	if chatID == uuid.Nil {
@@ -1547,6 +2225,31 @@ func New(cfg Config) *Server {
 
 	//nolint:gocritic // The chat processor uses a scoped chatd context.
 	ctx = dbauthz.AsChatd(ctx)
+
+	p.configCache = newChatConfigCache(ctx, cfg.Database, clk)
+	if p.pubsub != nil {
+		cancelConfigSub, err := p.pubsub.SubscribeWithErr(
+			coderdpubsub.ChatConfigEventChannel,
+			coderdpubsub.HandleChatConfigEvent(func(ctx context.Context, ev coderdpubsub.ChatConfigEvent, err error) {
+				if err != nil {
+					p.logger.Warn(ctx, "chat config event error", slog.Error(err))
+					return
+				}
+				switch ev.Kind {
+				case coderdpubsub.ChatConfigEventProviders:
+					p.configCache.InvalidateProviders()
+				case coderdpubsub.ChatConfigEventModelConfig:
+					p.configCache.InvalidateModelConfig(ev.EntityID)
+				case coderdpubsub.ChatConfigEventUserPrompt:
+					p.configCache.InvalidateUserPrompt(ev.EntityID)
+				}
+			}),
+		)
+		if err != nil {
+			p.logger.Error(ctx, "subscribe to chat config events", slog.Error(err))
+		}
+		p.configCacheUnsubscribe = cancelConfigSub
+	}
 	go p.start(ctx)
 
 	return p
@@ -1800,6 +2503,7 @@ func (p *Server) getOrCreateStreamState(chatID uuid.UUID) *chatStreamState {
 func (p *Server) cleanupStreamIfIdle(chatID uuid.UUID, state *chatStreamState) {
 	if !state.buffering && len(state.subscribers) == 0 {
 		p.chatStreams.Delete(chatID)
+		p.workspaceMCPToolsCache.Delete(chatID)
 	}
 }
 
@@ -2259,28 +2963,7 @@ func (p *Server) publishChatPubsubEvent(chat database.Chat, kind coderdpubsub.Ch
 	if p.pubsub == nil {
 		return
 	}
-	sdkChat := codersdk.Chat{
-		ID:        chat.ID,
-		OwnerID:   chat.OwnerID,
-		Title:     chat.Title,
-		Status:    codersdk.ChatStatus(chat.Status),
-		CreatedAt: chat.CreatedAt,
-		UpdatedAt: chat.UpdatedAt,
-	}
-	if chat.ParentChatID.Valid {
-		parentChatID := chat.ParentChatID.UUID
-		sdkChat.ParentChatID = &parentChatID
-	}
-	if chat.RootChatID.Valid {
-		rootChatID := chat.RootChatID.UUID
-		sdkChat.RootChatID = &rootChatID
-	} else if !chat.ParentChatID.Valid {
-		rootChatID := chat.ID
-		sdkChat.RootChatID = &rootChatID
-	}
-	if chat.WorkspaceID.Valid {
-		sdkChat.WorkspaceID = &chat.WorkspaceID.UUID
-	}
+	sdkChat := db2sdk.Chat(chat, nil) // we have diffStatus already converted
 	if diffStatus != nil {
 		sdkChat.DiffStatus = diffStatus
 	}
@@ -3041,6 +3724,7 @@ func (p *Server) runChat(
 		resolvedUserPrompt string
 		mcpTools           []fantasy.AgentTool
 		mcpCleanup         func()
+		workspaceMCPTools  []fantasy.AgentTool
 	)
 	// Check if instruction files need to be (re-)persisted.
 	// This happens when no context-file parts exist yet, or when
@@ -3093,6 +3777,62 @@ func (p *Server) runChat(
 			mcpTools, mcpCleanup = mcpclient.ConnectAll(
 				ctx, logger, mcpConfigs, mcpTokens,
 			)
+			return nil
+		})
+	}
+	if chat.WorkspaceID.Valid {
+		g2.Go(func() error {
+			// Check cache first. On subsequent turns with the same
+			// agent, reuse cached tools to avoid a round-trip.
+			if cached, ok := p.workspaceMCPToolsCache.Load(chat.ID); ok {
+				entry, ok2 := cached.(*cachedWorkspaceMCPTools)
+				if !ok2 {
+					return nil
+				}
+				// Verify the agent hasn't changed.
+				if agent, agentErr := workspaceCtx.getWorkspaceAgent(ctx); agentErr == nil && agent.ID == entry.agentID {
+					for _, t := range entry.tools {
+						workspaceMCPTools = append(workspaceMCPTools,
+							chattool.NewWorkspaceMCPTool(t, workspaceCtx.getWorkspaceConn),
+						)
+					}
+					return nil
+				}
+			}
+
+			// Cache miss or agent changed — fetch fresh tools.
+			conn, connErr := workspaceCtx.getWorkspaceConn(ctx)
+			if connErr != nil {
+				logger.Warn(ctx, "failed to get workspace conn for MCP tools",
+					slog.Error(connErr))
+				return nil
+			}
+			toolsResp, listErr := conn.ListMCPTools(ctx)
+			if listErr != nil {
+				logger.Warn(ctx, "failed to list workspace MCP tools",
+					slog.Error(listErr))
+				return nil
+			}
+
+			// Cache the result for subsequent turns. Skip
+			// caching when the list is empty because the
+			// agent's MCP Connect may not have finished yet;
+			// caching an empty list would hide tools
+			// permanently.
+			if len(toolsResp.Tools) > 0 {
+				if agent, agentErr := workspaceCtx.getWorkspaceAgent(ctx); agentErr == nil {
+					p.workspaceMCPToolsCache.Store(chat.ID, &cachedWorkspaceMCPTools{
+						agentID: agent.ID,
+						tools:   toolsResp.Tools,
+					})
+				}
+			}
+
+			for _, t := range toolsResp.Tools {
+				workspaceMCPTools = append(workspaceMCPTools,
+					chattool.NewWorkspaceMCPTool(t, workspaceCtx.getWorkspaceConn),
+				)
+			}
 			return nil
 		})
 	}
@@ -3206,24 +3946,7 @@ func (p *Server) runChat(
 		}
 
 		hasUsage := step.Usage != (fantasy.Usage{})
-		var usageForCost codersdk.ChatMessageUsage
-		if hasUsage {
-			if step.Usage.InputTokens != 0 {
-				usageForCost.InputTokens = ptr.Ref(step.Usage.InputTokens)
-			}
-			if step.Usage.OutputTokens != 0 {
-				usageForCost.OutputTokens = ptr.Ref(step.Usage.OutputTokens)
-			}
-			if step.Usage.ReasoningTokens != 0 {
-				usageForCost.ReasoningTokens = ptr.Ref(step.Usage.ReasoningTokens)
-			}
-			if step.Usage.CacheCreationTokens != 0 {
-				usageForCost.CacheCreationTokens = ptr.Ref(step.Usage.CacheCreationTokens)
-			}
-			if step.Usage.CacheReadTokens != 0 {
-				usageForCost.CacheReadTokens = ptr.Ref(step.Usage.CacheReadTokens)
-			}
-		}
+		usageForCost := fantasyUsageToChatMessageUsage(step.Usage)
 		totalCostMicros := chatcost.CalculateTotalCostMicros(usageForCost, callConfig.Cost)
 
 		var insertedMessages []database.ChatMessage
@@ -3461,6 +4184,7 @@ func (p *Server) runChat(
 				AgentConnFn:                    chattool.AgentConnFunc(p.agentConnFn),
 				AgentInactiveDisconnectTimeout: p.agentInactiveDisconnectTimeout,
 				WorkspaceMu:                    &workspaceMu,
+				OnChatUpdated:                  workspaceCtx.selectWorkspace,
 				Logger:                         p.logger,
 				AllowedTemplateIDs:             p.chatTemplateAllowlist,
 			}),
@@ -3513,6 +4237,7 @@ func (p *Server) runChat(
 	// after the built-in tools so the LLM sees them as
 	// additional capabilities.
 	tools = append(tools, mcpTools...)
+	tools = append(tools, workspaceMCPTools...)
 
 	// Build provider-native tools (e.g., web search) based on
 	// the model configuration.
@@ -3807,10 +4532,8 @@ func (p *Server) resolveChatModel(
 	ctx context.Context,
 	chat database.Chat,
 ) (fantasy.LanguageModel, database.ChatModelConfig, chatprovider.ProviderAPIKeys, error) {
-	var (
-		dbConfig  database.ChatModelConfig
-		providers []database.ChatProvider
-	)
+	var dbConfig database.ChatModelConfig
+	var keys chatprovider.ProviderAPIKeys
 
 	var g errgroup.Group
 	g.Go(func() error {
@@ -3823,28 +4546,15 @@ func (p *Server) resolveChatModel(
 	})
 	g.Go(func() error {
 		var err error
-		providers, err = p.db.GetEnabledChatProviders(ctx)
+		keys, err = p.resolveProviderAPIKeys(ctx)
 		if err != nil {
-			return xerrors.Errorf("get enabled chat providers: %w", err)
+			return xerrors.Errorf("resolve provider API keys: %w", err)
 		}
 		return nil
 	})
 	if err := g.Wait(); err != nil {
 		return nil, database.ChatModelConfig{}, chatprovider.ProviderAPIKeys{}, err
 	}
-	dbProviders := make(
-		[]chatprovider.ConfiguredProvider, 0, len(providers),
-	)
-	for _, provider := range providers {
-		dbProviders = append(dbProviders, chatprovider.ConfiguredProvider{
-			Provider: provider.Provider,
-			APIKey:   provider.APIKey,
-			BaseURL:  provider.BaseUrl,
-		})
-	}
-	keys := chatprovider.MergeProviderAPIKeys(
-		p.providerAPIKeys, dbProviders,
-	)
 
 	model, err := chatprovider.ModelFromConfig(
 		dbConfig.Provider, dbConfig.Model, keys, chatprovider.UserAgent(),
@@ -3858,6 +4568,29 @@ func (p *Server) resolveChatModel(
 	return model, dbConfig, keys, nil
 }
 
+func (p *Server) resolveProviderAPIKeys(
+	ctx context.Context,
+) (chatprovider.ProviderAPIKeys, error) {
+	providers, err := p.configCache.EnabledProviders(ctx)
+	if err != nil {
+		return chatprovider.ProviderAPIKeys{}, xerrors.Errorf(
+			"get enabled chat providers: %w",
+			err,
+		)
+	}
+	dbProviders := make(
+		[]chatprovider.ConfiguredProvider, 0, len(providers),
+	)
+	for _, provider := range providers {
+		dbProviders = append(dbProviders, chatprovider.ConfiguredProvider{
+			Provider: provider.Provider,
+			APIKey:   provider.APIKey,
+			BaseURL:  provider.BaseUrl,
+		})
+	}
+	return chatprovider.MergeProviderAPIKeys(p.providerAPIKeys, dbProviders), nil
+}
+
 // resolveModelConfig looks up the chat's model config by its
 // LastModelConfigID. If the referenced config no longer exists
 // (e.g. it was deleted), it falls back to the default model
@@ -3867,7 +4600,7 @@ func (p *Server) resolveModelConfig(
 	chat database.Chat,
 ) (database.ChatModelConfig, error) {
 	if chat.LastModelConfigID != uuid.Nil {
-		modelConfig, err := p.db.GetChatModelConfigByID(
+		modelConfig, err := p.configCache.ModelConfigByID(
 			ctx, chat.LastModelConfigID,
 		)
 		if err == nil {
@@ -3882,7 +4615,7 @@ func (p *Server) resolveModelConfig(
 		// Model config was deleted, fall through to default.
 	}
 
-	defaultConfig, err := p.db.GetDefaultChatModelConfig(ctx)
+	defaultConfig, err := p.configCache.DefaultModelConfig(ctx)
 	if err != nil {
 		if xerrors.Is(err, sql.ErrNoRows) {
 			return database.ChatModelConfig{}, xerrors.New(
@@ -4092,7 +4825,7 @@ func (p *Server) resolveUserCompactionThreshold(ctx context.Context, userID uuid
 // database and wraps it in <user-instructions> tags. Returns empty
 // string if no prompt is set.
 func (p *Server) resolveUserPrompt(ctx context.Context, userID uuid.UUID) string {
-	raw, err := p.db.GetUserChatCustomPrompt(ctx, userID)
+	raw, err := p.configCache.UserPrompt(ctx, userID)
 	if err != nil {
 		// sql.ErrNoRows is the normal "not set" case.
 		return ""
@@ -4253,6 +4986,10 @@ func (p *Server) dispatchPush(
 
 // Close stops the processor and waits for it to finish.
 func (p *Server) Close() error {
+	if unsub := p.configCacheUnsubscribe; unsub != nil {
+		p.configCacheUnsubscribe = nil
+		unsub()
+	}
 	p.cancel()
 	<-p.closed
 	p.inflight.Wait()
