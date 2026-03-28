@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -55,6 +56,7 @@ const (
 	homeInstructionLookupTimeout = 5 * time.Second
 	instructionCacheTTL          = 5 * time.Minute
 	workspaceDialValidationDelay = 5 * time.Second
+	workspaceMCPDiscoveryTimeout = 5 * time.Second
 	// DefaultChatHeartbeatInterval is the default time between chat
 	// heartbeat updates while a chat is being processed.
 	DefaultChatHeartbeatInterval = 30 * time.Second
@@ -89,6 +91,8 @@ const (
 	defaultSubagentInstruction = "You are running as a delegated sub-agent chat. Complete the delegated task and provide clear, concise assistant responses for the parent agent."
 )
 
+var errChatHasNoWorkspaceAgent = xerrors.New("chat has no workspace agent")
+
 // Server handles background processing of pending chats.
 type Server struct {
 	cancel   context.CancelFunc
@@ -120,6 +124,10 @@ type Server struct {
 	// per chat to avoid re-fetching on every turn. The cache is
 	// keyed by chat ID and invalidated when the agent changes.
 	workspaceMCPToolsCache sync.Map // uuid.UUID -> *cachedWorkspaceMCPTools
+
+	// skillsCache caches discovered skill metadata per chat so
+	// we avoid re-scanning .agents/skills/ on every turn.
+	skillsCache sync.Map // uuid.UUID -> *cachedSkills
 
 	usageTracker *workspacestats.UsageTracker
 	clock        quartz.Clock
@@ -166,6 +174,86 @@ func (p *Server) chatTemplateAllowlist() map[uuid.UUID]bool {
 type cachedWorkspaceMCPTools struct {
 	agentID uuid.UUID
 	tools   []workspacesdk.MCPToolInfo
+}
+
+// cachedSkills stores discovered skill metadata from a workspace
+// agent, keyed by the agent ID that provided them.
+type cachedSkills struct {
+	agentID uuid.UUID
+	skills  []chattool.SkillMeta
+}
+
+// discoverWorkspaceSkills returns cached skill metadata for a chat
+// or discovers them fresh using the provided agent connection. The
+// result is cached per chat+agent so subsequent turns skip the
+// filesystem scan.
+func (p *Server) discoverWorkspaceSkills(
+	ctx context.Context,
+	chatID uuid.UUID,
+	agent database.WorkspaceAgent,
+	conn workspacesdk.AgentConn,
+	logger slog.Logger,
+) []chattool.SkillMeta {
+	// Check cache first.
+	if cached, ok := p.skillsCache.Load(chatID); ok {
+		if entry, ok2 := cached.(*cachedSkills); ok2 {
+			if entry.agentID == agent.ID {
+				return entry.skills
+			}
+		}
+	}
+
+	dir := agent.ExpandedDirectory
+	if dir == "" {
+		dir = agent.Directory
+	}
+	discovered, err := chattool.DiscoverSkills(ctx, conn, dir)
+	if err != nil {
+		logger.Warn(ctx, "failed to discover skills",
+			slog.Error(err))
+		return nil
+	}
+	// Cache the result. Unlike MCP tools, an empty skills
+	// list is a valid stable state (the workspace simply has
+	// no skills), so we always cache.
+	p.skillsCache.Store(chatID, &cachedSkills{
+		agentID: agent.ID,
+		skills:  discovered,
+	})
+	return discovered
+}
+
+// loadCachedWorkspaceContext checks the MCP tools and skills caches
+// for the given chat and agent. Returns non-nil tools when the MCP
+// cache hits, which signals the caller to skip the slow discovery
+// path. Skills may also be populated from the skills cache.
+func (p *Server) loadCachedWorkspaceContext(
+	chatID uuid.UUID,
+	agent database.WorkspaceAgent,
+	getConn func(context.Context) (workspacesdk.AgentConn, error),
+) ([]fantasy.AgentTool, []chattool.SkillMeta) {
+	cached, ok := p.workspaceMCPToolsCache.Load(chatID)
+	if !ok {
+		return nil, nil
+	}
+	entry, ok := cached.(*cachedWorkspaceMCPTools)
+	if !ok || entry.agentID != agent.ID {
+		return nil, nil
+	}
+
+	var tools []fantasy.AgentTool
+	for _, t := range entry.tools {
+		tools = append(tools, chattool.NewWorkspaceMCPTool(t, getConn))
+	}
+
+	var skills []chattool.SkillMeta
+	if sc, ok := p.skillsCache.Load(chatID); ok {
+		if se, ok := sc.(*cachedSkills); ok && se.agentID == agent.ID {
+			skills = se.skills
+		}
+	}
+
+	return tools, skills
 }
 
 type turnWorkspaceContext struct {
@@ -336,8 +424,14 @@ func (c *turnWorkspaceContext) loadWorkspaceAgentLocked(
 			ctx,
 			chatSnapshot.WorkspaceID.UUID,
 		)
-		if err != nil || len(agents) == 0 {
-			return chatSnapshot, database.WorkspaceAgent{}, xerrors.New("chat has no workspace agent")
+		if err != nil {
+			return chatSnapshot, database.WorkspaceAgent{}, xerrors.Errorf(
+				"get workspace agents in latest build: %w",
+				err,
+			)
+		}
+		if len(agents) == 0 {
+			return chatSnapshot, database.WorkspaceAgent{}, errChatHasNoWorkspaceAgent
 		}
 
 		build, err := c.server.db.GetLatestWorkspaceBuildByWorkspaceID(ctx, chatSnapshot.WorkspaceID.UUID)
@@ -368,6 +462,65 @@ func (c *turnWorkspaceContext) loadWorkspaceAgentLocked(
 	}
 
 	return chatSnapshot, database.WorkspaceAgent{}, xerrors.New(
+		"chat workspace changed while resolving agent",
+	)
+}
+
+func (c *turnWorkspaceContext) latestWorkspaceAgentID(
+	ctx context.Context,
+	workspaceID uuid.UUID,
+) (uuid.UUID, error) {
+	agents, err := c.server.db.GetWorkspaceAgentsInLatestBuildByWorkspaceID(
+		ctx,
+		workspaceID,
+	)
+	if err != nil {
+		return uuid.Nil, xerrors.Errorf(
+			"get workspace agents in latest build: %w",
+			err,
+		)
+	}
+	if len(agents) == 0 {
+		return uuid.Nil, errChatHasNoWorkspaceAgent
+	}
+	return agents[0].ID, nil
+}
+
+func (c *turnWorkspaceContext) workspaceAgentIDForConn(
+	ctx context.Context,
+) (database.Chat, uuid.UUID, error) {
+	for attempt := 0; attempt < 2; attempt++ {
+		chatSnapshot := c.currentChatSnapshot()
+		if !chatSnapshot.WorkspaceID.Valid || !chatSnapshot.AgentID.Valid {
+			updatedChat, agent, err := c.ensureWorkspaceAgent(ctx)
+			if err != nil {
+				return updatedChat, uuid.Nil, err
+			}
+			return updatedChat, agent.ID, nil
+		}
+
+		currentAgentID, err := c.latestWorkspaceAgentID(
+			ctx,
+			chatSnapshot.WorkspaceID.UUID,
+		)
+		if err != nil {
+			if xerrors.Is(err, errChatHasNoWorkspaceAgent) {
+				c.clearCachedWorkspaceState()
+			}
+			return chatSnapshot, uuid.Nil, err
+		}
+
+		latestChat, workspaceMatches := c.currentWorkspaceMatches(
+			chatSnapshot.WorkspaceID,
+		)
+		if !workspaceMatches {
+			continue
+		}
+		return latestChat, currentAgentID, nil
+	}
+
+	chatSnapshot := c.currentChatSnapshot()
+	return chatSnapshot, uuid.Nil, xerrors.New(
 		"chat workspace changed while resolving agent",
 	)
 }
@@ -422,15 +575,14 @@ func (c *turnWorkspaceContext) getWorkspaceConn(ctx context.Context) (workspaces
 			chatSnapshot.WorkspaceID.UUID,
 			DialFunc(c.server.agentConnFn),
 			func(ctx context.Context, workspaceID uuid.UUID) (uuid.UUID, error) {
-				agents, err := c.server.db.GetWorkspaceAgentsInLatestBuildByWorkspaceID(ctx, workspaceID)
-				if err != nil || len(agents) == 0 {
-					return uuid.Nil, xerrors.New("chat has no workspace agent")
-				}
-				return agents[0].ID, nil
+				return c.latestWorkspaceAgentID(ctx, workspaceID)
 			},
 			workspaceDialValidationDelay,
 		)
 		if err != nil {
+			if xerrors.Is(err, errChatHasNoWorkspaceAgent) {
+				c.clearCachedWorkspaceState()
+			}
 			return nil, err
 		}
 
@@ -2504,6 +2656,7 @@ func (p *Server) cleanupStreamIfIdle(chatID uuid.UUID, state *chatStreamState) {
 	if !state.buffering && len(state.subscribers) == 0 {
 		p.chatStreams.Delete(chatID)
 		p.workspaceMCPToolsCache.Delete(chatID)
+		p.skillsCache.Delete(chatID)
 	}
 }
 
@@ -2871,9 +3024,20 @@ func (p *Server) Subscribe(
 					continue
 				}
 				if hasPubsub {
-					// Only forward message_part events from local
-					// (durable events come via pubsub + cache).
-					if event.Type == codersdk.ChatStreamEventTypeMessagePart {
+					// Forward transient events from local.
+					// Durable events (messages, queue updates)
+					// come via pubsub + cache.  Status is
+					// included alongside message_part because
+					// both travel through the same ordered
+					// channel: publishStatus is called before
+					// the first message_part, so FIFO delivery
+					// guarantees the frontend sees
+					// status=running before any content.
+					// Pubsub will deliver a duplicate status
+					// later; the frontend deduplicates it
+					// (setChatStatus is idempotent).
+					if event.Type == codersdk.ChatStreamEventTypeMessagePart ||
+						event.Type == codersdk.ChatStreamEventTypeStatus {
 						select {
 						case <-mergedCtx.Done():
 							return
@@ -3725,6 +3889,7 @@ func (p *Server) runChat(
 		mcpTools           []fantasy.AgentTool
 		mcpCleanup         func()
 		workspaceMCPTools  []fantasy.AgentTool
+		skills             []chattool.SkillMeta
 	)
 	// Check if instruction files need to be (re-)persisted.
 	// This happens when no context-file parts exist yet, or when
@@ -3752,7 +3917,12 @@ func (p *Server) runChat(
 				chat,
 				modelConfig.ID,
 				workspaceCtx.getWorkspaceAgent,
-				workspaceCtx.getWorkspaceConn,
+				func(instructionCtx context.Context) (workspacesdk.AgentConn, error) {
+					if _, _, err := workspaceCtx.workspaceAgentIDForConn(instructionCtx); err != nil {
+						return nil, err
+					}
+					return workspaceCtx.getWorkspaceConn(instructionCtx)
+				},
 			)
 			if persistErr != nil {
 				p.logger.Warn(ctx, "failed to persist instruction files",
@@ -3774,6 +3944,8 @@ func (p *Server) runChat(
 	})
 	if len(mcpConfigs) > 0 {
 		g2.Go(func() error {
+			// Refresh expired OAuth2 tokens before connecting.
+			mcpTokens = p.refreshExpiredMCPTokens(ctx, logger, mcpConfigs, mcpTokens)
 			mcpTools, mcpCleanup = mcpclient.ConnectAll(
 				ctx, logger, mcpConfigs, mcpTokens,
 			)
@@ -3782,32 +3954,55 @@ func (p *Server) runChat(
 	}
 	if chat.WorkspaceID.Valid {
 		g2.Go(func() error {
-			// Check cache first. On subsequent turns with the same
-			// agent, reuse cached tools to avoid a round-trip.
-			if cached, ok := p.workspaceMCPToolsCache.Load(chat.ID); ok {
-				entry, ok2 := cached.(*cachedWorkspaceMCPTools)
-				if !ok2 {
+			// Fast path: check cache using the in-memory cached
+			// agent (ensureWorkspaceAgent is free when already
+			// loaded). This avoids a per-turn latest-build DB
+			// query on the common subsequent-turn path.
+			agent, agentErr := workspaceCtx.getWorkspaceAgent(ctx)
+			if agentErr == nil {
+				if workspaceMCPTools, skills = p.loadCachedWorkspaceContext(
+					chat.ID, agent, workspaceCtx.getWorkspaceConn,
+				); workspaceMCPTools != nil {
 					return nil
 				}
-				// Verify the agent hasn't changed.
-				if agent, agentErr := workspaceCtx.getWorkspaceAgent(ctx); agentErr == nil && agent.ID == entry.agentID {
-					for _, t := range entry.tools {
-						workspaceMCPTools = append(workspaceMCPTools,
-							chattool.NewWorkspaceMCPTool(t, workspaceCtx.getWorkspaceConn),
-						)
-					}
+			} // Cache miss, agent changed, or no cache: validate
+			// that the workspace still has a live agent before
+			// attempting a dial.
+			workspaceMCPCtx, cancel := context.WithTimeout(
+				ctx,
+				workspaceMCPDiscoveryTimeout,
+			)
+			defer cancel()
+
+			_, _, agentErr = workspaceCtx.workspaceAgentIDForConn(workspaceMCPCtx)
+			if agentErr != nil {
+				if xerrors.Is(agentErr, errChatHasNoWorkspaceAgent) {
+					p.workspaceMCPToolsCache.Delete(chat.ID)
+					p.skillsCache.Delete(chat.ID)
 					return nil
 				}
+				logger.Warn(ctx, "failed to resolve workspace agent for MCP tools",
+					slog.Error(agentErr))
+				return nil
 			}
 
-			// Cache miss or agent changed — fetch fresh tools.
-			conn, connErr := workspaceCtx.getWorkspaceConn(ctx)
+			// Discover skills and MCP tools using the
+			// same conn to avoid a second dial attempt.
+			conn, connErr := workspaceCtx.getWorkspaceConn(workspaceMCPCtx)
 			if connErr != nil {
 				logger.Warn(ctx, "failed to get workspace conn for MCP tools",
 					slog.Error(connErr))
 				return nil
 			}
-			toolsResp, listErr := conn.ListMCPTools(ctx)
+
+			agent, agentErr = workspaceCtx.getWorkspaceAgent(workspaceMCPCtx)
+			if agentErr == nil {
+				skills = p.discoverWorkspaceSkills(
+					workspaceMCPCtx, chat.ID, agent, conn, logger,
+				)
+			}
+
+			toolsResp, listErr := conn.ListMCPTools(workspaceMCPCtx)
 			if listErr != nil {
 				logger.Warn(ctx, "failed to list workspace MCP tools",
 					slog.Error(listErr))
@@ -3820,7 +4015,7 @@ func (p *Server) runChat(
 			// caching an empty list would hide tools
 			// permanently.
 			if len(toolsResp.Tools) > 0 {
-				if agent, agentErr := workspaceCtx.getWorkspaceAgent(ctx); agentErr == nil {
+				if agent, agentErr := workspaceCtx.getWorkspaceAgent(workspaceMCPCtx); agentErr == nil {
 					p.workspaceMCPToolsCache.Store(chat.ID, &cachedWorkspaceMCPTools{
 						agentID: agent.ID,
 						tools:   toolsResp.Tools,
@@ -3854,6 +4049,9 @@ func (p *Server) runChat(
 
 	if instruction != "" {
 		prompt = chatprompt.InsertSystem(prompt, instruction)
+	}
+	if skillIndex := chattool.FormatSkillIndex(skills); skillIndex != "" {
+		prompt = chatprompt.InsertSystem(prompt, skillIndex)
 	}
 	if resolvedUserPrompt != "" {
 		prompt = chatprompt.InsertSystem(prompt, resolvedUserPrompt)
@@ -4233,6 +4431,20 @@ func (p *Server) runChat(
 		})...)
 	}
 
+	// Append skill tools when the workspace has skills.
+	if len(skills) > 0 {
+		skillOpts := chattool.ReadSkillOptions{
+			GetWorkspaceConn: workspaceCtx.getWorkspaceConn,
+			GetSkills: func() []chattool.SkillMeta {
+				return skills
+			},
+		}
+		tools = append(tools,
+			chattool.ReadSkill(skillOpts),
+			chattool.ReadSkillFile(skillOpts),
+		)
+	}
+
 	// Append tools from external MCP servers. These appear
 	// after the built-in tools so the LLM sees them as
 	// additional capabilities.
@@ -4321,6 +4533,9 @@ func (p *Server) runChat(
 			}
 			if instruction != "" {
 				reloadedPrompt = chatprompt.InsertSystem(reloadedPrompt, instruction)
+			}
+			if skillIndex := chattool.FormatSkillIndex(skills); skillIndex != "" {
+				reloadedPrompt = chatprompt.InsertSystem(reloadedPrompt, skillIndex)
 			}
 			reloadUserPrompt := p.resolveUserPrompt(reloadCtx, chat.OwnerID)
 			if reloadUserPrompt != "" {
@@ -4698,7 +4913,10 @@ func (p *Server) persistInstructionFiles(
 	}
 
 	// Read instruction files from the workspace agent.
-	var sections []instructionFileSection
+	var (
+		sections        []instructionFileSection
+		workspaceConnOK bool
+	)
 	if getWorkspaceConn != nil {
 		instructionCtx, cancel := context.WithTimeout(ctx, homeInstructionLookupTimeout)
 		defer cancel()
@@ -4710,6 +4928,7 @@ func (p *Server) persistInstructionFiles(
 				slog.Error(connErr),
 			)
 		} else {
+			workspaceConnOK = true
 			if content, source, truncated, readErr := readHomeInstructionFile(instructionCtx, conn); readErr != nil {
 				p.logger.Debug(ctx, "failed to load home instruction file",
 					slog.F("chat_id", chat.ID), slog.Error(readErr))
@@ -4729,6 +4948,9 @@ func (p *Server) persistInstructionFiles(
 	}
 
 	if len(sections) == 0 {
+		if !workspaceConnOK {
+			return "", nil
+		}
 		// Persist a sentinel so subsequent turns skip the
 		// workspace agent dial.
 		parts := []codersdk.ChatMessagePart{{
@@ -4994,4 +5216,112 @@ func (p *Server) Close() error {
 	<-p.closed
 	p.inflight.Wait()
 	return nil
+}
+
+// refreshExpiredMCPTokens checks each MCP OAuth2 token and refreshes
+// any that are expired (or about to expire). Tokens without a
+// refresh_token or that fail to refresh are returned unchanged so the
+// caller can still attempt the connection (which will likely fail with
+// a 401 for the expired ones).
+func (p *Server) refreshExpiredMCPTokens(
+	ctx context.Context,
+	logger slog.Logger,
+	configs []database.MCPServerConfig,
+	tokens []database.MCPServerUserToken,
+) []database.MCPServerUserToken {
+	configsByID := make(map[uuid.UUID]database.MCPServerConfig, len(configs))
+	for _, cfg := range configs {
+		configsByID[cfg.ID] = cfg
+	}
+
+	result := slices.Clone(tokens)
+
+	var eg errgroup.Group
+	for i, tok := range result {
+		cfg, ok := configsByID[tok.MCPServerConfigID]
+		if !ok || cfg.AuthType != "oauth2" {
+			continue
+		}
+		if tok.RefreshToken == "" {
+			continue
+		}
+
+		eg.Go(func() error {
+			refreshed, err := p.refreshMCPTokenIfNeeded(ctx, logger, cfg, tok)
+			if err != nil {
+				logger.Warn(ctx, "failed to refresh MCP oauth2 token",
+					slog.F("server_slug", cfg.Slug),
+					slog.Error(err),
+				)
+				return nil
+			}
+			result[i] = refreshed
+			return nil
+		})
+	}
+	_ = eg.Wait()
+
+	return result
+}
+
+// refreshMCPTokenIfNeeded delegates to mcpclient.RefreshOAuth2Token
+// and persists the result to the database when a refresh occurs.
+// The logger should carry chat-scoped fields so log lines can be
+// correlated with specific chat requests.
+func (p *Server) refreshMCPTokenIfNeeded(
+	ctx context.Context,
+	logger slog.Logger,
+	cfg database.MCPServerConfig,
+	tok database.MCPServerUserToken,
+) (database.MCPServerUserToken, error) {
+	result, err := mcpclient.RefreshOAuth2Token(ctx, cfg, tok)
+	if err != nil {
+		return tok, err
+	}
+
+	if !result.Refreshed {
+		return tok, nil
+	}
+
+	logger.Info(ctx, "refreshed MCP oauth2 token",
+		slog.F("server_slug", cfg.Slug),
+		slog.F("user_id", tok.UserID),
+	)
+
+	var expiry sql.NullTime
+	if !result.Expiry.IsZero() {
+		expiry = sql.NullTime{Time: result.Expiry, Valid: true}
+	}
+
+	//nolint:gocritic // Chatd needs system-level write access to
+	// persist the refreshed OAuth2 token for the user.
+	updated, err := p.db.UpsertMCPServerUserToken(
+		dbauthz.AsSystemRestricted(ctx),
+		database.UpsertMCPServerUserTokenParams{
+			MCPServerConfigID: tok.MCPServerConfigID,
+			UserID:            tok.UserID,
+			AccessToken:       result.AccessToken,
+			AccessTokenKeyID:  sql.NullString{},
+			RefreshToken:      result.RefreshToken,
+			RefreshTokenKeyID: sql.NullString{},
+			TokenType:         result.TokenType,
+			Expiry:            expiry,
+		},
+	)
+	if err != nil {
+		// The provider may have rotated the refresh token,
+		// invalidating the old one. Use the new token
+		// in-memory so at least this connection succeeds.
+		logger.Warn(ctx, "failed to persist refreshed MCP oauth2 token, using in-memory",
+			slog.F("server_slug", cfg.Slug),
+			slog.Error(err),
+		)
+		tok.AccessToken = result.AccessToken
+		tok.RefreshToken = result.RefreshToken
+		tok.TokenType = result.TokenType
+		tok.Expiry = expiry
+		return tok, nil
+	}
+
+	return updated, nil
 }

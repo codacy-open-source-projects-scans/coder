@@ -8,13 +8,13 @@ import {
 	useState,
 } from "react";
 import type { UrlTransform } from "streamdown";
-import { cn } from "utils/cn";
-import { pageTitle } from "utils/page";
 import type * as TypesGen from "#/api/typesGenerated";
 import type { ChatDiffStatus, ChatMessagePart } from "#/api/typesGenerated";
 import type { ModelSelectorOption } from "#/components/ai-elements";
 import { DesktopPanelContext } from "#/components/ai-elements/tool/DesktopPanelContext";
 import { Button } from "#/components/Button/Button";
+import { cn } from "#/utils/cn";
+import { pageTitle } from "#/utils/page";
 import type { ChatDetailError } from "../utils/usageLimitMessage";
 import { AgentChatInput, type ChatMessageInputRef } from "./AgentChatInput";
 import type { useChatStore } from "./AgentDetail/ChatContext";
@@ -340,6 +340,7 @@ export const AgentDetailView: FC<AgentDetailViewProps> = ({
 							onCancelQueueEdit={editing.handleCancelQueueEdit}
 							isEditingHistoryMessage={editing.editingMessageId !== null}
 							onCancelHistoryEdit={editing.handleCancelHistoryEdit}
+							onEditUserMessage={editing.handleEditUserMessage}
 							editingFileBlocks={editing.editingFileBlocks}
 							mcpServers={mcpServers}
 							selectedMCPServerIds={selectedMCPServerIds}
@@ -609,7 +610,6 @@ const ScrollAnchoredContainer: FC<{
 	const observerRef = useRef<IntersectionObserver | null>(null);
 	const isFetchingRef = useRef(isFetchingMoreMessages);
 	const hasFetchedRef = useRef(false);
-	const onFetchRef = useRef(onFetchMoreMessages);
 	const autoScrollRef = useRef(true);
 	const contentRef = useRef<HTMLDivElement>(null);
 	const pendingPrependRef = useRef<{
@@ -628,8 +628,7 @@ const ScrollAnchoredContainer: FC<{
 		if (isFetchingMoreMessages) {
 			hasFetchedRef.current = true;
 		}
-		onFetchRef.current = onFetchMoreMessages;
-	}, [isFetchingMoreMessages, onFetchMoreMessages]);
+	}, [isFetchingMoreMessages]);
 	const [showScrollToBottom, setShowScrollToBottom] = useState(false);
 
 	useEffect(() => {
@@ -671,7 +670,7 @@ const ScrollAnchoredContainer: FC<{
 							contentWidth: contentRect.width,
 						};
 					}
-					onFetchRef.current();
+					onFetchMoreMessages();
 				}
 			},
 			{
@@ -699,7 +698,7 @@ const ScrollAnchoredContainer: FC<{
 			observer.disconnect();
 			observerRef.current = null;
 		};
-	}, [scrollContainerRef]);
+	}, [scrollContainerRef, onFetchMoreMessages]);
 
 	// When a fetch completes, re-observe the sentinel to force
 	// the IntersectionObserver to re-evaluate. The observer only
@@ -841,16 +840,16 @@ const ScrollAnchoredContainer: FC<{
 				return;
 			}
 
+			if (autoScrollRef.current) {
+				scheduleBottomPin();
+				return;
+			}
+
 			// Skip compensation during reflow. Width changes indicate the
 			// height delta is distributed through the transcript rather than
 			// appended at the bottom, so applying the full delta would
 			// overcompensate and jump the user.
 			if (widthChanged) {
-				return;
-			}
-
-			if (autoScrollRef.current) {
-				scheduleBottomPin();
 				return;
 			}
 

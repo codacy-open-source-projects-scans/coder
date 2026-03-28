@@ -1194,6 +1194,12 @@ export interface Chat {
 	readonly pin_order: number;
 	readonly mcp_server_ids: readonly string[];
 	readonly labels: Record<string, string>;
+	/**
+	 * HasUnread is true when assistant messages exist beyond
+	 * the owner's read cursor, which updates on stream
+	 * connect and disconnect.
+	 */
+	readonly has_unread: boolean;
 }
 
 // From codersdk/chats.go
@@ -2406,6 +2412,7 @@ export interface CreateMCPServerConfigRequest {
 	readonly tool_deny_list?: readonly string[];
 	readonly availability: string;
 	readonly enabled: boolean;
+	readonly model_intent: boolean;
 }
 
 // From codersdk/organizations.go
@@ -3850,6 +3857,14 @@ export interface License {
 }
 
 // From codersdk/licenses.go
+export const LicenseAIGovernance90PercentWarningText =
+	"You have used %d%% of your AI Governance add-on seats.";
+
+// From codersdk/licenses.go
+export const LicenseAIGovernanceOverLimitWarningText =
+	"Your organization is using %d of %d AI Governance add-on seats (%d over the limit).";
+
+// From codersdk/licenses.go
 export const LicenseExpiryClaim = "license_expires";
 
 // From codersdk/licenses.go
@@ -3993,6 +4008,7 @@ export interface MCPServerConfig {
 	 */
 	readonly availability: string; // "force_on", "default_on", "default_off"
 	readonly enabled: boolean;
+	readonly model_intent: boolean;
 	readonly created_at: string;
 	readonly updated_at: string;
 	/**
@@ -7224,6 +7240,7 @@ export interface UpdateMCPServerConfigRequest {
 	readonly tool_deny_list?: string[];
 	readonly availability?: string;
 	readonly enabled?: boolean;
+	readonly model_intent?: boolean;
 }
 
 // From codersdk/notifications.go
