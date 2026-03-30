@@ -64,8 +64,6 @@ import type {
 } from "#/api/typesGenerated";
 import { ErrorAlert } from "#/components/Alert/ErrorAlert";
 import { Avatar } from "#/components/Avatar/Avatar";
-import type { ModelSelectorOption } from "#/components/ai-elements";
-import { asString } from "#/components/ai-elements/runtimeTypeUtils";
 import { Button } from "#/components/Button/Button";
 import {
 	DropdownMenu,
@@ -92,6 +90,8 @@ import { cn } from "#/utils/cn";
 import { shortRelativeTime } from "#/utils/time";
 import { getNormalizedModelRef } from "../../utils/modelOptions";
 import { getTimeGroup, TIME_GROUPS } from "../../utils/timeGroups";
+import type { ModelSelectorOption } from "../ChatElements";
+import { asString } from "../ChatElements/runtimeTypeUtils";
 import { UsageIndicator } from "../UsageIndicator";
 
 type SidebarView =
@@ -130,8 +130,7 @@ interface AgentsSidebarProps {
 	isCreating: boolean;
 	isArchiving?: boolean;
 	archivingChatId?: string | null;
-	isRegeneratingTitle?: boolean;
-	regeneratingTitleChatId?: string | null;
+	regeneratingTitleChatIds: readonly string[];
 	isLoading?: boolean;
 	loadError?: unknown;
 	onRetryLoad?: () => void;
@@ -373,8 +372,7 @@ interface ChatTreeContextValue {
 	readonly activeChatId: string | undefined;
 	readonly isArchiving: boolean;
 	readonly archivingChatId: string | null;
-	readonly isRegeneratingTitle: boolean;
-	readonly regeneratingTitleChatId: string | null;
+	readonly regeneratingTitleChatIds: readonly string[];
 	readonly toggleExpanded: (chatID: string) => void;
 	readonly onArchiveAgent: (chatId: string) => void;
 	readonly onUnarchiveAgent: (chatId: string) => void;
@@ -415,8 +413,7 @@ const ChatTreeNode: FC<ChatTreeNodeProps> = ({ chat, isChildNode }) => {
 		activeChatId,
 		isArchiving,
 		archivingChatId,
-		isRegeneratingTitle,
-		regeneratingTitleChatId,
+		regeneratingTitleChatIds,
 		toggleExpanded,
 		onArchiveAgent,
 		onUnarchiveAgent,
@@ -462,8 +459,7 @@ const ChatTreeNode: FC<ChatTreeNodeProps> = ({ chat, isChildNode }) => {
 	}`;
 	const workspaceId = chat.workspace_id;
 	const isArchivingThisChat = isArchiving && archivingChatId === chat.id;
-	const isRegeneratingThisChat =
-		isRegeneratingTitle && regeneratingTitleChatId === chat.id;
+	const isRegeneratingThisChat = regeneratingTitleChatIds.includes(chat.id);
 	const isExpanded = normalizedSearch ? true : (expandedById[chatID] ?? false);
 
 	return (
@@ -637,7 +633,7 @@ const ChatTreeNode: FC<ChatTreeNodeProps> = ({ chat, isChildNode }) => {
 									) : (
 										<>
 											<DropdownMenuItem
-												disabled={isRegeneratingTitle}
+												disabled={isRegeneratingThisChat}
 												onSelect={() => onRegenerateTitle(chat.id)}
 											>
 												<WandSparklesIcon className="h-3.5 w-3.5" />
@@ -748,8 +744,7 @@ export const AgentsSidebar: FC<AgentsSidebarProps> = (props) => {
 		isCreating,
 		isArchiving = false,
 		archivingChatId = null,
-		isRegeneratingTitle = false,
-		regeneratingTitleChatId = null,
+		regeneratingTitleChatIds,
 		isLoading = false,
 		loadError,
 		onRetryLoad,
@@ -960,8 +955,7 @@ export const AgentsSidebar: FC<AgentsSidebarProps> = (props) => {
 		activeChatId,
 		isArchiving,
 		archivingChatId,
-		isRegeneratingTitle,
-		regeneratingTitleChatId,
+		regeneratingTitleChatIds,
 		toggleExpanded,
 		onArchiveAgent,
 		onUnarchiveAgent,

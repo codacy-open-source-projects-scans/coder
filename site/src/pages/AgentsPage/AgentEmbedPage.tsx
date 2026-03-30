@@ -187,7 +187,7 @@ const AgentEmbedPage: FC = () => {
 	}, [searchParams]);
 
 	// Shared ref for the chat scroll container. Passed through the
-	// outlet context so AgentDetail attaches it to the DOM element
+	// outlet context so AgentChatPage attaches it to the DOM element
 	// instead of creating its own.
 	const scrollContainerRef = useRef<HTMLDivElement | null>(null);
 
@@ -222,8 +222,7 @@ const AgentEmbedPage: FC = () => {
 		requestUnpinAgent: () => {},
 		requestArchiveAndDeleteWorkspace,
 		// Title regeneration is not supported in embed mode.
-		isRegeneratingTitle: false,
-		regeneratingTitleChatId: null,
+		regeneratingTitleChatIds: [],
 		isSidebarCollapsed,
 		onToggleSidebarCollapsed,
 		onExpandSidebar: () => {},

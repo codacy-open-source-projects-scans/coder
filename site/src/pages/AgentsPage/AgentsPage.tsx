@@ -35,13 +35,13 @@ import { useDashboard } from "#/modules/dashboard/useDashboard";
 import { createReconnectingWebSocket } from "#/utils/reconnectingWebSocket";
 import { AgentsPageView } from "./AgentsPageView";
 import { emptyInputStorageKey } from "./components/AgentCreateForm";
-import { maybePlayChime } from "./components/AgentDetail/useAgentChime";
 import { useAgentsPageKeybindings } from "./hooks/useAgentsPageKeybindings";
 import { useAgentsPWA } from "./hooks/useAgentsPWA";
 import {
 	resolveArchiveAndDeleteAction,
 	shouldNavigateAfterArchive,
 } from "./utils/agentWorkspaceUtils";
+import { maybePlayChime } from "./utils/chime";
 import { getModelOptionsFromConfigs } from "./utils/modelOptions";
 import {
 	type ChatDetailError,
@@ -227,6 +227,10 @@ const AgentsPage: FC = () => {
 			toast.error(getErrorMessage(error, "Failed to generate new title."));
 		},
 	});
+	const regeneratingTitleChatIdsRef = useRef<ReadonlySet<string>>(new Set());
+	const [regeneratingTitleChatIds, setRegeneratingTitleChatIds] = useState<
+		readonly string[]
+	>([]);
 	const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
 	const [chatErrorReasons, setChatErrorReasons] = useState<
 		Record<string, ChatDetailError>
@@ -366,11 +370,37 @@ const AgentsPage: FC = () => {
 	const requestReorderPinnedAgent = (chatId: string, pinOrder: number) => {
 		reorderPinnedChatMutation.mutate({ chatId, pinOrder });
 	};
-	const requestRegenerateTitle = (chatId: string) => {
-		if (regenerateTitleMutation.isPending) {
+	const addRegeneratingTitleChatId = (chatId: string) => {
+		if (!chatId || regeneratingTitleChatIdsRef.current.has(chatId)) {
+			return false;
+		}
+		const next = new Set(regeneratingTitleChatIdsRef.current);
+		next.add(chatId);
+		regeneratingTitleChatIdsRef.current = next;
+		setRegeneratingTitleChatIds(Array.from(next));
+		return true;
+	};
+	const removeRegeneratingTitleChatId = (chatId: string) => {
+		if (!regeneratingTitleChatIdsRef.current.has(chatId)) {
 			return;
 		}
-		regenerateTitleMutation.mutate(chatId);
+		const next = new Set(regeneratingTitleChatIdsRef.current);
+		next.delete(chatId);
+		regeneratingTitleChatIdsRef.current = next;
+		setRegeneratingTitleChatIds(Array.from(next));
+	};
+	const requestRegenerateTitle = (chatId: string) => {
+		if (!addRegeneratingTitleChatId(chatId)) {
+			return;
+		}
+		void regenerateTitleMutation
+			.mutateAsync(chatId)
+			.catch(() => {
+				// The shared mutation onError already reports the failure.
+			})
+			.finally(() => {
+				removeRegeneratingTitleChatId(chatId);
+			});
 	};
 	const handleToggleSidebarCollapsed = () =>
 		setIsSidebarCollapsed((prev) => !prev);
@@ -493,7 +523,7 @@ const AgentsPage: FC = () => {
 					// Only cancel a per-chat refetch when the cache
 					// already has data. Cancelling a first-time fetch
 					// reverts the query to pending/idle with no data
-					// and no retry, which AgentDetail shows as
+					// and no retry, which AgentChatPage shows as
 					// "Chat not found".
 					if (queryClient.getQueryData(chatKey(updatedChat.id))) {
 						void queryClient.cancelQueries({
@@ -568,7 +598,7 @@ const AgentsPage: FC = () => {
 							// Only create a new object if a field actually
 							// changed. Returning the same reference prevents
 							// react-query from notifying subscribers, avoiding
-							// unnecessary re-renders of AgentDetail during
+							// unnecessary re-renders of AgentChatPage during
 							// streaming when repeated status_change events
 							// carry the same "running" status.
 							const nextStatus = isStatusEvent
@@ -660,8 +690,7 @@ const AgentsPage: FC = () => {
 				requestUnpinAgent={requestUnpinAgent}
 				requestReorderPinnedAgent={requestReorderPinnedAgent}
 				onRegenerateTitle={requestRegenerateTitle}
-				isRegeneratingTitle={regenerateTitleMutation.isPending}
-				regeneratingTitleChatId={regenerateTitleMutation.variables ?? null}
+				regeneratingTitleChatIds={regeneratingTitleChatIds}
 				onToggleSidebarCollapsed={handleToggleSidebarCollapsed}
 				isAgentsAdmin={isAgentsAdmin}
 				hasNextPage={chatsQuery.hasNextPage}
