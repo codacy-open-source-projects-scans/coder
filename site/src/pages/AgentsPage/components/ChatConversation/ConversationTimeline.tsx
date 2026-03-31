@@ -353,6 +353,7 @@ export const BlockList: FC<{
 								result={tool.result}
 								status={tool.status}
 								isError={tool.isError}
+								killedBySignal={tool.killedBySignal}
 								subagentTitles={subagentTitles}
 								computerUseSubagentIds={computerUseSubagentIds}
 								showDesktopPreviews={showDesktopPreviews}
@@ -394,6 +395,7 @@ export const BlockList: FC<{
 					result={tool.result}
 					status={tool.status}
 					isError={tool.isError}
+					killedBySignal={tool.killedBySignal}
 					subagentTitles={subagentTitles}
 					computerUseSubagentIds={computerUseSubagentIds}
 					showDesktopPreviews={showDesktopPreviews}
@@ -468,10 +470,13 @@ const ChatMessageItem = memo<{
 			return null;
 		}
 
-		// Hide messages that consist entirely of context-file parts.
-		// These are metadata for the context indicator, not
-		// conversation content.
-		if (parts.length > 0 && parts.every((p) => p.type === "context-file")) {
+		// Hide messages that consist entirely of context-file
+		// and/or skill parts. These are metadata for the context
+		// indicator, not conversation content.
+		if (
+			parts.length > 0 &&
+			parts.every((p) => p.type === "context-file" || p.type === "skill")
+		) {
 			return null;
 		}
 		const hasRenderableContent =
