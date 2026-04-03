@@ -455,7 +455,7 @@ func (q *sqlQuerier) DeleteOldAIBridgeRecords(ctx context.Context, beforeTime ti
 
 const getAIBridgeInterceptionByID = `-- name: GetAIBridgeInterceptionByID :one
 SELECT
-	id, initiator_id, provider, model, started_at, metadata, ended_at, api_key_id, client, thread_parent_id, thread_root_id, client_session_id, session_id
+	id, initiator_id, provider, model, started_at, metadata, ended_at, api_key_id, client, thread_parent_id, thread_root_id, client_session_id, session_id, provider_name
 FROM
 	aibridge_interceptions
 WHERE
@@ -479,6 +479,7 @@ func (q *sqlQuerier) GetAIBridgeInterceptionByID(ctx context.Context, id uuid.UU
 		&i.ThreadRootID,
 		&i.ClientSessionID,
 		&i.SessionID,
+		&i.ProviderName,
 	)
 	return i, err
 }
@@ -513,7 +514,7 @@ func (q *sqlQuerier) GetAIBridgeInterceptionLineageByToolCallID(ctx context.Cont
 
 const getAIBridgeInterceptions = `-- name: GetAIBridgeInterceptions :many
 SELECT
-	id, initiator_id, provider, model, started_at, metadata, ended_at, api_key_id, client, thread_parent_id, thread_root_id, client_session_id, session_id
+	id, initiator_id, provider, model, started_at, metadata, ended_at, api_key_id, client, thread_parent_id, thread_root_id, client_session_id, session_id, provider_name
 FROM
 	aibridge_interceptions
 `
@@ -541,6 +542,7 @@ func (q *sqlQuerier) GetAIBridgeInterceptions(ctx context.Context) ([]AIBridgeIn
 			&i.ThreadRootID,
 			&i.ClientSessionID,
 			&i.SessionID,
+			&i.ProviderName,
 		); err != nil {
 			return nil, err
 		}
@@ -687,11 +689,11 @@ func (q *sqlQuerier) GetAIBridgeUserPromptsByInterceptionID(ctx context.Context,
 
 const insertAIBridgeInterception = `-- name: InsertAIBridgeInterception :one
 INSERT INTO aibridge_interceptions (
-	id, api_key_id, initiator_id, provider, model, metadata, started_at, client, client_session_id, thread_parent_id, thread_root_id
+	id, api_key_id, initiator_id, provider, provider_name, model, metadata, started_at, client, client_session_id, thread_parent_id, thread_root_id
 ) VALUES (
-	$1, $2, $3, $4, $5, COALESCE($6::jsonb, '{}'::jsonb), $7, $8, $9, $10::uuid, $11::uuid
+	$1, $2, $3, $4, $5, $6, COALESCE($7::jsonb, '{}'::jsonb), $8, $9, $10, $11::uuid, $12::uuid
 )
-RETURNING id, initiator_id, provider, model, started_at, metadata, ended_at, api_key_id, client, thread_parent_id, thread_root_id, client_session_id, session_id
+RETURNING id, initiator_id, provider, model, started_at, metadata, ended_at, api_key_id, client, thread_parent_id, thread_root_id, client_session_id, session_id, provider_name
 `
 
 type InsertAIBridgeInterceptionParams struct {
@@ -699,6 +701,7 @@ type InsertAIBridgeInterceptionParams struct {
 	APIKeyID                   sql.NullString  `db:"api_key_id" json:"api_key_id"`
 	InitiatorID                uuid.UUID       `db:"initiator_id" json:"initiator_id"`
 	Provider                   string          `db:"provider" json:"provider"`
+	ProviderName               string          `db:"provider_name" json:"provider_name"`
 	Model                      string          `db:"model" json:"model"`
 	Metadata                   json.RawMessage `db:"metadata" json:"metadata"`
 	StartedAt                  time.Time       `db:"started_at" json:"started_at"`
@@ -714,6 +717,7 @@ func (q *sqlQuerier) InsertAIBridgeInterception(ctx context.Context, arg InsertA
 		arg.APIKeyID,
 		arg.InitiatorID,
 		arg.Provider,
+		arg.ProviderName,
 		arg.Model,
 		arg.Metadata,
 		arg.StartedAt,
@@ -737,6 +741,7 @@ func (q *sqlQuerier) InsertAIBridgeInterception(ctx context.Context, arg InsertA
 		&i.ThreadRootID,
 		&i.ClientSessionID,
 		&i.SessionID,
+		&i.ProviderName,
 	)
 	return i, err
 }
@@ -963,7 +968,7 @@ func (q *sqlQuerier) ListAIBridgeClients(ctx context.Context, arg ListAIBridgeCl
 
 const listAIBridgeInterceptions = `-- name: ListAIBridgeInterceptions :many
 SELECT
-	aibridge_interceptions.id, aibridge_interceptions.initiator_id, aibridge_interceptions.provider, aibridge_interceptions.model, aibridge_interceptions.started_at, aibridge_interceptions.metadata, aibridge_interceptions.ended_at, aibridge_interceptions.api_key_id, aibridge_interceptions.client, aibridge_interceptions.thread_parent_id, aibridge_interceptions.thread_root_id, aibridge_interceptions.client_session_id, aibridge_interceptions.session_id,
+	aibridge_interceptions.id, aibridge_interceptions.initiator_id, aibridge_interceptions.provider, aibridge_interceptions.model, aibridge_interceptions.started_at, aibridge_interceptions.metadata, aibridge_interceptions.ended_at, aibridge_interceptions.api_key_id, aibridge_interceptions.client, aibridge_interceptions.thread_parent_id, aibridge_interceptions.thread_root_id, aibridge_interceptions.client_session_id, aibridge_interceptions.session_id, aibridge_interceptions.provider_name,
 	visible_users.id, visible_users.username, visible_users.name, visible_users.avatar_url
 FROM
 	aibridge_interceptions
@@ -1076,6 +1081,7 @@ func (q *sqlQuerier) ListAIBridgeInterceptions(ctx context.Context, arg ListAIBr
 			&i.AIBridgeInterception.ThreadRootID,
 			&i.AIBridgeInterception.ClientSessionID,
 			&i.AIBridgeInterception.SessionID,
+			&i.AIBridgeInterception.ProviderName,
 			&i.VisibleUser.ID,
 			&i.VisibleUser.Username,
 			&i.VisibleUser.Name,
@@ -1271,7 +1277,7 @@ WITH paginated_threads AS (
 )
 SELECT
 	COALESCE(aibridge_interceptions.thread_root_id, aibridge_interceptions.id) AS thread_id,
-	aibridge_interceptions.id, aibridge_interceptions.initiator_id, aibridge_interceptions.provider, aibridge_interceptions.model, aibridge_interceptions.started_at, aibridge_interceptions.metadata, aibridge_interceptions.ended_at, aibridge_interceptions.api_key_id, aibridge_interceptions.client, aibridge_interceptions.thread_parent_id, aibridge_interceptions.thread_root_id, aibridge_interceptions.client_session_id, aibridge_interceptions.session_id
+	aibridge_interceptions.id, aibridge_interceptions.initiator_id, aibridge_interceptions.provider, aibridge_interceptions.model, aibridge_interceptions.started_at, aibridge_interceptions.metadata, aibridge_interceptions.ended_at, aibridge_interceptions.api_key_id, aibridge_interceptions.client, aibridge_interceptions.thread_parent_id, aibridge_interceptions.thread_root_id, aibridge_interceptions.client_session_id, aibridge_interceptions.session_id, aibridge_interceptions.provider_name
 FROM
 	aibridge_interceptions
 JOIN
@@ -1332,6 +1338,7 @@ func (q *sqlQuerier) ListAIBridgeSessionThreads(ctx context.Context, arg ListAIB
 			&i.AIBridgeInterception.ThreadRootID,
 			&i.AIBridgeInterception.ClientSessionID,
 			&i.AIBridgeInterception.SessionID,
+			&i.AIBridgeInterception.ProviderName,
 		); err != nil {
 			return nil, err
 		}
@@ -1706,7 +1713,7 @@ UPDATE aibridge_interceptions
 WHERE
 	id = $2::uuid
 	AND ended_at IS NULL
-RETURNING id, initiator_id, provider, model, started_at, metadata, ended_at, api_key_id, client, thread_parent_id, thread_root_id, client_session_id, session_id
+RETURNING id, initiator_id, provider, model, started_at, metadata, ended_at, api_key_id, client, thread_parent_id, thread_root_id, client_session_id, session_id, provider_name
 `
 
 type UpdateAIBridgeInterceptionEndedParams struct {
@@ -1731,6 +1738,7 @@ func (q *sqlQuerier) UpdateAIBridgeInterceptionEnded(ctx context.Context, arg Up
 		&i.ThreadRootID,
 		&i.ClientSessionID,
 		&i.SessionID,
+		&i.ProviderName,
 	)
 	return i, err
 }
@@ -3791,7 +3799,7 @@ func (q *sqlQuerier) DeleteChatProviderByID(ctx context.Context, id uuid.UUID) e
 
 const getChatProviderByID = `-- name: GetChatProviderByID :one
 SELECT
-    id, provider, display_name, api_key, api_key_key_id, created_by, enabled, created_at, updated_at, base_url
+    id, provider, display_name, api_key, api_key_key_id, created_by, enabled, created_at, updated_at, base_url, central_api_key_enabled, allow_user_api_key, allow_central_api_key_fallback
 FROM
     chat_providers
 WHERE
@@ -3812,13 +3820,16 @@ func (q *sqlQuerier) GetChatProviderByID(ctx context.Context, id uuid.UUID) (Cha
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.BaseUrl,
+		&i.CentralApiKeyEnabled,
+		&i.AllowUserApiKey,
+		&i.AllowCentralApiKeyFallback,
 	)
 	return i, err
 }
 
 const getChatProviderByProvider = `-- name: GetChatProviderByProvider :one
 SELECT
-    id, provider, display_name, api_key, api_key_key_id, created_by, enabled, created_at, updated_at, base_url
+    id, provider, display_name, api_key, api_key_key_id, created_by, enabled, created_at, updated_at, base_url, central_api_key_enabled, allow_user_api_key, allow_central_api_key_fallback
 FROM
     chat_providers
 WHERE
@@ -3839,13 +3850,16 @@ func (q *sqlQuerier) GetChatProviderByProvider(ctx context.Context, provider str
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.BaseUrl,
+		&i.CentralApiKeyEnabled,
+		&i.AllowUserApiKey,
+		&i.AllowCentralApiKeyFallback,
 	)
 	return i, err
 }
 
 const getChatProviders = `-- name: GetChatProviders :many
 SELECT
-    id, provider, display_name, api_key, api_key_key_id, created_by, enabled, created_at, updated_at, base_url
+    id, provider, display_name, api_key, api_key_key_id, created_by, enabled, created_at, updated_at, base_url, central_api_key_enabled, allow_user_api_key, allow_central_api_key_fallback
 FROM
     chat_providers
 ORDER BY
@@ -3872,6 +3886,9 @@ func (q *sqlQuerier) GetChatProviders(ctx context.Context) ([]ChatProvider, erro
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.BaseUrl,
+			&i.CentralApiKeyEnabled,
+			&i.AllowUserApiKey,
+			&i.AllowCentralApiKeyFallback,
 		); err != nil {
 			return nil, err
 		}
@@ -3888,7 +3905,7 @@ func (q *sqlQuerier) GetChatProviders(ctx context.Context) ([]ChatProvider, erro
 
 const getEnabledChatProviders = `-- name: GetEnabledChatProviders :many
 SELECT
-    id, provider, display_name, api_key, api_key_key_id, created_by, enabled, created_at, updated_at, base_url
+    id, provider, display_name, api_key, api_key_key_id, created_by, enabled, created_at, updated_at, base_url, central_api_key_enabled, allow_user_api_key, allow_central_api_key_fallback
 FROM
     chat_providers
 WHERE
@@ -3917,6 +3934,9 @@ func (q *sqlQuerier) GetEnabledChatProviders(ctx context.Context) ([]ChatProvide
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.BaseUrl,
+			&i.CentralApiKeyEnabled,
+			&i.AllowUserApiKey,
+			&i.AllowCentralApiKeyFallback,
 		); err != nil {
 			return nil, err
 		}
@@ -3939,7 +3959,10 @@ INSERT INTO chat_providers (
     base_url,
     api_key_key_id,
     created_by,
-    enabled
+    enabled,
+    central_api_key_enabled,
+    allow_user_api_key,
+    allow_central_api_key_fallback
 ) VALUES (
     $1::text,
     $2::text,
@@ -3947,20 +3970,26 @@ INSERT INTO chat_providers (
     $4::text,
     $5::text,
     $6::uuid,
-    $7::boolean
+    $7::boolean,
+    $8::boolean,
+    $9::boolean,
+    $10::boolean
 )
 RETURNING
-    id, provider, display_name, api_key, api_key_key_id, created_by, enabled, created_at, updated_at, base_url
+    id, provider, display_name, api_key, api_key_key_id, created_by, enabled, created_at, updated_at, base_url, central_api_key_enabled, allow_user_api_key, allow_central_api_key_fallback
 `
 
 type InsertChatProviderParams struct {
-	Provider    string         `db:"provider" json:"provider"`
-	DisplayName string         `db:"display_name" json:"display_name"`
-	APIKey      string         `db:"api_key" json:"api_key"`
-	BaseUrl     string         `db:"base_url" json:"base_url"`
-	ApiKeyKeyID sql.NullString `db:"api_key_key_id" json:"api_key_key_id"`
-	CreatedBy   uuid.NullUUID  `db:"created_by" json:"created_by"`
-	Enabled     bool           `db:"enabled" json:"enabled"`
+	Provider                   string         `db:"provider" json:"provider"`
+	DisplayName                string         `db:"display_name" json:"display_name"`
+	APIKey                     string         `db:"api_key" json:"api_key"`
+	BaseUrl                    string         `db:"base_url" json:"base_url"`
+	ApiKeyKeyID                sql.NullString `db:"api_key_key_id" json:"api_key_key_id"`
+	CreatedBy                  uuid.NullUUID  `db:"created_by" json:"created_by"`
+	Enabled                    bool           `db:"enabled" json:"enabled"`
+	CentralApiKeyEnabled       bool           `db:"central_api_key_enabled" json:"central_api_key_enabled"`
+	AllowUserApiKey            bool           `db:"allow_user_api_key" json:"allow_user_api_key"`
+	AllowCentralApiKeyFallback bool           `db:"allow_central_api_key_fallback" json:"allow_central_api_key_fallback"`
 }
 
 func (q *sqlQuerier) InsertChatProvider(ctx context.Context, arg InsertChatProviderParams) (ChatProvider, error) {
@@ -3972,6 +4001,9 @@ func (q *sqlQuerier) InsertChatProvider(ctx context.Context, arg InsertChatProvi
 		arg.ApiKeyKeyID,
 		arg.CreatedBy,
 		arg.Enabled,
+		arg.CentralApiKeyEnabled,
+		arg.AllowUserApiKey,
+		arg.AllowCentralApiKeyFallback,
 	)
 	var i ChatProvider
 	err := row.Scan(
@@ -3985,6 +4017,9 @@ func (q *sqlQuerier) InsertChatProvider(ctx context.Context, arg InsertChatProvi
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.BaseUrl,
+		&i.CentralApiKeyEnabled,
+		&i.AllowUserApiKey,
+		&i.AllowCentralApiKeyFallback,
 	)
 	return i, err
 }
@@ -3998,20 +4033,26 @@ SET
     base_url = $3::text,
     api_key_key_id = $4::text,
     enabled = $5::boolean,
+    central_api_key_enabled = $6::boolean,
+    allow_user_api_key = $7::boolean,
+    allow_central_api_key_fallback = $8::boolean,
     updated_at = NOW()
 WHERE
-    id = $6::uuid
+    id = $9::uuid
 RETURNING
-    id, provider, display_name, api_key, api_key_key_id, created_by, enabled, created_at, updated_at, base_url
+    id, provider, display_name, api_key, api_key_key_id, created_by, enabled, created_at, updated_at, base_url, central_api_key_enabled, allow_user_api_key, allow_central_api_key_fallback
 `
 
 type UpdateChatProviderParams struct {
-	DisplayName string         `db:"display_name" json:"display_name"`
-	APIKey      string         `db:"api_key" json:"api_key"`
-	BaseUrl     string         `db:"base_url" json:"base_url"`
-	ApiKeyKeyID sql.NullString `db:"api_key_key_id" json:"api_key_key_id"`
-	Enabled     bool           `db:"enabled" json:"enabled"`
-	ID          uuid.UUID      `db:"id" json:"id"`
+	DisplayName                string         `db:"display_name" json:"display_name"`
+	APIKey                     string         `db:"api_key" json:"api_key"`
+	BaseUrl                    string         `db:"base_url" json:"base_url"`
+	ApiKeyKeyID                sql.NullString `db:"api_key_key_id" json:"api_key_key_id"`
+	Enabled                    bool           `db:"enabled" json:"enabled"`
+	CentralApiKeyEnabled       bool           `db:"central_api_key_enabled" json:"central_api_key_enabled"`
+	AllowUserApiKey            bool           `db:"allow_user_api_key" json:"allow_user_api_key"`
+	AllowCentralApiKeyFallback bool           `db:"allow_central_api_key_fallback" json:"allow_central_api_key_fallback"`
+	ID                         uuid.UUID      `db:"id" json:"id"`
 }
 
 func (q *sqlQuerier) UpdateChatProvider(ctx context.Context, arg UpdateChatProviderParams) (ChatProvider, error) {
@@ -4021,6 +4062,9 @@ func (q *sqlQuerier) UpdateChatProvider(ctx context.Context, arg UpdateChatProvi
 		arg.BaseUrl,
 		arg.ApiKeyKeyID,
 		arg.Enabled,
+		arg.CentralApiKeyEnabled,
+		arg.AllowUserApiKey,
+		arg.AllowCentralApiKeyFallback,
 		arg.ID,
 	)
 	var i ChatProvider
@@ -4035,6 +4079,9 @@ func (q *sqlQuerier) UpdateChatProvider(ctx context.Context, arg UpdateChatProvi
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.BaseUrl,
+		&i.CentralApiKeyEnabled,
+		&i.AllowUserApiKey,
+		&i.AllowCentralApiKeyFallback,
 	)
 	return i, err
 }
@@ -5707,6 +5754,7 @@ INSERT INTO chats (
     last_model_config_id,
     title,
     mode,
+    status,
     mcp_server_ids,
     labels
 ) VALUES (
@@ -5719,8 +5767,9 @@ INSERT INTO chats (
     $7::uuid,
     $8::text,
     $9::chat_mode,
-    COALESCE($10::uuid[], '{}'::uuid[]),
-    COALESCE($11::jsonb, '{}'::jsonb)
+    $10::chat_status,
+    COALESCE($11::uuid[], '{}'::uuid[]),
+    COALESCE($12::jsonb, '{}'::jsonb)
 )
 RETURNING
     id, owner_id, workspace_id, title, status, worker_id, started_at, heartbeat_at, created_at, updated_at, parent_chat_id, root_chat_id, last_model_config_id, archived, last_error, mode, mcp_server_ids, labels, build_id, agent_id, pin_order, last_read_message_id, last_injected_context
@@ -5736,6 +5785,7 @@ type InsertChatParams struct {
 	LastModelConfigID uuid.UUID             `db:"last_model_config_id" json:"last_model_config_id"`
 	Title             string                `db:"title" json:"title"`
 	Mode              NullChatMode          `db:"mode" json:"mode"`
+	Status            ChatStatus            `db:"status" json:"status"`
 	MCPServerIDs      []uuid.UUID           `db:"mcp_server_ids" json:"mcp_server_ids"`
 	Labels            pqtype.NullRawMessage `db:"labels" json:"labels"`
 }
@@ -5751,6 +5801,7 @@ func (q *sqlQuerier) InsertChat(ctx context.Context, arg InsertChatParams) (Chat
 		arg.LastModelConfigID,
 		arg.Title,
 		arg.Mode,
+		arg.Status,
 		pq.Array(arg.MCPServerIDs),
 		arg.Labels,
 	)
@@ -22426,7 +22477,7 @@ INSERT INTO user_secrets (
     file_path
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7
-) RETURNING id, user_id, name, description, value, env_name, file_path, created_at, updated_at
+) RETURNING id, user_id, name, description, value, env_name, file_path, created_at, updated_at, value_key_id
 `
 
 type CreateUserSecretParams struct {
@@ -22460,6 +22511,7 @@ func (q *sqlQuerier) CreateUserSecret(ctx context.Context, arg CreateUserSecretP
 		&i.FilePath,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ValueKeyID,
 	)
 	return i, err
 }
@@ -22475,7 +22527,7 @@ func (q *sqlQuerier) DeleteUserSecret(ctx context.Context, id uuid.UUID) error {
 }
 
 const getUserSecret = `-- name: GetUserSecret :one
-SELECT id, user_id, name, description, value, env_name, file_path, created_at, updated_at FROM user_secrets
+SELECT id, user_id, name, description, value, env_name, file_path, created_at, updated_at, value_key_id FROM user_secrets
 WHERE id = $1
 `
 
@@ -22492,12 +22544,13 @@ func (q *sqlQuerier) GetUserSecret(ctx context.Context, id uuid.UUID) (UserSecre
 		&i.FilePath,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ValueKeyID,
 	)
 	return i, err
 }
 
 const getUserSecretByUserIDAndName = `-- name: GetUserSecretByUserIDAndName :one
-SELECT id, user_id, name, description, value, env_name, file_path, created_at, updated_at FROM user_secrets
+SELECT id, user_id, name, description, value, env_name, file_path, created_at, updated_at, value_key_id FROM user_secrets
 WHERE user_id = $1 AND name = $2
 `
 
@@ -22519,12 +22572,13 @@ func (q *sqlQuerier) GetUserSecretByUserIDAndName(ctx context.Context, arg GetUs
 		&i.FilePath,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ValueKeyID,
 	)
 	return i, err
 }
 
 const listUserSecrets = `-- name: ListUserSecrets :many
-SELECT id, user_id, name, description, value, env_name, file_path, created_at, updated_at FROM user_secrets
+SELECT id, user_id, name, description, value, env_name, file_path, created_at, updated_at, value_key_id FROM user_secrets
 WHERE user_id = $1
 ORDER BY name ASC
 `
@@ -22548,6 +22602,7 @@ func (q *sqlQuerier) ListUserSecrets(ctx context.Context, userID uuid.UUID) ([]U
 			&i.FilePath,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.ValueKeyID,
 		); err != nil {
 			return nil, err
 		}
@@ -22571,7 +22626,7 @@ SET
     file_path = $5,
     updated_at = CURRENT_TIMESTAMP
 WHERE id = $1
-RETURNING id, user_id, name, description, value, env_name, file_path, created_at, updated_at
+RETURNING id, user_id, name, description, value, env_name, file_path, created_at, updated_at, value_key_id
 `
 
 type UpdateUserSecretParams struct {
@@ -22599,6 +22654,127 @@ func (q *sqlQuerier) UpdateUserSecret(ctx context.Context, arg UpdateUserSecretP
 		&i.Value,
 		&i.EnvName,
 		&i.FilePath,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ValueKeyID,
+	)
+	return i, err
+}
+
+const deleteUserChatProviderKey = `-- name: DeleteUserChatProviderKey :exec
+DELETE FROM user_chat_provider_keys WHERE user_id = $1 AND chat_provider_id = $2
+`
+
+type DeleteUserChatProviderKeyParams struct {
+	UserID         uuid.UUID `db:"user_id" json:"user_id"`
+	ChatProviderID uuid.UUID `db:"chat_provider_id" json:"chat_provider_id"`
+}
+
+func (q *sqlQuerier) DeleteUserChatProviderKey(ctx context.Context, arg DeleteUserChatProviderKeyParams) error {
+	_, err := q.db.ExecContext(ctx, deleteUserChatProviderKey, arg.UserID, arg.ChatProviderID)
+	return err
+}
+
+const getUserChatProviderKeys = `-- name: GetUserChatProviderKeys :many
+SELECT id, user_id, chat_provider_id, api_key, api_key_key_id, created_at, updated_at FROM user_chat_provider_keys WHERE user_id = $1 ORDER BY created_at ASC, id ASC
+`
+
+func (q *sqlQuerier) GetUserChatProviderKeys(ctx context.Context, userID uuid.UUID) ([]UserChatProviderKey, error) {
+	rows, err := q.db.QueryContext(ctx, getUserChatProviderKeys, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []UserChatProviderKey
+	for rows.Next() {
+		var i UserChatProviderKey
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.ChatProviderID,
+			&i.APIKey,
+			&i.ApiKeyKeyID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const updateUserChatProviderKey = `-- name: UpdateUserChatProviderKey :one
+UPDATE user_chat_provider_keys
+SET api_key = $1, api_key_key_id = $2::text, updated_at = NOW()
+WHERE user_id = $3 AND chat_provider_id = $4
+RETURNING id, user_id, chat_provider_id, api_key, api_key_key_id, created_at, updated_at
+`
+
+type UpdateUserChatProviderKeyParams struct {
+	APIKey         string         `db:"api_key" json:"api_key"`
+	ApiKeyKeyID    sql.NullString `db:"api_key_key_id" json:"api_key_key_id"`
+	UserID         uuid.UUID      `db:"user_id" json:"user_id"`
+	ChatProviderID uuid.UUID      `db:"chat_provider_id" json:"chat_provider_id"`
+}
+
+func (q *sqlQuerier) UpdateUserChatProviderKey(ctx context.Context, arg UpdateUserChatProviderKeyParams) (UserChatProviderKey, error) {
+	row := q.db.QueryRowContext(ctx, updateUserChatProviderKey,
+		arg.APIKey,
+		arg.ApiKeyKeyID,
+		arg.UserID,
+		arg.ChatProviderID,
+	)
+	var i UserChatProviderKey
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.ChatProviderID,
+		&i.APIKey,
+		&i.ApiKeyKeyID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const upsertUserChatProviderKey = `-- name: UpsertUserChatProviderKey :one
+INSERT INTO user_chat_provider_keys (user_id, chat_provider_id, api_key, api_key_key_id)
+VALUES ($1, $2, $3, $4::text)
+ON CONFLICT (user_id, chat_provider_id) DO UPDATE SET
+    api_key = $3,
+    api_key_key_id = $4::text,
+    updated_at = NOW()
+RETURNING id, user_id, chat_provider_id, api_key, api_key_key_id, created_at, updated_at
+`
+
+type UpsertUserChatProviderKeyParams struct {
+	UserID         uuid.UUID      `db:"user_id" json:"user_id"`
+	ChatProviderID uuid.UUID      `db:"chat_provider_id" json:"chat_provider_id"`
+	APIKey         string         `db:"api_key" json:"api_key"`
+	ApiKeyKeyID    sql.NullString `db:"api_key_key_id" json:"api_key_key_id"`
+}
+
+func (q *sqlQuerier) UpsertUserChatProviderKey(ctx context.Context, arg UpsertUserChatProviderKeyParams) (UserChatProviderKey, error) {
+	row := q.db.QueryRowContext(ctx, upsertUserChatProviderKey,
+		arg.UserID,
+		arg.ChatProviderID,
+		arg.APIKey,
+		arg.ApiKeyKeyID,
+	)
+	var i UserChatProviderKey
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.ChatProviderID,
+		&i.APIKey,
+		&i.ApiKeyKeyID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
