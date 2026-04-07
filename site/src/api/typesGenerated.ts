@@ -1216,6 +1216,11 @@ export interface Chat {
 }
 
 // From codersdk/chats.go
+export type ChatBusyBehavior = "interrupt" | "queue";
+
+export const ChatBusyBehaviors: ChatBusyBehavior[] = ["interrupt", "queue"];
+
+// From codersdk/chats.go
 /**
  * ChatCompactionThresholdKeyPrefix scopes per-model chat compaction
  * threshold settings.
@@ -1263,6 +1268,7 @@ export interface ChatCostChatBreakdown {
 	readonly total_output_tokens: number;
 	readonly total_cache_read_tokens: number;
 	readonly total_cache_creation_tokens: number;
+	readonly total_runtime_ms: number;
 }
 
 // From codersdk/chats.go
@@ -1280,6 +1286,7 @@ export interface ChatCostModelBreakdown {
 	readonly total_output_tokens: number;
 	readonly total_cache_read_tokens: number;
 	readonly total_cache_creation_tokens: number;
+	readonly total_runtime_ms: number;
 }
 
 // From codersdk/chats.go
@@ -1296,6 +1303,7 @@ export interface ChatCostSummary {
 	readonly total_output_tokens: number;
 	readonly total_cache_read_tokens: number;
 	readonly total_cache_creation_tokens: number;
+	readonly total_runtime_ms: number;
 	readonly by_model: readonly ChatCostModelBreakdown[];
 	readonly by_chat: readonly ChatCostChatBreakdown[];
 	readonly usage_limit?: ChatUsageLimitStatus;
@@ -1326,6 +1334,7 @@ export interface ChatCostUserRollup {
 	readonly total_output_tokens: number;
 	readonly total_cache_read_tokens: number;
 	readonly total_cache_creation_tokens: number;
+	readonly total_runtime_ms: number;
 }
 
 // From codersdk/chats.go
@@ -2334,6 +2343,7 @@ export interface CreateChatMessageRequest {
 	readonly content: readonly ChatInputPart[];
 	readonly model_config_id?: string;
 	readonly mcp_server_ids?: string[];
+	readonly busy_behavior?: ChatBusyBehavior;
 }
 
 // From codersdk/chats.go
@@ -2382,6 +2392,7 @@ export interface CreateChatProviderConfigRequest {
  */
 export interface CreateChatRequest {
 	readonly content: readonly ChatInputPart[];
+	readonly system_prompt?: string;
 	readonly workspace_id?: string;
 	readonly model_config_id?: string;
 	readonly mcp_server_ids?: readonly string[];

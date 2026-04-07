@@ -313,6 +313,111 @@ func TestPostChats(t *testing.T) {
 		}
 	})
 
+	t.Run("WithPerChatSystemPrompt", func(t *testing.T) {
+		t.Parallel()
+
+		ctx := testutil.Context(t, testutil.WaitLong)
+		client, db := newChatClientWithDatabase(t)
+		_ = coderdtest.CreateFirstUser(t, client.Client)
+		_ = createChatModelConfig(t, client)
+
+		chat, err := client.CreateChat(ctx, codersdk.CreateChatRequest{
+			Content: []codersdk.ChatInputPart{
+				{
+					Type: codersdk.ChatInputPartTypeText,
+					Text: "hello with system prompt",
+				},
+			},
+			SystemPrompt: "You are a Go expert.",
+		})
+		require.NoError(t, err)
+		require.NotEqual(t, uuid.Nil, chat.ID)
+
+		// Use the DB directly to see system messages, which are
+		// hidden from the public API.
+		dbMessages, err := db.GetChatMessagesForPromptByChatID(dbauthz.AsSystemRestricted(ctx), chat.ID)
+		require.NoError(t, err)
+
+		// Expect: deployment system prompt, per-chat system prompt,
+		// workspace awareness, user message.
+		var systemMessages []database.ChatMessage
+		for _, msg := range dbMessages {
+			if msg.Role == database.ChatMessageRoleSystem {
+				systemMessages = append(systemMessages, msg)
+			}
+		}
+		require.GreaterOrEqual(t, len(systemMessages), 2,
+			"expected at least deployment + per-chat system messages")
+
+		// The per-chat system prompt should be the second system
+		// message and contain the user-specified text.
+		foundPerChat := false
+		for _, msg := range systemMessages {
+			if msg.Content.Valid {
+				raw := string(msg.Content.RawMessage)
+				if strings.Contains(raw, "You are a Go expert.") {
+					foundPerChat = true
+					break
+				}
+			}
+		}
+		require.True(t, foundPerChat,
+			"per-chat system prompt not found in system messages")
+	})
+
+	t.Run("PerChatSystemPromptEmpty", func(t *testing.T) {
+		t.Parallel()
+
+		ctx := testutil.Context(t, testutil.WaitLong)
+		client, db := newChatClientWithDatabase(t)
+		_ = coderdtest.CreateFirstUser(t, client.Client)
+		_ = createChatModelConfig(t, client)
+
+		chat, err := client.CreateChat(ctx, codersdk.CreateChatRequest{
+			Content: []codersdk.ChatInputPart{
+				{
+					Type: codersdk.ChatInputPartTypeText,
+					Text: "hello without system prompt",
+				},
+			},
+			SystemPrompt: "",
+		})
+		require.NoError(t, err)
+
+		dbMessages, err := db.GetChatMessagesForPromptByChatID(dbauthz.AsSystemRestricted(ctx), chat.ID)
+		require.NoError(t, err)
+
+		// No per-chat system prompt should be present.
+		for _, msg := range dbMessages {
+			if msg.Role == database.ChatMessageRoleSystem && msg.Content.Valid {
+				raw := string(msg.Content.RawMessage)
+				require.NotContains(t, raw, "You are a Go expert.",
+					"unexpected per-chat system prompt in messages")
+			}
+		}
+	})
+
+	t.Run("PerChatSystemPromptTooLong", func(t *testing.T) {
+		t.Parallel()
+
+		ctx := testutil.Context(t, testutil.WaitLong)
+		client := newChatClient(t)
+		_ = coderdtest.CreateFirstUser(t, client.Client)
+		_ = createChatModelConfig(t, client)
+
+		longPrompt := strings.Repeat("a", 10001)
+		_, err := client.CreateChat(ctx, codersdk.CreateChatRequest{
+			Content: []codersdk.ChatInputPart{
+				{
+					Type: codersdk.ChatInputPartTypeText,
+					Text: "hello",
+				},
+			},
+			SystemPrompt: longPrompt,
+		})
+		requireSDKError(t, err, http.StatusBadRequest)
+	})
+
 	t.Run("WorkspaceNotAccessible", func(t *testing.T) {
 		t.Parallel()
 
@@ -6079,7 +6184,7 @@ func seedChatCostFixture(t *testing.T) chatCostTestFixture {
 		ContextLimit:        []int64{0, 0},
 		Compressed:          []bool{false, false},
 		TotalCostMicros:     []int64{500, 500},
-		RuntimeMs:           []int64{0, 0},
+		RuntimeMs:           []int64{1500, 2500},
 	})
 	require.NoError(t, err)
 	require.Len(t, results, 2)
@@ -6112,16 +6217,19 @@ func assertChatCostSummary(t *testing.T, summary codersdk.ChatCostSummary, model
 	require.Equal(t, int64(0), summary.UnpricedMessageCount)
 	require.Equal(t, int64(200), summary.TotalInputTokens)
 	require.Equal(t, int64(100), summary.TotalOutputTokens)
+	require.Equal(t, int64(4000), summary.TotalRuntimeMs)
 
 	require.Len(t, summary.ByModel, 1)
 	require.Equal(t, modelConfigID, summary.ByModel[0].ModelConfigID)
 	require.Equal(t, int64(1000), summary.ByModel[0].TotalCostMicros)
 	require.Equal(t, int64(2), summary.ByModel[0].MessageCount)
+	require.Equal(t, int64(4000), summary.ByModel[0].TotalRuntimeMs)
 
 	require.Len(t, summary.ByChat, 1)
 	require.Equal(t, chatID, summary.ByChat[0].RootChatID)
 	require.Equal(t, int64(1000), summary.ByChat[0].TotalCostMicros)
 	require.Equal(t, int64(2), summary.ByChat[0].MessageCount)
+	require.Equal(t, int64(4000), summary.ByChat[0].TotalRuntimeMs)
 }
 
 func TestChatCostSummary(t *testing.T) {

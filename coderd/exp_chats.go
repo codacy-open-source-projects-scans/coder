@@ -403,6 +403,16 @@ func (api *API) postChats(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validate per-chat system prompt length.
+	const maxSystemPromptLen = 10000
+	if len(req.SystemPrompt) > maxSystemPromptLen {
+		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
+			Message: "System prompt exceeds maximum length.",
+			Detail:  fmt.Sprintf("System prompt must be at most %d characters, got %d.", maxSystemPromptLen, len(req.SystemPrompt)),
+		})
+		return
+	}
+
 	contentBlocks, titleSource, inputError := createChatInputFromRequest(ctx, api.Database, req)
 	if inputError != nil {
 		httpapi.Write(ctx, rw, http.StatusBadRequest, *inputError)
@@ -483,7 +493,7 @@ func (api *API) postChats(rw http.ResponseWriter, r *http.Request) {
 		WorkspaceID:        workspaceSelection.WorkspaceID,
 		Title:              title,
 		ModelConfigID:      modelConfigID,
-		SystemPrompt:       api.resolvedChatSystemPrompt(ctx),
+		SystemPrompt:       req.SystemPrompt,
 		InitialUserContent: contentBlocks,
 		MCPServerIDs:       mcpServerIDs,
 		Labels:             labels,
@@ -717,6 +727,7 @@ func (api *API) chatCostSummary(rw http.ResponseWriter, r *http.Request) {
 		TotalOutputTokens:        summary.TotalOutputTokens,
 		TotalCacheReadTokens:     summary.TotalCacheReadTokens,
 		TotalCacheCreationTokens: summary.TotalCacheCreationTokens,
+		TotalRuntimeMs:           summary.TotalRuntimeMs,
 		ByModel:                  modelBreakdowns,
 		ByChat:                   chatBreakdowns,
 	}
@@ -1819,6 +1830,20 @@ func (api *API) postChatMessages(rw http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	busyBehavior := chatd.SendMessageBusyBehaviorQueue
+	switch req.BusyBehavior {
+	case codersdk.ChatBusyBehaviorInterrupt:
+		busyBehavior = chatd.SendMessageBusyBehaviorInterrupt
+	case codersdk.ChatBusyBehaviorQueue, "":
+		// Default to queue.
+	default:
+		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
+			Message: "Invalid busy_behavior value.",
+			Detail:  `Must be "queue" or "interrupt".`,
+		})
+		return
+	}
+
 	sendResult, sendErr := api.chatDaemon.SendMessage(
 		ctx,
 		chatd.SendMessageOptions{
@@ -1826,7 +1851,7 @@ func (api *API) postChatMessages(rw http.ResponseWriter, r *http.Request) {
 			CreatedBy:     apiKey.UserID,
 			Content:       contentBlocks,
 			ModelConfigID: req.ModelConfigID,
-			BusyBehavior:  chatd.SendMessageBusyBehaviorQueue,
+			BusyBehavior:  busyBehavior,
 			MCPServerIDs:  req.MCPServerIDs,
 		},
 	)
@@ -3476,35 +3501,6 @@ func (api *API) deleteUserChatCompactionThreshold(rw http.ResponseWriter, r *htt
 	rw.WriteHeader(http.StatusNoContent)
 }
 
-func (api *API) resolvedChatSystemPrompt(ctx context.Context) string {
-	config, err := api.Database.GetChatSystemPromptConfig(ctx)
-	if err != nil {
-		// We intentionally fail open here. When the prompt configuration
-		// cannot be read, returning the built-in default keeps the chat
-		// grounded instead of sending no system guidance at all.
-		api.Logger.Error(ctx, "failed to fetch chat system prompt configuration, using default", slog.Error(err))
-		return chatd.DefaultSystemPrompt
-	}
-
-	sanitizedCustom := chatd.SanitizePromptText(config.ChatSystemPrompt)
-	if sanitizedCustom == "" && strings.TrimSpace(config.ChatSystemPrompt) != "" {
-		api.Logger.Warn(ctx, "custom system prompt became empty after sanitization, omitting custom portion")
-	}
-
-	var parts []string
-	if config.IncludeDefaultSystemPrompt {
-		parts = append(parts, chatd.DefaultSystemPrompt)
-	}
-	if sanitizedCustom != "" {
-		parts = append(parts, sanitizedCustom)
-	}
-	result := strings.Join(parts, "\n\n")
-	if result == "" {
-		api.Logger.Warn(ctx, "resolved system prompt is empty, no system prompt will be injected into chats")
-	}
-	return result
-}
-
 func (api *API) postChatFile(rw http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	apiKey := httpmw.APIKey(r)
@@ -3840,6 +3836,7 @@ func convertChatCostModelBreakdown(model database.GetChatCostPerModelRow) coders
 		TotalOutputTokens:        model.TotalOutputTokens,
 		TotalCacheReadTokens:     model.TotalCacheReadTokens,
 		TotalCacheCreationTokens: model.TotalCacheCreationTokens,
+		TotalRuntimeMs:           model.TotalRuntimeMs,
 	}
 }
 
@@ -3853,6 +3850,7 @@ func convertChatCostChatBreakdown(chat database.GetChatCostPerChatRow) codersdk.
 		TotalOutputTokens:        chat.TotalOutputTokens,
 		TotalCacheReadTokens:     chat.TotalCacheReadTokens,
 		TotalCacheCreationTokens: chat.TotalCacheCreationTokens,
+		TotalRuntimeMs:           chat.TotalRuntimeMs,
 	}
 }
 
@@ -3869,6 +3867,7 @@ func convertChatCostUserRollup(user database.GetChatCostPerUserRow) codersdk.Cha
 		TotalOutputTokens:        user.TotalOutputTokens,
 		TotalCacheReadTokens:     user.TotalCacheReadTokens,
 		TotalCacheCreationTokens: user.TotalCacheCreationTokens,
+		TotalRuntimeMs:           user.TotalRuntimeMs,
 	}
 }
 

@@ -345,6 +345,7 @@ type ChatInputPart struct {
 // CreateChatRequest is the request to create a new chat.
 type CreateChatRequest struct {
 	Content       []ChatInputPart   `json:"content"`
+	SystemPrompt  string            `json:"system_prompt,omitempty"`
 	WorkspaceID   *uuid.UUID        `json:"workspace_id,omitempty" format:"uuid"`
 	ModelConfigID *uuid.UUID        `json:"model_config_id,omitempty" format:"uuid"`
 	MCPServerIDs  []uuid.UUID       `json:"mcp_server_ids,omitempty" format:"uuid"`
@@ -368,11 +369,27 @@ type UpdateChatRequest struct {
 	Labels   *map[string]string `json:"labels,omitempty"`
 }
 
+// ChatBusyBehavior controls what happens when a user sends a message
+// while the chat is already processing.
+type ChatBusyBehavior string
+
+const (
+	// ChatBusyBehaviorQueue queues the message for processing after
+	// the current run finishes.
+	ChatBusyBehaviorQueue ChatBusyBehavior = "queue"
+	// ChatBusyBehaviorInterrupt queues the message and interrupts
+	// the active run. The partial assistant response is persisted
+	// before the queued message is promoted, preserving correct
+	// conversation order.
+	ChatBusyBehaviorInterrupt ChatBusyBehavior = "interrupt"
+)
+
 // CreateChatMessageRequest is the request to add a message to a chat.
 type CreateChatMessageRequest struct {
-	Content       []ChatInputPart `json:"content"`
-	ModelConfigID *uuid.UUID      `json:"model_config_id,omitempty" format:"uuid"`
-	MCPServerIDs  *[]uuid.UUID    `json:"mcp_server_ids,omitempty" format:"uuid"`
+	Content       []ChatInputPart  `json:"content"`
+	ModelConfigID *uuid.UUID       `json:"model_config_id,omitempty" format:"uuid"`
+	MCPServerIDs  *[]uuid.UUID     `json:"mcp_server_ids,omitempty" format:"uuid"`
+	BusyBehavior  ChatBusyBehavior `json:"busy_behavior,omitempty" enums:"queue,interrupt"`
 }
 
 // EditChatMessageRequest is the request to edit a user message in a chat.
@@ -626,7 +643,7 @@ type ChatModelOpenAIProviderOptions struct {
 	ParallelToolCalls   *bool            `json:"parallel_tool_calls,omitempty" description:"Whether the model may make multiple tool calls in parallel"`
 	User                *string          `json:"user,omitempty" description:"Unique identifier for the end user for abuse monitoring" hidden:"true"`
 	ReasoningEffort     *string          `json:"reasoning_effort,omitempty" description:"Controls the level of reasoning effort" enum:"none,minimal,low,medium,high,xhigh"`
-	ReasoningSummary    *string          `json:"reasoning_summary,omitempty" description:"Controls whether reasoning tokens are summarized in the response"`
+	ReasoningSummary    *string          `json:"reasoning_summary,omitempty" description:"Controls whether reasoning tokens are summarized in the response" enum:"auto,concise,detailed"`
 	MaxCompletionTokens *int64           `json:"max_completion_tokens,omitempty" description:"Upper bound on tokens the model may generate"`
 	TextVerbosity       *string          `json:"text_verbosity,omitempty" description:"Controls the verbosity of the text response" enum:"low,medium,high"`
 	Prediction          map[string]any   `json:"prediction,omitempty" description:"Predicted output content to speed up responses" hidden:"true"`
@@ -634,12 +651,12 @@ type ChatModelOpenAIProviderOptions struct {
 	Metadata            map[string]any   `json:"metadata,omitempty" description:"Arbitrary metadata to attach to the request" hidden:"true"`
 	PromptCacheKey      *string          `json:"prompt_cache_key,omitempty" description:"Key for enabling cross-request prompt caching"`
 	SafetyIdentifier    *string          `json:"safety_identifier,omitempty" description:"Developer-specific safety identifier for the request" hidden:"true"`
-	ServiceTier         *string          `json:"service_tier,omitempty" description:"Latency tier to use for processing the request"`
+	ServiceTier         *string          `json:"service_tier,omitempty" description:"Latency tier to use for processing the request" enum:"auto,default,flex,scale,priority"`
 	StructuredOutputs   *bool            `json:"structured_outputs,omitempty" description:"Whether to enable structured JSON output mode" hidden:"true"`
 	StrictJSONSchema    *bool            `json:"strict_json_schema,omitempty" description:"Whether to enforce strict adherence to the JSON schema" hidden:"true"`
 	WebSearchEnabled    *bool            `json:"web_search_enabled,omitempty" description:"Enable OpenAI web search tool for grounding responses with real-time information"`
 	SearchContextSize   *string          `json:"search_context_size,omitempty" description:"Amount of search context to use" enum:"low,medium,high"`
-	AllowedDomains      []string         `json:"allowed_domains,omitempty" description:"Restrict web search to these domains"`
+	AllowedDomains      []string         `json:"allowed_domains,omitempty" label:"Web Search: Allowed Domains" description:"Restrict web search to these domains"`
 }
 
 // ChatModelAnthropicThinkingOptions configures Anthropic thinking budget.
@@ -651,11 +668,11 @@ type ChatModelAnthropicThinkingOptions struct {
 type ChatModelAnthropicProviderOptions struct {
 	SendReasoning          *bool                              `json:"send_reasoning,omitempty" description:"Whether to include reasoning content in the response"`
 	Thinking               *ChatModelAnthropicThinkingOptions `json:"thinking,omitempty" description:"Configuration for extended thinking"`
-	Effort                 *string                            `json:"effort,omitempty" description:"Controls the level of reasoning effort" enum:"low,medium,high,max"`
+	Effort                 *string                            `json:"effort,omitempty" label:"Reasoning Effort" description:"Controls the level of reasoning effort" enum:"low,medium,high,max"`
 	DisableParallelToolUse *bool                              `json:"disable_parallel_tool_use,omitempty" description:"Whether to disable parallel tool execution"`
 	WebSearchEnabled       *bool                              `json:"web_search_enabled,omitempty" description:"Enable Anthropic web search tool for grounding responses with real-time information"`
-	AllowedDomains         []string                           `json:"allowed_domains,omitempty" description:"Restrict web search to these domains (cannot be used with blocked_domains)"`
-	BlockedDomains         []string                           `json:"blocked_domains,omitempty" description:"Block web search on these domains (cannot be used with allowed_domains)"`
+	AllowedDomains         []string                           `json:"allowed_domains,omitempty" label:"Web Search: Allowed Domains" description:"Restrict web search to these domains (cannot be used with blocked_domains)"`
+	BlockedDomains         []string                           `json:"blocked_domains,omitempty" label:"Web Search: Blocked Domains" description:"Block web search on these domains (cannot be used with allowed_domains)"`
 }
 
 // ChatModelGoogleThinkingConfig configures Google thinking behavior.
@@ -974,6 +991,7 @@ type ChatCostSummary struct {
 	TotalOutputTokens        int64                    `json:"total_output_tokens"`
 	TotalCacheReadTokens     int64                    `json:"total_cache_read_tokens"`
 	TotalCacheCreationTokens int64                    `json:"total_cache_creation_tokens"`
+	TotalRuntimeMs           int64                    `json:"total_runtime_ms"`
 	ByModel                  []ChatCostModelBreakdown `json:"by_model"`
 	ByChat                   []ChatCostChatBreakdown  `json:"by_chat"`
 	UsageLimit               *ChatUsageLimitStatus    `json:"usage_limit,omitempty"`
@@ -991,6 +1009,7 @@ type ChatCostModelBreakdown struct {
 	TotalOutputTokens        int64     `json:"total_output_tokens"`
 	TotalCacheReadTokens     int64     `json:"total_cache_read_tokens"`
 	TotalCacheCreationTokens int64     `json:"total_cache_creation_tokens"`
+	TotalRuntimeMs           int64     `json:"total_runtime_ms"`
 }
 
 // ChatCostChatBreakdown contains per-root-chat cost aggregation.
@@ -1003,6 +1022,7 @@ type ChatCostChatBreakdown struct {
 	TotalOutputTokens        int64     `json:"total_output_tokens"`
 	TotalCacheReadTokens     int64     `json:"total_cache_read_tokens"`
 	TotalCacheCreationTokens int64     `json:"total_cache_creation_tokens"`
+	TotalRuntimeMs           int64     `json:"total_runtime_ms"`
 }
 
 // ChatCostUserRollup contains per-user cost aggregation for admin views.
@@ -1018,6 +1038,7 @@ type ChatCostUserRollup struct {
 	TotalOutputTokens        int64     `json:"total_output_tokens"`
 	TotalCacheReadTokens     int64     `json:"total_cache_read_tokens"`
 	TotalCacheCreationTokens int64     `json:"total_cache_creation_tokens"`
+	TotalRuntimeMs           int64     `json:"total_runtime_ms"`
 }
 
 // ChatCostUsersResponse is the response from the admin chat cost users endpoint.
