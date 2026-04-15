@@ -3550,7 +3550,6 @@ export type Experiment =
 	| "mcp-server-http"
 	| "notifications"
 	| "oauth2"
-	| "web-push"
 	| "workspace-build-updates"
 	| "workspace-usage";
 
@@ -3561,7 +3560,6 @@ export const Experiments: Experiment[] = [
 	"mcp-server-http",
 	"notifications",
 	"oauth2",
-	"web-push",
 	"workspace-build-updates",
 	"workspace-usage",
 ];
@@ -8249,20 +8247,6 @@ export interface UserSecret {
 	readonly file_path: string;
 	readonly created_at: string;
 	readonly updated_at: string;
-}
-
-// From codersdk/usersecretvalidation.go
-/**
- * UserSecretEnvValidationOptions controls deployment-aware behavior
- * in environment variable name validation.
- */
-export interface UserSecretEnvValidationOptions {
-	/**
-	 * AIGatewayEnabled indicates that the deployment has AI Gateway
-	 * configured. When true, AI Gateway environment variables
-	 * (OPENAI_API_KEY, etc.) are reserved to prevent conflicts.
-	 */
-	readonly AIGatewayEnabled: boolean;
 }
 
 // From codersdk/users.go
