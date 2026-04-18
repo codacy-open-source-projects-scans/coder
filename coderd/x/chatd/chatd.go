@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"charm.land/fantasy"
@@ -99,6 +100,11 @@ const (
 	// cross-replica relay subscribers time to connect and
 	// snapshot the buffer before it is garbage-collected.
 	bufferRetainGracePeriod = 5 * time.Second
+
+	// streamJanitorInterval is how often sweepIdleStreams runs.
+	// Worst-case retention is bufferRetainGracePeriod +
+	// streamJanitorInterval.
+	streamJanitorInterval = 30 * time.Second
 
 	// DefaultMaxChatsPerAcquire is the maximum number of chats to
 	// acquire in a single processOnce call. Batching avoids
@@ -735,6 +741,66 @@ func (s *chatStreamState) resetDropCounters() {
 	s.bufferLastWarnAt = time.Time{}
 	s.subscriberDropCount = 0
 	s.subscriberLastWarnAt = time.Time{}
+}
+
+// streamStateCollector exposes scrape-time gauges derived from
+// p.chatStreams. Scrape cost is O(n) with a brief per-state mutex
+// held for two len() reads; acceptable at typical scrape cadences.
+type streamStateCollector struct {
+	server *Server
+}
+
+var (
+	streamsActiveDesc = prometheus.NewDesc(
+		"coderd_chatd_streams_active",
+		"Current number of chat stream state entries (in-flight plus retained).",
+		nil, nil,
+	)
+	streamBufferSizeMaxDesc = prometheus.NewDesc(
+		"coderd_chatd_stream_buffer_size_max",
+		"Maximum current buffer length across all chat streams.",
+		nil, nil,
+	)
+	streamBufferEventsDesc = prometheus.NewDesc(
+		"coderd_chatd_stream_buffer_events",
+		"Sum of current buffer lengths across all chat streams.",
+		nil, nil,
+	)
+	streamSubscribersDesc = prometheus.NewDesc(
+		"coderd_chatd_stream_subscribers",
+		"Current number of chat stream subscribers across all chat streams.",
+		nil, nil,
+	)
+)
+
+func (*streamStateCollector) Describe(ch chan<- *prometheus.Desc) {
+	ch <- streamsActiveDesc
+	ch <- streamBufferSizeMaxDesc
+	ch <- streamBufferEventsDesc
+	ch <- streamSubscribersDesc
+}
+
+func (c *streamStateCollector) Collect(ch chan<- prometheus.Metric) {
+	var active, totalEvents, maxBufLen, totalSubs int
+	c.server.chatStreams.Range(func(_, v any) bool {
+		state, ok := v.(*chatStreamState)
+		if !ok {
+			return true
+		}
+		active++
+		state.mu.Lock()
+		bufLen := len(state.buffer)
+		subs := len(state.subscribers)
+		state.mu.Unlock()
+		totalEvents += bufLen
+		totalSubs += subs
+		maxBufLen = max(maxBufLen, bufLen)
+		return true
+	})
+	ch <- prometheus.MustNewConstMetric(streamsActiveDesc, prometheus.GaugeValue, float64(active))
+	ch <- prometheus.MustNewConstMetric(streamBufferSizeMaxDesc, prometheus.GaugeValue, float64(maxBufLen))
+	ch <- prometheus.MustNewConstMetric(streamBufferEventsDesc, prometheus.GaugeValue, float64(totalEvents))
+	ch <- prometheus.MustNewConstMetric(streamSubscribersDesc, prometheus.GaugeValue, float64(totalSubs))
 }
 
 // MaxQueueSize is the maximum number of queued user messages per chat.
@@ -2796,6 +2862,7 @@ func New(cfg Config) *Server {
 	}
 	if cfg.PrometheusRegistry != nil {
 		p.metrics = chatloop.NewMetrics(cfg.PrometheusRegistry)
+		cfg.PrometheusRegistry.MustRegister(&streamStateCollector{server: p})
 	} else {
 		p.metrics = chatloop.NopMetrics()
 	}
@@ -2840,6 +2907,8 @@ func (p *Server) start(ctx context.Context) {
 
 	// Single heartbeat loop for all chats on this replica.
 	go p.heartbeatLoop(ctx)
+
+	go p.streamJanitorLoop(ctx)
 
 	acquireTicker := p.clock.NewTicker(
 		p.pendingChatAcquireInterval,
@@ -2952,6 +3021,7 @@ func (p *Server) publishToStream(chatID uuid.UUID, event codersdk.ChatStreamEven
 			return
 		}
 		if len(state.buffer) >= maxStreamBufferSize {
+			p.metrics.RecordStreamBufferDropped()
 			state.bufferDropCount++
 			now := p.clock.Now()
 			if now.Sub(state.bufferLastWarnAt) >= streamDropWarnInterval {
@@ -2963,6 +3033,10 @@ func (p *Server) publishToStream(chatID uuid.UUID, event codersdk.ChatStreamEven
 				state.bufferDropCount = 0
 				state.bufferLastWarnAt = now
 			}
+			// Zero the dropped slot so its *ChatStreamMessagePart is
+			// GC-eligible; the later append reuses this slot in place
+			// whenever cap > len.
+			state.buffer[0] = codersdk.ChatStreamEvent{}
 			state.buffer = state.buffer[1:]
 		}
 		state.buffer = append(state.buffer, event)
@@ -3016,6 +3090,9 @@ func (p *Server) cacheDurableMessage(chatID uuid.UUID, event codersdk.ChatStream
 		if evicted := state.durableMessages[0]; evicted.Message != nil {
 			state.durableEvictedBefore = evicted.Message.ID
 		}
+		// Zero the dropped slot so the evicted *ChatMessage is
+		// GC-eligible; see publishToStream for the same pattern.
+		state.durableMessages[0] = codersdk.ChatStreamEvent{}
 		state.durableMessages = state.durableMessages[1:]
 	}
 	state.durableMessages = append(state.durableMessages, event)
@@ -3089,25 +3166,96 @@ func (p *Server) getOrCreateStreamState(chatID uuid.UUID) *chatStreamState {
 	return state
 }
 
-// cleanupStreamIfIdle removes the chat entry from the sync.Map
-// when there are no subscribers and the stream is not buffering.
-// When bufferRetainedAt is set, cleanup is deferred until the
-// grace period expires so cross-replica relay subscribers can
-// still snapshot the buffer.
-// The caller must hold state.mu.
-func (p *Server) cleanupStreamIfIdle(chatID uuid.UUID, state *chatStreamState) {
+// cleanupStreamIfIdle removes the chat entry from the sync.Map when
+// there are no subscribers, the stream is not buffering, and any
+// grace period for late-connecting relay subscribers has elapsed. If
+// the grace window is still open it returns without rescheduling.
+// streamJanitorLoop is the backstop that re-checks on a timer.
+//
+// The caller must hold state.mu. The state pointer may have been
+// captured outside this lock (sync.Map.Load or Range); we use
+// CompareAndDelete so a stale pointer cannot evict a fresh entry
+// installed by a racing getOrCreateStreamState. Returns true
+// if the state was deleted, false otherwise.
+func (p *Server) cleanupStreamIfIdle(chatID uuid.UUID, state *chatStreamState) bool {
 	if state.buffering || len(state.subscribers) > 0 {
-		return
+		return false
 	}
 	// Keep stream state alive during the grace period so
 	// late-connecting relay subscribers can snapshot the
 	// buffer after the worker finishes processing.
 	if !state.bufferRetainedAt.IsZero() &&
 		p.clock.Now().Before(state.bufferRetainedAt.Add(bufferRetainGracePeriod)) {
-		return
+		return false
 	}
-	p.chatStreams.Delete(chatID)
+	if !p.chatStreams.CompareAndDelete(chatID, state) {
+		return false
+	}
 	p.workspaceMCPToolsCache.Delete(chatID)
+	return true
+}
+
+// streamJanitorLoop periodically reaps idle chat stream states whose
+// grace period has expired. It is the backstop for the grace-window
+// early-return in cleanupStreamIfIdle; without it, a subscriber that
+// detaches inside grace (the common enterprise relay-drain case,
+// relayDrainTimeout = 200ms vs. 5s grace) pins the state forever.
+func (p *Server) streamJanitorLoop(ctx context.Context) {
+	ticker := p.clock.NewTicker(streamJanitorInterval, "chatd", "stream-janitor")
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			p.safeSweepIdleStreams(ctx)
+		}
+	}
+}
+
+// safeSweepIdleStreams runs sweepIdleStreams under a panic recovery
+// so an unexpected panic in the sweep cannot kill the janitor
+// goroutine and silently reintroduce the very leak it exists to
+// prevent. The next tick retries.
+func (p *Server) safeSweepIdleStreams(ctx context.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			p.logger.Error(ctx, "stream janitor sweep panicked, will retry next tick",
+				slog.F("panic", r))
+		}
+	}()
+	p.sweepIdleStreams()
+}
+
+// sweepIdleStreams iterates chatStreams once and delegates each entry
+// to cleanupStreamIfIdle. Range may skip entries that become reapable
+// concurrently. Any such entry is reaped on the next tick.
+func (p *Server) sweepIdleStreams() {
+	var reaped atomic.Int64
+	defer func() {
+		if count := reaped.Load(); count > 0 {
+			p.logger.Info(context.Background(), "reaped idle chat streams", slog.F("count", count))
+		}
+	}()
+	p.chatStreams.Range(func(key, value any) bool {
+		chatID, ok := key.(uuid.UUID)
+		if !ok {
+			return true
+		}
+		state, ok := value.(*chatStreamState)
+		if !ok {
+			return true
+		}
+		// guard against any panic from cleanupStreamIfIdle locking state.mu for all time
+		func() {
+			state.mu.Lock()
+			defer state.mu.Unlock()
+			if p.cleanupStreamIfIdle(chatID, state) {
+				reaped.Add(1)
+			}
+		}()
+		return true
+	})
 }
 
 // registerHeartbeat enrolls a chat in the centralized batch
@@ -4388,12 +4536,22 @@ type runChatResult struct {
 	PendingDynamicToolCalls []chatloop.PendingToolCall
 }
 
+func allToolNames(allTools []fantasy.AgentTool) []string {
+	toolNames := make([]string, 0, len(allTools))
+	for _, tool := range allTools {
+		toolNames = append(toolNames, tool.Info().Name)
+	}
+	return toolNames
+}
+
+func isExploreSubagentMode(mode database.NullChatMode) bool {
+	return mode.Valid && mode.ChatMode == database.ChatModeExplore
+}
+
 func allowedPlanToolNames(
 	allTools []fantasy.AgentTool,
-	mode database.NullChatPlanMode,
 	parentChatID uuid.NullUUID,
 ) []string {
-	isPlanModeTurn := mode.Valid && mode.ChatPlanMode == database.ChatPlanModePlan
 	isRootChat := !parentChatID.Valid
 	builtinPlanPolicy := map[string]bool{
 		"read_file":                true,
@@ -4409,6 +4567,7 @@ func allowedPlanToolNames(
 		"start_workspace":          isRootChat,
 		"propose_plan":             isRootChat,
 		"spawn_agent":              isRootChat,
+		"spawn_explore_agent":      isRootChat,
 		"wait_agent":               isRootChat,
 		"message_agent":            false,
 		"close_agent":              false,
@@ -4416,13 +4575,6 @@ func allowedPlanToolNames(
 		"read_skill":               true,
 		"read_skill_file":          true,
 		"ask_user_question":        isRootChat,
-	}
-	if !isPlanModeTurn {
-		toolNames := make([]string, 0, len(allTools))
-		for _, tool := range allTools {
-			toolNames = append(toolNames, tool.Info().Name)
-		}
-		return toolNames
 	}
 
 	toolNames := make([]string, 0, len(allTools))
@@ -4435,8 +4587,65 @@ func allowedPlanToolNames(
 	return toolNames
 }
 
-func stopAfterPlanTools(mode database.NullChatPlanMode, parentChatID uuid.NullUUID) map[string]struct{} {
-	if !mode.Valid || mode.ChatPlanMode != database.ChatPlanModePlan {
+func allowedExploreToolNames(allTools []fantasy.AgentTool) []string {
+	builtinExplorePolicy := map[string]bool{
+		"read_file":                true,
+		"write_file":               false,
+		"edit_files":               false,
+		"execute":                  true,
+		"process_output":           true,
+		"process_list":             false,
+		"process_signal":           false,
+		"list_templates":           false,
+		"read_template":            false,
+		"create_workspace":         false,
+		"start_workspace":          false,
+		"propose_plan":             false,
+		"spawn_agent":              false,
+		"spawn_explore_agent":      false,
+		"wait_agent":               false,
+		"message_agent":            false,
+		"close_agent":              false,
+		"spawn_computer_use_agent": false,
+		"read_skill":               true,
+		"read_skill_file":          true,
+		"ask_user_question":        false,
+	}
+
+	toolNames := make([]string, 0, len(allTools))
+	for _, tool := range allTools {
+		name := tool.Info().Name
+		if builtinExplorePolicy[name] {
+			toolNames = append(toolNames, name)
+		}
+	}
+	return toolNames
+}
+
+// allowedBehaviorToolNames applies behavior-specific precedence for
+// tool filtering: Explore mode wins over plan mode, and plan mode wins
+// over the default behavior that allows all tools.
+func allowedBehaviorToolNames(
+	allTools []fantasy.AgentTool,
+	planMode database.NullChatPlanMode,
+	chatMode database.NullChatMode,
+	parentChatID uuid.NullUUID,
+) []string {
+	if isExploreSubagentMode(chatMode) {
+		return allowedExploreToolNames(allTools)
+	}
+	if planMode.Valid && planMode.ChatPlanMode == database.ChatPlanModePlan {
+		return allowedPlanToolNames(allTools, parentChatID)
+	}
+	return allToolNames(allTools)
+}
+
+func stopAfterBehaviorTools(
+	planMode database.NullChatPlanMode,
+	chatMode database.NullChatMode,
+	parentChatID uuid.NullUUID,
+) map[string]struct{} {
+	if isExploreSubagentMode(chatMode) || !planMode.Valid || planMode.ChatPlanMode != database.ChatPlanModePlan {
 		return nil
 	}
 	stopTools := map[string]struct{}{
@@ -4448,8 +4657,9 @@ func stopAfterPlanTools(mode database.NullChatPlanMode, parentChatID uuid.NullUU
 	return stopTools
 }
 
-type systemPromptPlanContext struct {
-	mode                 database.NullChatPlanMode
+type systemPromptBehaviorContext struct {
+	planMode             database.NullChatPlanMode
+	chatMode             database.NullChatMode
 	planModeInstructions string
 	isRootChat           bool
 }
@@ -4463,7 +4673,7 @@ func buildSystemPrompt(
 	instruction string,
 	skills []chattool.SkillMeta,
 	userPrompt string,
-	planContext systemPromptPlanContext,
+	behaviorContext systemPromptBehaviorContext,
 ) []fantasy.Message {
 	if subagentInstruction != "" {
 		prompt = chatprompt.InsertSystem(prompt, subagentInstruction)
@@ -4477,12 +4687,16 @@ func buildSystemPrompt(
 	if userPrompt != "" {
 		prompt = chatprompt.InsertSystem(prompt, userPrompt)
 	}
-	isPlanModeTurn := planContext.mode.Valid && planContext.mode.ChatPlanMode == database.ChatPlanModePlan
+	if isExploreSubagentMode(behaviorContext.chatMode) {
+		prompt = chatprompt.InsertSystem(prompt, ExploreSubagentOverlayPrompt)
+		return prompt
+	}
+	isPlanModeTurn := behaviorContext.planMode.Valid && behaviorContext.planMode.ChatPlanMode == database.ChatPlanModePlan
 	if isPlanModeTurn {
-		if planContext.isRootChat {
+		if behaviorContext.isRootChat {
 			prompt = chatprompt.InsertSystem(prompt, PlanningOverlayPrompt)
-			if planContext.planModeInstructions != "" {
-				prompt = chatprompt.InsertSystem(prompt, planContext.planModeInstructions)
+			if behaviorContext.planModeInstructions != "" {
+				prompt = chatprompt.InsertSystem(prompt, behaviorContext.planModeInstructions)
 			}
 		} else {
 			prompt = chatprompt.InsertSystem(prompt, PlanningSubagentOverlayPrompt)
@@ -4609,7 +4823,7 @@ func (p *Server) appendRootChatTools(
 
 	return append(tools, p.subagentTools(ctx, func() database.Chat {
 		return opts.chat
-	})...)
+	}, opts.modelConfigID)...)
 }
 
 func (p *Server) storePlanSnapshotFile(
@@ -4670,10 +4884,11 @@ func appendDynamicTools(
 	logger slog.Logger,
 	tools []fantasy.AgentTool,
 	raw pqtype.NullRawMessage,
-	mode database.NullChatPlanMode,
+	planMode database.NullChatPlanMode,
+	chatMode database.NullChatMode,
 	parentChatID uuid.NullUUID,
 ) ([]fantasy.AgentTool, map[string]bool, error) {
-	if mode.Valid && mode.ChatPlanMode == database.ChatPlanModePlan {
+	if isExploreSubagentMode(chatMode) || (planMode.Valid && planMode.ChatPlanMode == database.ChatPlanModePlan) {
 		return tools, nil, nil
 	}
 
@@ -4693,7 +4908,7 @@ func appendDynamicTools(
 	}
 
 	activeToolNames := make(map[string]struct{}, len(tools))
-	for _, name := range allowedPlanToolNames(tools, mode, parentChatID) {
+	for _, name := range allowedBehaviorToolNames(tools, planMode, chatMode, parentChatID) {
 		activeToolNames[name] = struct{}{}
 	}
 	for _, t := range tools {
@@ -4800,11 +5015,11 @@ func (p *Server) runChat(
 		return result, err
 	}
 
-	// Capture the current turn's mode from the chat plan mode so prompt
-	// and tool behavior can be resolved consistently for the rest of the
-	// turn.
+	// Capture the current turn's mode so prompt and tool behavior can
+	// be resolved consistently for the rest of the turn.
 	currentPlanMode := chat.PlanMode
 	isPlanModeTurn := currentPlanMode.Valid && currentPlanMode.ChatPlanMode == database.ChatPlanModePlan
+	isExploreSubagent := isExploreSubagentMode(chat.Mode)
 	planModeInstructions := p.loadPlanModeInstructions(ctx, currentPlanMode, logger)
 
 	chainInfo := resolveChainMode(messages)
@@ -4813,9 +5028,10 @@ func (p *Server) runChat(
 	// Fire title generation asynchronously so it doesn't block the
 	// chat response. It uses a detached context so it can finish
 	// even after the chat processing context is canceled.
-	// Snapshot the original chat model so the goroutine doesn't
-	// race with the model = cuModel reassignment below.
+	// Snapshot model and logger before launch; both get
+	// reassigned below and the goroutine captures by reference.
 	titleModel := result.PushSummaryModel
+	titleLogger := logger
 	p.inflight.Add(1)
 	go func() {
 		defer p.inflight.Done()
@@ -4826,7 +5042,7 @@ func (p *Server) runChat(
 			titleModel,
 			providerKeys,
 			generatedTitle,
-			logger,
+			titleLogger,
 		)
 	}()
 
@@ -5086,8 +5302,9 @@ func (p *Server) runChat(
 		instruction,
 		skills,
 		resolvedUserPrompt,
-		systemPromptPlanContext{
-			mode:                 currentPlanMode,
+		systemPromptBehaviorContext{
+			planMode:             currentPlanMode,
+			chatMode:             chat.Mode,
 			planModeInstructions: planModeInstructions,
 			isRootChat:           isRootChat,
 		},
@@ -5407,6 +5624,14 @@ func (p *Server) runChat(
 		model = cuModel
 	}
 
+	// Enrich the scoped logger with provider/model for this turn.
+	// Bound once after the cuModel swap; slog.Logger.With appends
+	// rather than deduping.
+	logger = logger.With(
+		slog.F("provider", model.Provider()),
+		slog.F("model", model.Model()),
+	)
+
 	allowAskUserQuestion := isPlanModeTurn && isRootChat
 	tools := []fantasy.AgentTool{
 		chattool.ReadFile(chattool.ReadFileOptions{
@@ -5479,7 +5704,7 @@ func (p *Server) runChat(
 	// Append tools from external MCP servers. These appear
 	// after the built-in tools so the LLM sees them as
 	// additional capabilities.
-	if !isPlanModeTurn {
+	if !isPlanModeTurn && !isExploreSubagent {
 		tools = append(tools, mcpTools...)
 		tools = append(tools, workspaceMCPTools...)
 	}
@@ -5494,6 +5719,7 @@ func (p *Server) runChat(
 		tools,
 		chat.DynamicTools,
 		currentPlanMode,
+		chat.Mode,
 		chat.ParentChatID,
 	)
 	if err != nil {
@@ -5503,11 +5729,11 @@ func (p *Server) runChat(
 	// Build provider-native tools (e.g., web search) based on
 	// the model configuration.
 	var providerTools []chatloop.ProviderTool
-	if !isPlanModeTurn && callConfig.ProviderOptions != nil {
+	if !isPlanModeTurn && !isExploreSubagent && callConfig.ProviderOptions != nil {
 		providerTools = buildProviderTools(model.Provider(), callConfig.ProviderOptions)
 	}
 
-	if !isPlanModeTurn && isComputerUse {
+	if !isPlanModeTurn && !isExploreSubagent && isComputerUse {
 		desktopGeometry := workspacesdk.DefaultDesktopGeometry()
 		providerTools = append(providerTools, chatloop.ProviderTool{
 			Definition: chattool.ComputerUseProviderTool(
@@ -5548,8 +5774,8 @@ func (p *Server) runChat(
 		Model:            model,
 		Messages:         prompt,
 		Tools:            tools,
-		ActiveTools:      allowedPlanToolNames(tools, currentPlanMode, chat.ParentChatID),
-		StopAfterTools:   stopAfterPlanTools(currentPlanMode, chat.ParentChatID),
+		ActiveTools:      allowedBehaviorToolNames(tools, currentPlanMode, chat.Mode, chat.ParentChatID),
+		StopAfterTools:   stopAfterBehaviorTools(currentPlanMode, chat.Mode, chat.ParentChatID),
 		MaxSteps:         maxChatSteps,
 		Metrics:          p.metrics,
 		BuiltinToolNames: builtinToolNames,
@@ -5609,8 +5835,9 @@ func (p *Server) runChat(
 				reloadedInstruction,
 				reloadedSkills,
 				reloadUserPrompt,
-				systemPromptPlanContext{
-					mode:                 currentPlanMode,
+				systemPromptBehaviorContext{
+					planMode:             currentPlanMode,
+					chatMode:             chat.Mode,
 					planModeInstructions: planModeInstructions,
 					isRootChat:           isRootChat,
 				},
@@ -5655,6 +5882,7 @@ func (p *Server) runChat(
 			logger.Warn(ctx, "retrying LLM stream",
 				slog.F("attempt", attempt),
 				slog.F("delay", delay.String()),
+				slog.F("kind", classified.Kind),
 				slog.Error(retryErr),
 			)
 			payload := chaterror.StreamRetryPayload(attempt, delay, classified)
