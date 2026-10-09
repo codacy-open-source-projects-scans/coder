@@ -2,6 +2,7 @@ package workspacesdk_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -143,4 +144,19 @@ type fakeResolver struct {
 func (f *fakeResolver) LookupIP(_ context.Context, network, host string) ([]net.IP, error) {
 	assert.Equal(f.t, "ip6", network)
 	return f.hostMap[host], f.err
+}
+
+// TestFileEdit_JSONIgnoresDeprecatedKeys pins the removal of the
+// search/replace wire compatibility: the encoder emits only the
+// current keys and the decoder does not read the deprecated ones.
+func TestFileEdit_JSONIgnoresDeprecatedKeys(t *testing.T) {
+	t.Parallel()
+
+	data, err := json.Marshal(workspacesdk.FileEdit{OldText: "old", NewText: "new", ReplaceAll: true})
+	require.NoError(t, err)
+	require.JSONEq(t, `{"old_text":"old","new_text":"new","replace_all":true}`, string(data))
+
+	var got workspacesdk.FileEdit
+	require.NoError(t, json.Unmarshal([]byte(`{"search":"old","replace":"new"}`), &got))
+	require.Equal(t, workspacesdk.FileEdit{}, got)
 }

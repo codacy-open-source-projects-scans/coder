@@ -1,16 +1,9 @@
-import { useTheme } from "@emotion/react";
-import {
-	cloneElement,
-	type FC,
-	type HTMLAttributes,
-	type ReactElement,
-	type Ref,
-} from "react";
+import { cn } from "cn";
+import { cloneElement } from "react";
 import { Avatar, type AvatarProps } from "#/components/Avatar/Avatar";
 import { Button, type ButtonProps } from "#/components/Button/Button";
-import { cn } from "#/utils/cn";
 
-export const Topbar: FC<HTMLAttributes<HTMLElement>> = ({
+export const Topbar: React.FC<React.ComponentProps<"header">> = ({
 	className,
 	...props
 }) => {
@@ -18,7 +11,7 @@ export const Topbar: FC<HTMLAttributes<HTMLElement>> = ({
 		<header
 			{...props}
 			className={cn(
-				"min-h-12 border-0 border-b border-border border-solid flex items-center text-[13px] leading-tight",
+				"min-h-12 border-0 border-b border-border border-solid flex items-center text-sm font-normal leading-tight",
 				className,
 			)}
 		/>
@@ -45,27 +38,35 @@ export const TopbarButton: React.FC<ButtonProps> = ({ ...props }) => {
 	return <Button variant="outline" size="sm" {...props} />;
 };
 
-export const TopbarData: FC<HTMLAttributes<HTMLDivElement>> = (props) => {
-	return <div {...props} className="flex gap-2 items-center justify-center" />;
+export const TopbarData: React.FC<React.ComponentProps<"div">> = ({
+	className,
+	...props
+}) => {
+	return (
+		<div
+			{...props}
+			className={cn("flex gap-2 items-center justify-center", className)}
+		/>
+	);
 };
 
-export const TopbarDivider: FC<
-	Omit<HTMLAttributes<HTMLSpanElement>, "children">
-> = (props) => {
-	const theme = useTheme();
+export const TopbarDivider: React.FC<
+	Omit<React.ComponentProps<"span">, "children">
+> = ({ className, ...props }) => {
 	return (
-		<span {...props} css={{ color: theme.palette.divider }}>
+		<span {...props} className={cn("text-border", className)}>
 			/
 		</span>
 	);
 };
 
-export const TopbarAvatar: FC<AvatarProps> = (props) => {
+export const TopbarAvatar: React.FC<AvatarProps> = (props) => {
 	return <Avatar {...props} variant="icon" size="sm" />;
 };
 
-type TopbarIconProps = HTMLAttributes<HTMLOrSVGElement> & {
-	ref?: Ref<HTMLOrSVGElement>;
+// oxlint-disable-next-line no-restricted-types
+type TopbarIconProps = React.HTMLAttributes<HTMLOrSVGElement> & {
+	ref?: React.Ref<HTMLOrSVGElement>;
 };
 
 export const TopbarIcon: React.FC<TopbarIconProps> = ({
@@ -74,7 +75,7 @@ export const TopbarIcon: React.FC<TopbarIconProps> = ({
 	className,
 	...restProps
 }) => {
-	return cloneElement(children as ReactElement<TopbarIconProps>, {
+	return cloneElement(children as React.ReactElement<TopbarIconProps>, {
 		...restProps,
 		ref,
 		className: "text-base text-content-disabled size-icon-sm",

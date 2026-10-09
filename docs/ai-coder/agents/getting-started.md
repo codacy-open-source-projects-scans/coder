@@ -1,19 +1,15 @@
-# Getting Started
+---
+title: Getting started
+---
 
-This guide walks platform teams and administrators through enabling Coder
+This guide walks platform teams and administrators through setting up Coder
 Agents, preparing your deployment, and running your first Coder Agent.
-
-> [!NOTE]
-> Coder Agents is in [Early Access](./early-access.md). Deploy to a
-> **test or development environment** — not production — while evaluating
-> the feature.
 
 ## Prerequisites
 
 Before you begin, confirm the following:
 
-- **Coder deployment** running the latest release with the `agents`
-  experiment flag available.
+- **Coder deployment** running the latest release.
 - **LLM provider credentials** — an API key for at least one
   [supported provider](./models.md) (Anthropic, OpenAI, Google, Azure OpenAI,
   AWS Bedrock, OpenAI Compatible, OpenRouter, or Vercel AI Gateway).
@@ -22,48 +18,43 @@ Before you begin, confirm the following:
 - **At least one template** with a
   [descriptive name and description](./platform-controls/template-optimization.md)
   for the agent to select when provisioning workspaces.
-- **Admin access** to the Coder deployment for enabling the experiment and
-  configuring providers.
-- **Coder Agents User role** assigned to each user who needs to interact with Coder Agents.
-  Owners can assign this from **Admin** > **Users**. See
-  [Grant Coder Agents User](#step-3-grant-coder-agents-user) below.
+- **Admin access** to the Coder deployment for configuring providers.
+- **Access to configure models** in each organization where you configure models.
+  The **Organization Admin** role and the **Owner** role include this access.
+  A custom role with model configuration access also works.
+- **Organization membership** for each user who uses Coder Agents.
+  Every organization member can use Coder Agents by default.
+  To restrict access, see [Control who can use Coder Agents](#control-who-can-use-coder-agents).
+  Users also need read access to at least one model in the organization.
+  New models are shared with the whole organization by default.
+  See [Manage model permissions](./models.md#manage-model-permissions).
 
-## Step 1: Enable the experiment
-
-Coder Agents is gated behind the `agents` experiment flag. Pass it when
-starting the Coder server:
-
-```sh
-CODER_EXPERIMENTS="agents" coder server
-# or
-coder server --experiments=agents
-```
-
-If you already use other experiments, add `agents` to the comma-separated list:
-
-```sh
-CODER_EXPERIMENTS="agents,oauth2,mcp-server-http" coder server
-```
-
-See [Enable Coder Agents](./early-access.md#enable-coder-agents) for full
-details.
-
-## Step 2: Configure an LLM provider and model
+## Step 1: Configure an LLM provider and model
 
 > [!IMPORTANT]
-> Configuring providers, models, and system prompts requires the
-> **Owner** role (Coder administrator). Non-admin users cannot access the
-> Admin panel or modify deployment-level Agents configuration.
+> Deployment administrators configure providers and deployment settings.
+> Users with model configuration access in an organization configure that organization's models.
+> Coder enables the edit controls for the organization that you select.
+> Coder shows the deployment settings only to deployment administrators.
+> Users with model access can view the relevant Models and Coder Agents pages.
+> Users with MCP server access can open the MCP servers page.
 
-Once the server restarts with the experiment enabled:
+To configure Coder Agents:
 
-1. Navigate to the **Agents** page in the Coder dashboard.
-1. Click **Admin** to open the configuration dialog.
-1. Under the **Providers** tab, select a provider, enter your API key, and
-   save.
-1. Switch to the **Models** tab, click **Add**, and configure at least one
-   model with its identifier, display name, and context limit.
-1. Click the **star icon** next to a model to set it as the default.
+1. Navigate to **Admin settings** > **AI** and select **Providers**.
+1. Add or update a provider with its credentials and upstream endpoint, then
+   save it.
+1. Navigate to **Admin settings** > **AI** > **Models**.
+1. Select the correct organization.
+   Coder shows the organization picker when you can access more than 1 organization.
+1. Select **Add model** and configure at least one model with its identifier, display name, and context limit.
+
+Coder makes the first model of an organization the default model.
+To change the default later, open a model and select **Set as Coder Agents default model**, or pick a model in the **Default model** row under **Admin settings** > **AI** > **Coder Agents** > **Organization settings**.
+
+Each organization has its own model list and its own default model.
+Repeat the model steps in every organization that uses Coder Agents.
+Refer to [Organization scope](./platform-controls/organizations.md) for the settings that stay deployment-wide.
 
 Detailed instructions for each provider and model option are in the
 [Models](./models.md) documentation.
@@ -72,62 +63,65 @@ Detailed instructions for each provider and model option are in the
 > Start with a single frontier model to validate your setup before adding
 > additional providers.
 
-## Step 3: Grant Coder Agents User
-
-The **Coder Agents User** role controls which users can interact with Coder Agents.
-Members do not have Coder Agents User by default.
-
-Owners always have full access and do not need the role. Repeat the following steps for each user who needs access.
-
-> [!NOTE]
-> Users who created conversations before this role was introduced are
-> automatically granted the role during upgrade.
-
-**Dashboard (individual):**
-
-1. Go to **Admin** > **Users** in the Coder dashboard.
-1. Click the roles icon next to the user you want to grant access to.
-1. Enable the **Coder Agents User** role and save.
-
-**CLI (bulk):**
-
-You can also grant the role via CLI. For example, to grant the role to
-all active users at once:
-
-```sh
-coder users list -o json \
-  | jq -r '.[].username' \
-  | while read u; do
-      coder users edit-roles "$u" \
-        --roles "$(coder users show "$u" -o json \
-          | jq -r '[.roles[].name, "agents-access"] | unique | join(",")')" \
-        --yes
-    done
-```
-
-## Step 4: Start your first Coder Agent
+## Step 2: Start your first Coder Agent
 
 1. Go to the **Agents** page in the Coder dashboard.
 1. Select a model from the dropdown (your default will be pre-selected).
 1. Type a prompt and send it.
 
-The agent processes the prompt in the control plane. If the task requires
-a workspace — reading files, running commands, editing code — the agent
-selects a template and provisions one automatically. Conversations that
-don't require compute (planning, Q&A, architecture discussions) start
-immediately with no provisioning delay.
+The agent processes the prompt in the control plane.
+When the conversation and available tools are sufficient, it works without provisioning a workspace.
+If missing tools, skills, MCP integrations, or context block progress, the agent selects a template and provisions a workspace to continue.
+It also provisions a workspace for tasks that need file access, command execution, or code changes.
+
+## Control who can use Coder Agents
+
+Organization members can use Coder Agents by default.
+Access comes from the **Coder Agents User** (`agents-access`) organization role, which each organization grants to members through its [default member roles](../../admin/users/organizations.md#default-member-roles).
+
+Members who don't hold the role directly lose Coder Agents access when you remove **Coder Agents User** from the default roles.
+Role sync assigns roles at sign-in and doesn't store default roles, so members who get the role through role sync regain access at their next sign-in, and mapping the role in advance doesn't shorten the gap.
+
+To limit Coder Agents to a subset of members in an organization (requires a Premium license):
+
+1. Remove **Coder Agents User** from the organization's default roles.
+   In the dashboard, go to **Admin settings** > **Organizations** > **Roles** > **Default Roles**.
+   From the CLI, run `coder organizations edit --org <organization> --default-org-member-roles organization-workspace-access`, keeping any other default roles in the list.
+1. Grant `agents-access` to the members who need it:
+   - With [IdP organization role sync](../../admin/users/idp-sync.md#role-sync), map an IdP group or role to `agents-access`.
+   - Without role sync, assign **Coder Agents User** from **Admin settings** > **Organizations** > **Members**.
+
+Keep the following behavior in mind:
+
+- Removing a user from the mapped IdP group or role removes their Coder Agents access at their next sign-in.
+- Owners and Organization Admins can always use Coder Agents, whatever the default roles are.
+- Service accounts don't inherit `agents-access` from the default roles.
+  Assign the role to a service account directly if it needs Coder Agents.
+- Members without the role can't use Coder Agents or open chats they created earlier.
+  Their chats are kept and become available again when they regain the role.
+  A chat shared with them stays readable.
+- [Model permissions](./models.md#manage-model-permissions) still apply: users also need read access to at least one model.
 
 ## Optimize your templates
 
-The agent selects templates based on their **name and description** — it does
-not read Terraform. Clear, specific descriptions are the most important factor
-in whether the agent picks the right template.
+The agent selects templates based on their **name, description, and README**.
+It does not read Terraform. Clear, specific descriptions are the most important
+factor in whether the agent picks the right template.
 
 Update your template descriptions to include:
 
 - The language, framework, or stack the template targets.
 - Which repository or service it is for, if applicable.
 - What type of work it supports (backend, frontend, data pipeline, etc.).
+
+When 128 characters is not enough, put the most important routing context near
+the top of the template's
+[`README.md`](./platform-controls/template-optimization.md#put-routing-context-near-the-top-of-the-readme).
+The chat agent's template listing includes a bounded README excerpt (roughly the
+first 1,000 characters), and template detail includes the README (up to roughly
+8,000 characters). Both are reduced to plain text: frontmatter is stripped,
+link text is kept while link URLs are dropped, images and badges are dropped
+entirely, and code blocks and tables are preserved as text.
 
 **Good examples:**
 
@@ -151,13 +145,11 @@ credential scoping, and pre-installing dependencies.
 
 ## Things to know before you start
 
-### Deploy to a non-production environment
+### Plan for change between releases
 
-Coder Agents is under active development. APIs, behavior, and configuration
-may change between releases without notice. Run your evaluation on a
-dedicated test or staging deployment to avoid disruption to production
-developer workflows. See [Early Access](./early-access.md) for the full
-set of expectations and limitations.
+Coder Agents is generally available.
+However, APIs, behavior, and configuration may change between releases.
+As always, you should review [release notes](https://github.com/coder/coder/releases) and the [changelog](https://coder.com/changelog) before upgrading, so changes do not affect production.
 
 ### Use HTTPS for push notifications
 
@@ -182,9 +174,12 @@ deployment. Use this to encode organizational conventions:
 - Required review processes before merging.
 - Any guardrails specific to your environment.
 
-Configure the system prompt from the **Admin** dialog on the Agents page
-or via the API at `PUT /api/experimental/chats/config/system-prompt`.
-See [Platform Controls](./platform-controls/index.md) for details.
+Configure the system prompt from **Admin settings** > **AI** > **Coder Agents** > **Instructions**
+or via the API at `PUT /api/v2/chats/config/system-prompt`.
+
+In a deployment with several organizations, organization administrators can also add organization instructions under **Admin settings** > **AI** > **Coder Agents** > **Instructions**.
+Coder adds them after the deployment system prompt for new chats in that organization.
+Refer to [Platform Controls](./platform-controls/index.md#system-prompt) for details.
 
 ### Understand the security model
 
@@ -211,9 +206,17 @@ sub-agent delegation, and complex multi-step work can consume significant
 token volume. Consider:
 
 - Starting with a single model to establish a cost baseline.
-- Setting per-model token pricing in the admin panel (Input Price, Output
-  Price) to track spend.
-- Monitoring provider dashboards for usage trends during the evaluation.
+- Capping spend with [AI Gateway budgets](./platform-controls/spend-management.md).
+- Monitoring provider dashboards for usage trends as adoption grows.
+
+### Plan for concurrency limits
+
+Community licenses run up to 5 agents at once.
+Additional agents queue and start automatically when capacity frees.
+A Premium license with Agent Hours does not impose a concurrency limit unless the Agent Hours hard limit is reached.
+If the Agent Hours allocation is exhausted without a configured hard limit, Coder warns about usage but does not impose a concurrency limit.
+When the Agent Hours hard limit is reached, additional agents queue under the concurrency limit.
+Refer to [Concurrent agents](./platform-controls/index.md#concurrent-agents) for details.
 
 ### Pilot with a small group
 
@@ -227,13 +230,15 @@ Good starting points:
 - **Prototyping** — building proof-of-concept implementations, simple
   dashboards, internal tools.
 
-Set expectations that this is an evaluation period. Developers should still
-review all agent-produced code before merging. The agent is a force
-multiplier, not a replacement for developer judgment.
+To limit Coder Agents to the pilot group, see [Control who can use Coder Agents](#control-who-can-use-coder-agents).
+
+Set expectations for how the team reviews agent output.
+Developers should still review all agent-produced code before merging.
+The agent is a force multiplier, not a replacement for developer judgment.
 
 ### Use the API for programmatic automation
 
-The [Chats API](./chats-api.md) enables programmatic access to Coder Agents.
+The [Chats API](../../reference/api/chats.md) enables programmatic access to Coder Agents.
 This is useful for building automations such as:
 
 - Triggering Coder Agents from CI/CD pipelines when builds fail.
@@ -244,7 +249,7 @@ This is useful for building automations such as:
 **Quick example — create a Coder Agent via the API:**
 
 ```sh
-curl -X POST https://coder.example.com/api/experimental/chats \
+curl -X POST https://coder.example.com/api/v2/chats \
   -H "Coder-Session-Token: $CODER_SESSION_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -256,8 +261,8 @@ curl -X POST https://coder.example.com/api/experimental/chats \
 
 Stream updates in real time by connecting to the WebSocket endpoint:
 
-```text
-GET /api/experimental/chats/{chat}/stream
+```txt
+GET /api/v2/chats/{chat}/stream
 ```
 
 For service-to-service automation, use
@@ -265,9 +270,24 @@ For service-to-service automation, use
 rather than developer session tokens. Keep automation credentials
 narrowly scoped.
 
-> [!NOTE]
-> The Chats API is experimental and may change without notice.
-> See [Chats API](./chats-api.md) for the full endpoint reference.
+### Link to a new chat with a prompt
+
+To send users to a new chat with a message already written, link to `/agents` with a `prompt` query parameter.
+URL-encode the message (for example, with `encodeURIComponent` in JavaScript):
+
+```txt
+https://coder.example.com/agents?prompt=Fix%20the%20failing%20tests%20in%20the%20auth%20service
+```
+
+The link fills in the message box only.
+Coder doesn't send the message: the user reviews it, can edit it, and selects **Send**.
+Because any website can create such a link, a warning in the message box asks the user to take care before sending.
+The warning disappears once the user edits the message.
+
+If the user isn't signed in, Coder keeps the message through sign-in.
+
+Don't put secrets in these links.
+URLs end up in browser history and server logs.
 
 ### Add workspace context with AGENTS.md
 
@@ -292,22 +312,20 @@ configuring
 to maintain a pool of ready-to-use workspaces. The agent gets assigned an
 already-running workspace instead of provisioning from scratch.
 
-## Providing feedback
+<a id="providing-feedback"></a>
 
-Coder Agents is a collaborative evaluation between your team and Coder.
-Share feedback — workflow observations, feature requests, bugs, performance
-issues, or operational challenges — through your **customer-specific Slack
-channel** with the Coder team.
+## Provide feedback
 
-Good feedback includes:
+Report bugs and feature requests as [GitHub issues](https://github.com/coder/coder/issues/new/choose).
+For deployment-specific problems, such as provider configuration or performance in your environment, use your usual Coder support channel.
 
-- **What you tried** — the prompt, the template, and the model.
-- **What happened** — the agent's behavior, any errors, unexpected results.
-- **What you expected** — the outcome you were looking for.
-- **Context** — screenshots, `chat_id` values, or links to the Agents page help
+Good reports include:
+
+- **What you tried**: the prompt, the template, and the model.
+- **What happened**: the agent's behavior, any errors, and unexpected results.
+- **What you expected**: the outcome you were looking for.
+- **Context**: screenshots, `chat_id` values, or links to the Agents page help
   the team investigate quickly.
-
-Your input directly influences product direction during Early Access.
 
 ## Next steps
 
@@ -319,4 +337,4 @@ Your input directly influences product direction during Early Access.
 - [Template Optimization](./platform-controls/template-optimization.md) —
   create agent-friendly templates with network boundaries and scoped
   credentials.
-- [Chats API](./chats-api.md) — build programmatic integrations.
+- [Chats API](../../reference/api/chats.md): build programmatic integrations.

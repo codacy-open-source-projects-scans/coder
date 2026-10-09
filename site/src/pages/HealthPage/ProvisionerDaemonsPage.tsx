@@ -1,4 +1,3 @@
-import type { FC } from "react";
 import { useOutletContext } from "react-router";
 import type { HealthcheckReport } from "#/api/typesGenerated";
 import { Alert } from "#/components/Alert/Alert";
@@ -11,9 +10,9 @@ import {
 	HealthyDot,
 	Main,
 } from "./Content";
-import { DismissWarningButton } from "./DismissWarningButton";
+import { MuteWarningsButton } from "./MuteWarningsButton";
 
-const ProvisionerDaemonsPage: FC = () => {
+const ProvisionerDaemonsPage: React.FC = () => {
 	const healthStatus = useOutletContext<HealthcheckReport>();
 	const { provisioner_daemons: daemons } = healthStatus;
 
@@ -26,7 +25,7 @@ const ProvisionerDaemonsPage: FC = () => {
 					<HealthyDot severity={daemons.severity} />
 					Provisioner Daemons
 				</HeaderTitle>
-				<DismissWarningButton healthcheck="ProvisionerDaemons" />
+				<MuteWarningsButton healthcheck="ProvisionerDaemons" />
 			</Header>
 
 			<Main>
@@ -41,6 +40,8 @@ const ProvisionerDaemonsPage: FC = () => {
 							actions={<HealthMessageDocsLink {...warning} />}
 							key={warning.code}
 							severity="warning"
+							prominent
+							dismissible
 						>
 							{warning.message}
 						</Alert>

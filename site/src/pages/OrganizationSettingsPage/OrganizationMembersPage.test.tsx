@@ -1,13 +1,16 @@
-import { fireEvent, screen, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { HttpResponse, http } from "msw";
-import type { SlimRole } from "#/api/typesGenerated";
+import { HttpResponse, http, type PathParams } from "msw";
+import type { SlimRole, UpdateRoles } from "#/api/typesGenerated";
 import {
+	MockAgentsAccessRole,
 	MockEntitlementsWithMultiOrg,
 	MockOrganization,
 	MockOrganizationAuditorRole,
+	MockOrganizationMember,
+	MockOrganizationMember2,
 	MockOrganizationPermissions,
-	MockUserOwner,
+	MockUserMember,
 } from "#/testHelpers/entities";
 import {
 	renderWithOrganizationSettingsLayout,
@@ -57,7 +60,7 @@ const removeMember = async () => {
 	});
 	await user.click(menuButton);
 
-	const removeOption = await screen.findByRole("menuitem", { name: "Remove" });
+	const removeOption = await screen.findByRole("menuitem", { name: "Remove…" });
 	await user.click(removeOption);
 
 	const dialog = await within(document.body).findByRole("dialog");
@@ -65,21 +68,26 @@ const removeMember = async () => {
 };
 
 const updateUserRole = async (role: SlimRole) => {
-	// Get the first user in the table
+	const user = userEvent.setup();
+
+	// Get the second user in the table (the first user is "me" and has
+	// no action menu).
 	const users = await screen.findAllByText(/.*@coder.com/);
-	const userRow = users[0].closest("tr");
+	const userRow = users[1].closest("tr");
 	if (!userRow) {
 		throw new Error("Error on get the first user row");
 	}
 
-	// Click on the "edit icon" to display the role options
-	const editButton = within(userRow).getByLabelText("Edit user roles");
-	fireEvent.click(editButton);
+	// Open the Edit roles dialog
+	const editButton = within(userRow).getByLabelText("Open menu");
+	await user.click(editButton);
+	await user.click(await screen.findByText("Edit roles"));
 
 	// Click on the role option
-	const fieldset = await screen.findByTitle("Available roles");
-	const roleOption = within(fieldset).getByText(role.display_name);
-	fireEvent.click(roleOption);
+	const dialog = await screen.findByRole("dialog");
+	const roleOption = within(dialog).getByText(role.display_name);
+	await user.click(roleOption);
+	await user.click(await screen.findByText("Confirm"));
 
 	return {
 		userRow,
@@ -93,7 +101,7 @@ describe("OrganizationMembersPage", () => {
 				await renderPage();
 				await removeMember();
 				await screen.findByText(
-					/User "TestUser2" removed from organization "My Organization" successfully\./,
+					/"TestUser2" has been removed from "My Organization"\./,
 				);
 			});
 		});
@@ -104,11 +112,11 @@ describe("OrganizationMembersPage", () => {
 			it("updates the roles", async () => {
 				server.use(
 					http.put(
-						`/api/v2/organizations/:organizationId/members/${MockUserOwner.id}/roles`,
+						`/api/v2/organizations/:organizationId/members/${MockUserMember.id}/roles`,
 						async () => {
 							return HttpResponse.json({
-								...MockUserOwner,
-								roles: [...MockUserOwner.roles, MockOrganizationAuditorRole],
+								...MockUserMember,
+								roles: [...MockUserMember.roles, MockOrganizationAuditorRole],
 							});
 						},
 					),
@@ -116,7 +124,43 @@ describe("OrganizationMembersPage", () => {
 
 				await renderPage();
 				await updateUserRole(MockOrganizationAuditorRole);
-				await screen.findByText(/Roles of "TestUser" updated successfully\./);
+				await screen.findByText(/TestUser2's roles have been updated\./);
+			});
+
+			it("grants agents-access explicitly to a service account", async () => {
+				let requestedRoles: readonly string[] = [];
+				server.use(
+					http.get("/api/v2/organizations/:organizationId/members/roles", () =>
+						HttpResponse.json([
+							MockOrganizationAuditorRole,
+							MockAgentsAccessRole,
+						]),
+					),
+					http.get(
+						"/api/v2/organizations/:organizationId/paginated-members",
+						() =>
+							HttpResponse.json({
+								members: [
+									MockOrganizationMember,
+									{ ...MockOrganizationMember2, is_service_account: true },
+								],
+								count: 2,
+							}),
+					),
+					http.put<PathParams, UpdateRoles>(
+						`/api/v2/organizations/:organizationId/members/${MockUserMember.id}/roles`,
+						async ({ request }) => {
+							requestedRoles = (await request.json()).roles;
+							return HttpResponse.json(MockOrganizationMember2);
+						},
+					),
+				);
+
+				await renderPage();
+				await updateUserRole(MockAgentsAccessRole);
+				await waitFor(() =>
+					expect(requestedRoles).toEqual([MockAgentsAccessRole.name]),
+				);
 			});
 		});
 
@@ -124,7 +168,7 @@ describe("OrganizationMembersPage", () => {
 			it("shows an error message", async () => {
 				server.use(
 					http.put(
-						`/api/v2/organizations/:organizationId/members/${MockUserOwner.id}/roles`,
+						`/api/v2/organizations/:organizationId/members/${MockUserMember.id}/roles`,
 						() => {
 							return HttpResponse.json(
 								{ message: "Error on updating the user roles." },

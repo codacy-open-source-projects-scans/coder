@@ -1,11 +1,16 @@
 package messages
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"math"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,9 +19,10 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/anthropics/anthropic-sdk-go/shared"
 	"github.com/anthropics/anthropic-sdk-go/shared/constant"
-	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/google/uuid"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/xerrors"
@@ -24,8 +30,12 @@ import (
 	"cdr.dev/slog/v3"
 	aibconfig "github.com/coder/coder/v2/aibridge/config"
 	aibcontext "github.com/coder/coder/v2/aibridge/context"
+	"github.com/coder/coder/v2/aibridge/credential"
+	aibheaders "github.com/coder/coder/v2/aibridge/headers"
 	"github.com/coder/coder/v2/aibridge/intercept"
 	"github.com/coder/coder/v2/aibridge/intercept/apidump"
+	"github.com/coder/coder/v2/aibridge/intercept/awssig"
+	"github.com/coder/coder/v2/aibridge/keypool"
 	"github.com/coder/coder/v2/aibridge/mcp"
 	"github.com/coder/coder/v2/aibridge/recorder"
 	"github.com/coder/coder/v2/aibridge/tracing"
@@ -60,34 +70,90 @@ var bedrockSupportedBetaFlags = map[string]bool{
 	"tool-search-tool-2025-10-19": true,
 	// Supported on Claude Opus 4.5.
 	"tool-examples-2025-10-29": true,
+	// Enables the thinking.block_binding body field. Not gated per model:
+	// clients send it only to models that enforce thinking block binding.
+	bedrockBetaThinkingBinding: true,
+}
+
+const bedrockBetaThinkingBinding = "thinking-binding-controls-2026-08-01"
+
+// BedrockRuntime carries everything a Bedrock-backed interception needs: the
+// static Bedrock config plus the AWS credentials provider. The messages
+// interceptor reads the full config (Model and SmallFastModel for the
+// InvokeModel remap, BaseURL, Region).
+type BedrockRuntime struct {
+	Cfg   aibconfig.AWSBedrock
+	Creds aws.CredentialsProvider
+}
+
+// NewBedrockRuntime bundles the Bedrock config and credentials.
+func NewBedrockRuntime(cfg aibconfig.AWSBedrock, creds aws.CredentialsProvider) *BedrockRuntime {
+	return &BedrockRuntime{
+		Cfg:   cfg,
+		Creds: creds,
+	}
+}
+
+// ConfiguredModel returns the identifier the operator configured, which may be
+// an application inference profile ARN. Requests carry it as the model because
+// AWS attributes spend to a profile only when the profile itself is invoked.
+func (b *BedrockRuntime) ConfiguredModel() string {
+	return b.Cfg.Model
+}
+
+// ConfiguredSmallFastModel is [BedrockRuntime.ConfiguredModel] for the
+// small/fast model.
+func (b *BedrockRuntime) ConfiguredSmallFastModel() string {
+	return b.Cfg.SmallFastModel
+}
+
+// ResolvedModel returns the Bedrock model ID behind the configured identifier.
+// Model capabilities, usage records, pricing, and metrics all key off this
+// rather than the configured identifier.
+func (b *BedrockRuntime) ResolvedModel() string {
+	return b.Cfg.ResolvedModelWithFallback()
+}
+
+// ResolvedSmallFastModel is [BedrockRuntime.ResolvedModel] for the small/fast
+// model.
+func (b *BedrockRuntime) ResolvedSmallFastModel() string {
+	return b.Cfg.ResolvedSmallFastModelWithFallback()
 }
 
 type interceptionBase struct {
-	id           uuid.UUID
-	providerName string
-	reqPayload   RequestPayload
+	id         uuid.UUID
+	reqPayload RequestPayload
 
-	cfg        aibconfig.Anthropic
-	bedrockCfg *aibconfig.AWSBedrock
+	cfg  intercept.Config
+	cred credential.Credential
+	// bedrock carries the provider's resolved Bedrock runtime, when applicable.
+	bedrock *BedrockRuntime
 
 	// clientHeaders are the original HTTP headers from the client request.
-	clientHeaders  http.Header
-	authHeaderName string
+	clientHeaders http.Header
 
-	tracer trace.Tracer
+	// isSmallFastModel reports whether the client requested a small/fast model
+	// (Haiku 3.5), which is optimized for tasks like code autocomplete and other
+	// small, quick operations. It is captured at construction because the Bedrock
+	// InvokeModel remap overwrites the model in the request payload.
+	// See `ANTHROPIC_SMALL_FAST_MODEL`: https://docs.anthropic.com/en/docs/claude-code/settings#environment-variables
+	// https://docs.claude.com/en/docs/claude-code/costs#background-token-usage
+	isSmallFastModel bool
+
 	logger slog.Logger
+	tracer trace.Tracer
 
-	recorder   recorder.Recorder
-	mcpProxy   mcp.ServerProxier
-	credential intercept.CredentialInfo
+	recorder recorder.Recorder
+	mcpProxy mcp.ServerProxier
 }
 
 func (i *interceptionBase) ID() uuid.UUID {
 	return i.id
 }
 
-func (i *interceptionBase) Credential() intercept.CredentialInfo {
-	return i.credential
+// Credential returns the credential resolved for this interception.
+func (i *interceptionBase) Credential() credential.Credential {
+	return i.cred
 }
 
 func (i *interceptionBase) Setup(logger slog.Logger, rec recorder.Recorder, mcpProxy mcp.ServerProxier) {
@@ -96,8 +162,57 @@ func (i *interceptionBase) Setup(logger slog.Logger, rec recorder.Recorder, mcpP
 	i.mcpProxy = mcpProxy
 }
 
+func (i *interceptionBase) recordTokenUsage(ctx context.Context, msgID string, providerModel anthropic.Model, usage anthropic.Usage) {
+	var metadata recorder.Metadata
+	if usage.ServiceTier != "" {
+		metadata = recorder.Metadata{
+			recorder.MetadataKeyServiceTier: string(usage.ServiceTier),
+		}
+	}
+
+	extraTokenTypes := make(map[string]int64)
+	if usage.ServerToolUse.WebSearchRequests != 0 {
+		extraTokenTypes["web_search_requests"] = usage.ServerToolUse.WebSearchRequests
+	}
+	if usage.CacheCreation.Ephemeral1hInputTokens != 0 {
+		extraTokenTypes["cache_ephemeral_1h_input"] = usage.CacheCreation.Ephemeral1hInputTokens
+	}
+	if usage.CacheCreation.Ephemeral5mInputTokens != 0 {
+		extraTokenTypes["cache_ephemeral_5m_input"] = usage.CacheCreation.Ephemeral5mInputTokens
+	}
+
+	usageRecord := recorder.TokenUsageRecord{
+		CreatedAt:             time.Now().UTC(),
+		InterceptionID:        i.ID().String(),
+		MsgID:                 msgID,
+		ProviderModel:         string(providerModel),
+		Input:                 usage.InputTokens,
+		Output:                usage.OutputTokens,
+		CacheReadInputTokens:  usage.CacheReadInputTokens,
+		CacheWriteInputTokens: usage.CacheCreationInputTokens,
+		Metadata:              metadata,
+	}
+	if len(extraTokenTypes) > 0 {
+		usageRecord.ExtraTokenTypes = extraTokenTypes
+	}
+
+	_ = i.recorder.RecordTokenUsage(ctx, &usageRecord)
+}
+
 func (i *interceptionBase) CorrelatingToolCallID() *string {
 	return i.reqPayload.correlatingToolCallID()
+}
+
+// isBedrockMantle reports whether the interception targets the Bedrock mantle
+// protocol.
+func (i *interceptionBase) isBedrockMantle() bool {
+	return i.bedrock != nil && i.bedrock.Cfg.ResolvedProtocol() == aibconfig.BedrockProtocolMantle
+}
+
+// isBedrockInvokeModel reports whether the interception targets the Bedrock
+// InvokeModel protocol.
+func (i *interceptionBase) isBedrockInvokeModel() bool {
+	return i.bedrock != nil && i.bedrock.Cfg.ResolvedProtocol() == aibconfig.BedrockProtocolInvokeModel
 }
 
 func (i *interceptionBase) Model() string {
@@ -105,10 +220,14 @@ func (i *interceptionBase) Model() string {
 		return "coder-aibridge-unknown"
 	}
 
-	if i.bedrockCfg != nil {
-		model := i.bedrockCfg.Model
-		if i.isSmallFastModel() {
-			model = i.bedrockCfg.SmallFastModel
+	// InvokeModel is the only protocol that remaps the model: it replaces the
+	// client's model with the operator-configured one. Every other case (mantle
+	// passthrough, non-Bedrock providers) returns the model the client sent in
+	// the body.
+	if i.isBedrockInvokeModel() {
+		model := i.bedrock.ResolvedModel()
+		if i.isSmallFastModel {
+			model = i.bedrock.ResolvedSmallFastModel()
 		}
 		return model
 	}
@@ -116,16 +235,30 @@ func (i *interceptionBase) Model() string {
 	return i.reqPayload.model()
 }
 
+// upstreamModel returns the identifier sent to Bedrock as the invocation
+// target, which may be an application inference profile ARN.
+func (i *interceptionBase) upstreamModel() string {
+	model := i.bedrock.ConfiguredModel()
+	if i.isSmallFastModel {
+		model = i.bedrock.ConfiguredSmallFastModel()
+	}
+	return model
+}
+
 func (i *interceptionBase) baseTraceAttributes(r *http.Request, streaming bool) []attribute.KeyValue {
-	return []attribute.KeyValue{
+	attrs := []attribute.KeyValue{
 		attribute.String(tracing.RequestPath, r.URL.Path),
 		attribute.String(tracing.InterceptionID, i.id.String()),
 		attribute.String(tracing.InitiatorID, aibcontext.ActorIDFromContext(r.Context())),
-		attribute.String(tracing.Provider, i.providerName),
+		attribute.String(tracing.Provider, i.cfg.ProviderName),
 		attribute.String(tracing.Model, i.Model()),
 		attribute.Bool(tracing.Streaming, streaming),
-		attribute.Bool(tracing.IsBedrock, i.bedrockCfg != nil),
+		attribute.Bool(tracing.IsBedrock, i.bedrock != nil),
 	}
+	if i.bedrock != nil {
+		attrs = append(attrs, attribute.String(tracing.BedrockProtocol, string(i.bedrock.Cfg.ResolvedProtocol())))
+	}
+	return attrs
 }
 
 func (i *interceptionBase) injectTools() {
@@ -187,45 +320,42 @@ func (*interceptionBase) extractModelThoughts(msg *anthropic.Message) []*recorde
 			continue
 		}
 		thoughtRecords = append(thoughtRecords, &recorder.ModelThoughtRecord{
-			Content:  variant.Thinking,
-			Metadata: recorder.Metadata{"source": recorder.ThoughtSourceThinking},
+			CreatedAt: time.Now().UTC(),
+			Content:   variant.Thinking,
+			Metadata:  recorder.Metadata{"source": recorder.ThoughtSourceThinking},
 		})
 	}
 	return thoughtRecords
 }
 
-// IsSmallFastModel checks if the model is a small/fast model (Haiku 3.5).
-// These models are optimized for tasks like code autocomplete and other small, quick operations.
-// See `ANTHROPIC_SMALL_FAST_MODEL`: https://docs.anthropic.com/en/docs/claude-code/settings#environment-variables
-// https://docs.claude.com/en/docs/claude-code/costs#background-token-usage
-func (i *interceptionBase) isSmallFastModel() bool {
-	return strings.Contains(i.reqPayload.model(), "haiku")
+// isSmallFastModel reports whether the client requested a small/fast model.
+func isSmallFastModel(model string) bool {
+	return strings.Contains(model, "haiku")
 }
 
+// newMessagesService builds the SDK service used for upstream calls.
 func (i *interceptionBase) newMessagesService(ctx context.Context, opts ...option.RequestOption) (anthropic.MessageService, error) {
-	// BYOK with access token uses Authorization: Bearer.
-	// Otherwise use X-Api-Key (centralized or BYOK with personal API key).
-	if i.cfg.BYOKBearerToken != "" {
-		i.logger.Debug(ctx, "using byok access token auth",
-			slog.F("bearer_hint", utils.MaskSecret(i.cfg.BYOKBearerToken)),
+	byok, isBYOK := credential.AsBYOK(i.cred)
+	bedrockBYOK := isBYOK && i.bedrock != nil
+
+	// Only BYOK sets its credential here. Centralized keys are injected
+	// per-attempt in the failover loop.
+	if isBYOK && i.bedrock == nil {
+		i.logger.Debug(ctx, "using byok auth",
+			slog.F("auth_header", byok.Header), slog.F("key_hint", byok.Hint()),
 		)
-		opts = append(opts, option.WithAuthToken(i.cfg.BYOKBearerToken))
-	} else {
-		i.logger.Debug(ctx, "using api key auth",
-			slog.F("api_key_hint", utils.MaskSecret(i.cfg.Key)),
-		)
-		opts = append(opts, option.WithAPIKey(i.cfg.Key))
+		switch byok.Header {
+		case aibheaders.AuthHeaderAuthorization:
+			opts = append(opts, option.WithAuthToken(byok.Secret))
+		case aibheaders.AuthHeaderXAPIKey:
+			opts = append(opts, option.WithAPIKey(byok.Secret))
+		default:
+			return anthropic.MessageService{}, xerrors.Errorf("unexpected byok auth header: %q", byok.Header)
+		}
 	}
 	opts = append(opts, option.WithBaseURL(i.cfg.BaseURL))
-	if i.cfg.MaxRetries != nil {
-		opts = append(opts, option.WithMaxRetries(*i.cfg.MaxRetries))
-	}
-
-	// Add extra headers if configured.
-	// Some providers require additional headers that are not added by the SDK.
-	// TODO(ssncferreira): remove as part of https://github.com/coder/aibridge/issues/192
-	for key, value := range i.cfg.ExtraHeaders {
-		opts = append(opts, option.WithHeader(key, value))
+	if i.cfg.HTTPClient != nil {
+		opts = append(opts, option.WithHTTPClient(i.cfg.HTTPClient))
 	}
 
 	// Forward client headers to upstream. This middleware runs after the SDK
@@ -233,25 +363,55 @@ func (i *interceptionBase) newMessagesService(ctx context.Context, opts ...optio
 	// client headers plus provider auth.
 	if i.clientHeaders != nil {
 		opts = append(opts, option.WithMiddleware(func(req *http.Request, next option.MiddlewareNext) (*http.Response, error) {
-			req.Header = intercept.BuildUpstreamHeaders(req.Header, i.clientHeaders, i.authHeaderName)
+			req.Header = aibheaders.BuildUpstreamHeaders(req.Header, i.clientHeaders, i.cred.AuthHeader(), i.cfg.ActorHeaderNames, aibcontext.ActorFromContext(req.Context()))
 			return next(req)
 		}))
 	}
 
 	// Add API dump middleware if configured
-	if mw := apidump.NewBridgeMiddleware(i.cfg.APIDumpDir, i.providerName, i.Model(), i.id, i.logger, quartz.NewReal()); mw != nil {
+	if mw := apidump.NewBridgeMiddleware(i.cfg.APIDumpDir, i.cfg.ProviderName, i.Model(), i.id, i.logger, quartz.NewReal()); mw != nil {
 		opts = append(opts, option.WithMiddleware(mw))
 	}
 
-	if i.bedrockCfg != nil {
-		ctx, cancel := context.WithTimeout(ctx, time.Second*30)
-		defer cancel()
-		bedrockOpts, err := i.withAWSBedrockOptions(ctx, i.bedrockCfg)
+	// bedrockCredentialResolutionTimeout bounds the credential
+	// resolution (STS/IRSA) shared by both Bedrock protocols.
+	const bedrockCredentialResolutionTimeout = 30 * time.Second
+
+	if i.isBedrockInvokeModel() {
+		var (
+			bedrockOpts []option.RequestOption
+			err         error
+		)
+		if bedrockBYOK {
+			bedrockOpts, err = i.withBedrockInvokeModelBYOKOptions(byok.Secret)
+		} else {
+			tctx, cancel := context.WithTimeout(ctx, bedrockCredentialResolutionTimeout)
+			defer cancel()
+			bedrockOpts, err = i.withBedrockInvokeModelOptions(tctx)
+		}
 		if err != nil {
 			return anthropic.MessageService{}, err
 		}
 		opts = append(opts, bedrockOpts...)
-		i.augmentRequestForBedrock()
+		i.augmentRequestForBedrockInvokeModel()
+	}
+
+	if i.isBedrockMantle() {
+		var (
+			bedrockOpts []option.RequestOption
+			err         error
+		)
+		if bedrockBYOK {
+			bedrockOpts, err = i.withBedrockMantleBYOKOptions(byok.Secret)
+		} else {
+			tctx, cancel := context.WithTimeout(ctx, bedrockCredentialResolutionTimeout)
+			defer cancel()
+			bedrockOpts, err = i.withBedrockMantleOptions(tctx)
+		}
+		if err != nil {
+			return anthropic.MessageService{}, err
+		}
+		opts = append(opts, bedrockOpts...)
 	}
 
 	return anthropic.NewMessageService(opts...), nil
@@ -265,61 +425,37 @@ func (i *interceptionBase) withBody() option.RequestOption {
 	return option.WithRequestBody("application/json", []byte(i.reqPayload))
 }
 
-// withAWSBedrockOptions returns request options for authenticating with AWS Bedrock.
+// withBedrockInvokeModelOptions returns request options for the AWS Bedrock
+// InvokeModel protocol.
 //
-// When both AccessKey and AccessKeySecret are set in the aibridge config, they are
-// used directly as static credentials. Otherwise, the AWS SDK default credential chain
-// resolves credentials (environment variables, shared config/credentials files, IAM
-// roles, IRSA, SSO, IMDS, etc.).
-func (*interceptionBase) withAWSBedrockOptions(ctx context.Context, cfg *aibconfig.AWSBedrock) ([]option.RequestOption, error) {
-	if cfg == nil {
-		return nil, xerrors.New("nil config given")
+// Credentials come from i.bedrock.Creds. It is a shared credentials cache, so the per-request Retrieve()
+// below is served from that cache and does not re-resolve or re-assume on every request.
+func (i *interceptionBase) withBedrockInvokeModelOptions(ctx context.Context) ([]option.RequestOption, error) {
+	if i.bedrock == nil {
+		return nil, xerrors.New("nil bedrock runtime")
 	}
-	if cfg.Region == "" && cfg.BaseURL == "" {
-		return nil, xerrors.New("region or base url required")
-	}
-	if cfg.Model == "" {
-		return nil, xerrors.New("model required")
-	}
-	if cfg.SmallFastModel == "" {
-		return nil, xerrors.New("small fast model required")
+	cfg := i.bedrock.Cfg
+	if err := cfg.Validate(); err != nil {
+		return nil, xerrors.Errorf("bedrock invoke-model config: %w", err)
 	}
 
-	loadOpts := []func(*config.LoadOptions) error{
-		config.WithRegion(cfg.Region),
+	// Fail fast: ensure credentials can be resolved before signing. Served from
+	// the shared cache on most requests (no network); on the cold or refresh
+	// path this performs the actual STS/IMDS call.
+	if _, err := i.bedrock.Creds.Retrieve(ctx); err != nil {
+		return nil, xerrors.Errorf("resolve AWS credentials: %w", err)
 	}
 
-	// Use static credentials when explicitly provided, otherwise fall back to the SDK default credential chain.
-	switch {
-	// Both set: use static credentials directly.
-	case cfg.AccessKey != "" && cfg.AccessKeySecret != "":
-		loadOpts = append(loadOpts, config.WithCredentialsProvider(
-			credentials.NewStaticCredentialsProvider(
-				cfg.AccessKey,
-				cfg.AccessKeySecret,
-				"",
-			),
-		))
-	// Only one set: misconfiguration.
-	case cfg.AccessKey != "" || cfg.AccessKeySecret != "":
-		return nil, xerrors.New("both access key and access key secret must be provided together")
-	// Neither set: SDK default credential chain resolves credentials.
-	default:
-	}
-
-	awsCfg, err := config.LoadDefaultConfig(ctx, loadOpts...)
-	if err != nil {
-		return nil, xerrors.Errorf("failed to load AWS Bedrock config: %w", err)
-	}
-
-	// Fail fast: ensure credentials can be resolved before making any requests.
-	// awsCfg already carries the credentials provider, and the Bedrock middleware
-	// will call Retrieve on it when signing each request.
-	if _, err := awsCfg.Credentials.Retrieve(ctx); err != nil {
-		return nil, xerrors.Errorf("no AWS credentials found: %w", err)
+	awsCfg := aws.Config{
+		Region:      cfg.Region,
+		Credentials: i.bedrock.Creds,
 	}
 
 	var out []option.RequestOption
+	out = append(out, option.WithMiddleware(func(req *http.Request, next option.MiddlewareNext) (*http.Response, error) {
+		awssig.AppendPRMUserAgent(req)
+		return next(req)
+	}))
 	out = append(out, bedrock.WithConfig(awsCfg))
 
 	// If a custom base URL is set, override the default endpoint constructed by the bedrock middleware.
@@ -330,23 +466,203 @@ func (*interceptionBase) withAWSBedrockOptions(ctx context.Context, cfg *aibconf
 	return out, nil
 }
 
-// augmentRequestForBedrock will change the model used for the request since AWS Bedrock doesn't support
+// withAWSSignedMessagesOptions returns request options for an AWS-signed
+// endpoint that speaks the native Messages wire format. It is used by the
+// Bedrock mantle path to set its base URL and SigV4 middleware.
+//
+// Credentials come from creds, a shared credentials cache, so the per-request
+// Retrieve is served from that cache and does not re-resolve or re-assume on
+// every request. It is called once here to fail fast before signing.
+func withAWSSignedMessagesOptions(ctx context.Context, creds aws.CredentialsProvider, baseURL, region, service string) ([]option.RequestOption, error) {
+	// Fail fast: ensure credentials can be resolved before signing. Served from
+	// the shared cache on most requests (no network); on the cold or refresh
+	// path this performs the actual STS/IMDS call.
+	if _, err := creds.Retrieve(ctx); err != nil {
+		return nil, xerrors.Errorf("resolve AWS credentials: %w", err)
+	}
+
+	var out []option.RequestOption
+	out = append(out, option.WithBaseURL(baseURL))
+	// Appended last so it runs innermost (right before the HTTP send) and signs
+	// the request after all other headers are set.
+	//nolint:bodyclose // awssig.SignMiddleware reads and closes the request body in order to sign it.
+	out = append(out, option.WithMiddleware(awssig.SignMiddleware(creds, region, service)))
+
+	return out, nil
+}
+
+// withBedrockMantleOptions returns request options for the AWS Bedrock mantle
+// endpoint (bedrock-mantle.{region}.api.aws/anthropic/v1/messages). It speaks
+// the native Messages wire format, so this only SigV4-signs the request
+// (service "bedrock-mantle") and forwards it; the response is plain SSE.
+func (i *interceptionBase) withBedrockMantleOptions(ctx context.Context) ([]option.RequestOption, error) {
+	if i.bedrock == nil {
+		return nil, xerrors.New("nil bedrock runtime")
+	}
+	cfg := i.bedrock.Cfg
+	if err := cfg.Validate(); err != nil {
+		return nil, xerrors.Errorf("bedrock mantle config: %w", err)
+	}
+
+	// Bedrock traffic carries Coder's PRM attribution marker. Appended before
+	// the signing options so it runs outside them and sets the header before
+	// the request is signed and sent.
+	out := []option.RequestOption{
+		option.WithMiddleware(func(req *http.Request, next option.MiddlewareNext) (*http.Response, error) {
+			awssig.AppendPRMUserAgent(req)
+			return next(req)
+		}),
+	}
+
+	signed, err := withAWSSignedMessagesOptions(ctx, i.bedrock.Creds, cfg.BaseURL, cfg.Region, awssig.ServiceBedrockMantle)
+	if err != nil {
+		return nil, err
+	}
+
+	return append(out, signed...), nil
+}
+
+// withBedrockInvokeModelBYOKOptions authenticates the InvokeModel protocol with
+// a user Bedrock API key (bearer token), resolving no deployment credentials.
+func (i *interceptionBase) withBedrockInvokeModelBYOKOptions(token string) ([]option.RequestOption, error) {
+	if i.bedrock == nil {
+		return nil, xerrors.New("nil bedrock runtime")
+	}
+	cfg := i.bedrock.Cfg
+	if err := cfg.Validate(); err != nil {
+		return nil, xerrors.Errorf("bedrock invoke-model config: %w", err)
+	}
+
+	baseURL := fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com", cfg.Region)
+	if cfg.BaseURL != "" {
+		baseURL = cfg.BaseURL
+	}
+
+	var out []option.RequestOption
+	out = append(out, option.WithBaseURL(baseURL))
+	//nolint:bodyclose // The middleware returns the upstream response for the SDK to close.
+	out = append(out, option.WithMiddleware(bedrockInvokeModelBearerMiddleware(token)))
+	return out, nil
+}
+
+// withBedrockMantleBYOKOptions authenticates the mantle protocol with a user
+// Bedrock API key (bearer token), resolving no deployment credentials.
+func (i *interceptionBase) withBedrockMantleBYOKOptions(token string) ([]option.RequestOption, error) {
+	if i.bedrock == nil {
+		return nil, xerrors.New("nil bedrock runtime")
+	}
+	cfg := i.bedrock.Cfg
+	if err := cfg.Validate(); err != nil {
+		return nil, xerrors.Errorf("bedrock mantle config: %w", err)
+	}
+
+	// Bedrock traffic carries Coder's PRM attribution marker; the bearer token
+	// replaces SigV4 and resolves no deployment credentials.
+	var out []option.RequestOption
+	out = append(out, option.WithBaseURL(cfg.BaseURL))
+	out = append(out, option.WithMiddleware(func(req *http.Request, next option.MiddlewareNext) (*http.Response, error) {
+		awssig.AppendPRMUserAgent(req)
+		return next(req)
+	}))
+	//nolint:bodyclose // The middleware returns the upstream response for the SDK to close.
+	out = append(out, option.WithMiddleware(awssig.BearerMiddleware(token)))
+	return out, nil
+}
+
+// bedrockInvokeModelBearerMiddleware authenticates an InvokeModel request with a
+// user Bedrock API key (bearer token) instead of SigV4.
+//
+// It reimplements the SDK bedrock.WithConfig wire transform because that helper
+// couples the transform with SigV4 signing and would resolve deployment AWS
+// credentials, which a BYOK request must not depend on.
+func bedrockInvokeModelBearerMiddleware(token string) func(*http.Request, option.MiddlewareNext) (*http.Response, error) {
+	return func(req *http.Request, next option.MiddlewareNext) (*http.Response, error) {
+		awssig.AppendPRMUserAgent(req)
+
+		if req.Body != nil {
+			body, err := io.ReadAll(req.Body)
+			if err != nil {
+				return nil, xerrors.Errorf("bedrock byok: read request body: %w", err)
+			}
+			_ = req.Body.Close()
+
+			if !gjson.GetBytes(body, "anthropic_version").Exists() {
+				body, _ = sjson.SetBytes(body, "anthropic_version", bedrock.DefaultVersion)
+			}
+
+			// Bedrock expects beta flags in the body, not the header.
+			if betaHeader := req.Header.Values("anthropic-beta"); len(betaHeader) > 0 {
+				req.Header.Del("anthropic-beta")
+				body, err = sjson.SetBytes(body, "anthropic_beta", betaHeader)
+				if err != nil {
+					return nil, xerrors.Errorf("bedrock byok: set anthropic_beta: %w", err)
+				}
+			}
+
+			if req.Method == http.MethodPost && bedrock.DefaultEndpoints[req.URL.Path] {
+				model := gjson.GetBytes(body, "model").String()
+				stream := gjson.GetBytes(body, "stream").Bool()
+
+				body, _ = sjson.DeleteBytes(body, "model")
+				body, _ = sjson.DeleteBytes(body, "stream")
+
+				method := "invoke"
+				if stream {
+					method = "invoke-with-response-stream"
+				}
+				req.URL.Path = fmt.Sprintf("/model/%s/%s", model, method)
+				req.URL.RawPath = fmt.Sprintf("/model/%s/%s", url.QueryEscape(model), method)
+			}
+
+			reader := bytes.NewReader(body)
+			req.Body = io.NopCloser(reader)
+			req.GetBody = func() (io.ReadCloser, error) {
+				_, err := reader.Seek(0, 0)
+				return io.NopCloser(reader), err
+			}
+			req.ContentLength = int64(len(body))
+		}
+
+		req.Header.Set(aibheaders.AuthHeaderAuthorization, "Bearer "+token)
+		return next(req)
+	}
+}
+
+// augmentRequestForBedrockInvokeModel changes the model used for the request since AWS Bedrock doesn't support
 // Anthropics' model names. It also converts adaptive thinking to enabled with a budget for models that
-// don't support adaptive thinking natively.
-func (i *interceptionBase) augmentRequestForBedrock() {
-	if i.bedrockCfg == nil {
+// don't support adaptive thinking natively, or enabled thinking to adaptive for models that only support
+// adaptive.
+//
+// The request carries the configured identifier, which may be an application
+// inference profile ARN, while capability decisions use the model ID behind it.
+func (i *interceptionBase) augmentRequestForBedrockInvokeModel() {
+	if i.bedrock == nil {
 		return
 	}
 
 	model := i.Model()
-	updated, err := i.reqPayload.withModel(model)
+	updated, err := i.reqPayload.withModel(i.upstreamModel())
 	if err != nil {
 		i.logger.Warn(context.Background(), "failed to set model in request payload for Bedrock", slog.Error(err))
 		return
 	}
 	i.reqPayload = updated
 
-	if !bedrockModelSupportsAdaptiveThinking(model) {
+	switch {
+	case bedrockModelRequiresAdaptiveThinking(model):
+		// Symmetric conversion for adaptive-only models: rewrite
+		// thinking.type "enabled" with budget_tokens to the "adaptive" shape,
+		// since Bedrock returns 400 for these models when the legacy shape is
+		// used. Claude Code falls back to the legacy shape when it cannot
+		// read the upstream model's capability metadata (which is the case
+		// when AI Gateway is in the path).
+		updated, err = i.reqPayload.convertEnabledThinkingForBedrock()
+		if err != nil {
+			i.logger.Warn(context.Background(), "failed to convert enabled thinking for Bedrock", slog.Error(err))
+			return
+		}
+		i.reqPayload = updated
+	case !bedrockModelSupportsAdaptiveThinking(model):
 		updated, err = i.reqPayload.convertAdaptiveThinkingForBedrock()
 		if err != nil {
 			i.logger.Warn(context.Background(), "failed to convert adaptive thinking for Bedrock", slog.Error(err))
@@ -361,21 +677,61 @@ func (i *interceptionBase) augmentRequestForBedrock() {
 		filterBedrockBetaFlags(i.clientHeaders, model)
 	}
 
-	// Strip body fields that Bedrock does not accept.
-	updated, err = i.reqPayload.removeUnsupportedBedrockFields(i.clientHeaders)
+	// Strip body fields that Bedrock does not accept. Adaptive-only models
+	// support output_config natively without a beta flag, so
+	// keep it for those models even when the effort-2025-11-24 flag is
+	// absent from the request.
+	var exemptFields []string
+	if bedrockModelRequiresAdaptiveThinking(model) {
+		exemptFields = append(exemptFields, messagesReqPathOutputConfig)
+	}
+	updated, err = i.reqPayload.removeUnsupportedBedrockFields(i.clientHeaders, exemptFields...)
 	if err != nil {
 		i.logger.Warn(context.Background(), "failed to remove unsupported fields for Bedrock", slog.Error(err))
 		return
 	}
 	i.reqPayload = updated
+
+	updated, err = i.reqPayload.convertThinkingBlockBindingForBedrock(i.clientHeaders)
+	if err != nil {
+		i.logger.Warn(context.Background(), "failed to convert thinking block binding for Bedrock", slog.Error(err))
+		return
+	}
+	i.reqPayload = updated
+
+	// Adaptive-only models accept output_config but reject some of its
+	// sub-fields (currently: output_config.format). Strip those after the
+	// top-level pass has decided to keep output_config.
+	if bedrockModelRequiresAdaptiveThinking(model) {
+		updated, err = i.reqPayload.removeBedrockUnsupportedOutputConfigSubFields()
+		if err != nil {
+			i.logger.Warn(context.Background(), "failed to strip unsupported output_config sub-fields for Bedrock", slog.Error(err))
+			return
+		}
+		i.reqPayload = updated
+	}
 }
 
 // bedrockModelSupportsAdaptiveThinking returns true if the given Bedrock model ID
-// supports the "adaptive" thinking type natively (i.e. Claude 4.6 models).
+// supports the "adaptive" thinking type natively (i.e. Claude 4.6 models and
+// adaptive-only models).
 // See https://docs.aws.amazon.com/bedrock/latest/userguide/claude-messages-adaptive-thinking.html
 func bedrockModelSupportsAdaptiveThinking(model string) bool {
 	return strings.Contains(model, "anthropic.claude-opus-4-6") ||
-		strings.Contains(model, "anthropic.claude-sonnet-4-6")
+		strings.Contains(model, "anthropic.claude-sonnet-4-6") ||
+		bedrockModelRequiresAdaptiveThinking(model)
+}
+
+// bedrockModelRequiresAdaptiveThinking returns true if the given Bedrock model
+// ID only supports the "adaptive" thinking type and rejects the legacy
+// "enabled" + budget_tokens shape with a 400.
+//
+// See https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-opus-4-7.html
+func bedrockModelRequiresAdaptiveThinking(model string) bool {
+	return strings.Contains(model, "anthropic.claude-opus-4-7") ||
+		strings.Contains(model, "anthropic.claude-opus-4-8") ||
+		strings.Contains(model, "anthropic.claude-opus-5-5") ||
+		strings.Contains(model, "anthropic.claude-sonnet-5")
 }
 
 // filterBedrockBetaFlags removes unsupported beta flags from the Anthropic-Beta
@@ -424,12 +780,16 @@ func filterBedrockBetaFlags(headers http.Header, model string) {
 }
 
 // writeUpstreamError marshals and writes a given error.
-func (i *interceptionBase) writeUpstreamError(w http.ResponseWriter, antErr *responseError) {
+func (i *interceptionBase) writeUpstreamError(w http.ResponseWriter, antErr *ResponseError) {
 	if antErr == nil {
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
+	// Set Retry-After when a cooldown is configured.
+	if antErr.RetryAfter > 0 {
+		w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(antErr.RetryAfter.Seconds()))))
+	}
 	w.WriteHeader(antErr.StatusCode)
 
 	out, err := json.Marshal(antErr)
@@ -437,14 +797,14 @@ func (i *interceptionBase) writeUpstreamError(w http.ResponseWriter, antErr *res
 		i.logger.Warn(context.Background(), "failed to marshal upstream error", slog.Error(err), slog.F("error_payload", fmt.Sprintf("%+v", antErr)))
 		// Response has to match expected format.
 		// See https://docs.claude.com/en/api/errors#error-shapes.
-		_, _ = w.Write([]byte(fmt.Sprintf(`{
+		_, _ = fmt.Fprintf(w, `{
 	"type":"error",
 	"error": {
 		"type": "error",
 		"message":"error marshaling upstream error"
 	},
 	"request_id": "%s"
-}`, i.ID().String())))
+}`, i.ID().String())
 	} else {
 		_, _ = w.Write(out)
 	}
@@ -506,14 +866,64 @@ func accumulateUsage(dest, src any) {
 	}
 }
 
-func getErrorResponse(err error) *responseError {
+// For centralized requests, markKeyOnError extracts an
+// Anthropic SDK error from err and marks the key based on
+// its status code. Returns true if the status was a key-specific
+// failover trigger so callers can retry with the next key.
+func (i *interceptionBase) markKeyOnError(ctx context.Context, key *keypool.Key, err error) bool {
+	cp, ok := credential.AsCentralizedPool(i.cred)
+	if !ok {
+		return false
+	}
+	var apiErr *anthropic.Error
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	return cp.Pool.MarkKeyOnStatus(
+		ctx, key, apiErr.Response, i.logger,
+	)
+}
+
+// ResponseErrorFromKeyPool translates a *keypool.Error into
+// a developer-facing ResponseError shaped for the Anthropic API.
+func ResponseErrorFromKeyPool(keyPoolErr *keypool.Error) *ResponseError {
+	if keyPoolErr == nil {
+		return nil
+	}
+	switch keyPoolErr.Kind {
+	case keypool.ErrorKindPermanent, keypool.ErrorKindUnauthorized:
+		return newResponseError(
+			keyPoolErr.Error(),
+			string(constant.ValueOf[constant.APIError]()),
+			http.StatusBadGateway,
+			0,
+		)
+	case keypool.ErrorKindRateLimited:
+		return newResponseError(
+			keyPoolErr.Error(),
+			string(constant.ValueOf[constant.RateLimitError]()),
+			http.StatusTooManyRequests,
+			keyPoolErr.RetryAfter,
+		)
+	default:
+		// Fall back to a generic 502.
+		return newResponseError(
+			keyPoolErr.Error(),
+			string(constant.ValueOf[constant.APIError]()),
+			http.StatusBadGateway,
+			keyPoolErr.RetryAfter,
+		)
+	}
+}
+
+func ResponseErrorFromAPIError(err error) *ResponseError {
 	var apierr *anthropic.Error
 	if !errors.As(err, &apierr) {
 		return nil
 	}
 
 	msg := apierr.Error()
-	typ := string(constant.ValueOf[constant.APIError]())
+	errType := string(constant.ValueOf[constant.APIError]())
 
 	var detail *anthropic.APIErrorObject
 	if field, ok := apierr.JSON.ExtraFields["error"]; ok {
@@ -521,43 +931,48 @@ func getErrorResponse(err error) *responseError {
 	}
 	if detail != nil {
 		msg = detail.Message
-		typ = string(detail.Type)
+		errType = string(detail.Type)
 	}
 
-	return &responseError{
-		ErrorResponse: &anthropic.ErrorResponse{
-			Error: anthropic.ErrorObjectUnion{
+	return newResponseError(msg, errType, apierr.StatusCode, keypool.ParseRetryAfter(apierr.Response))
+}
+
+var _ error = &ResponseError{}
+
+type ResponseError struct {
+	*anthropic.ErrorResponse
+
+	StatusCode int           `json:"-"`
+	RetryAfter time.Duration `json:"-"`
+}
+
+func newResponseError(msg, errType string, status int, retryAfter time.Duration) *ResponseError {
+	return &ResponseError{
+		ErrorResponse: &shared.ErrorResponse{
+			Error: shared.ErrorObjectUnion{
 				Message: msg,
-				Type:    typ,
+				Type:    errType,
 			},
 			Type: constant.ValueOf[constant.Error](),
 		},
-		StatusCode: apierr.StatusCode,
+		StatusCode: status,
+		RetryAfter: retryAfter,
 	}
 }
 
-var _ error = &responseError{}
-
-type responseError struct {
-	*anthropic.ErrorResponse
-
-	StatusCode int `json:"-"`
-}
-
-func newErrorResponse(msg error) *responseError {
-	return &responseError{
-		ErrorResponse: &shared.ErrorResponse{
-			Error: shared.ErrorObjectUnion{
-				Message: msg.Error(),
-				Type:    "error",
-			},
-		},
-	}
-}
-
-func (a *responseError) Error() string {
-	if a.ErrorResponse == nil {
+func (e *ResponseError) Error() string {
+	if e.ErrorResponse == nil {
 		return ""
 	}
-	return a.ErrorResponse.Error.Message
+	return e.ErrorResponse.Error.Message
+}
+
+// ToResponse marshals e into an *http.Response shaped for the
+// Anthropic API.
+func (e *ResponseError) ToResponse() *http.Response {
+	body, err := json.Marshal(e)
+	if err != nil {
+		body = []byte(`{"type":"error","error":{"type":"error","message":"error marshaling upstream error"}}`)
+	}
+	return utils.NewJSONErrorResponse(e.StatusCode, e.RetryAfter, body)
 }

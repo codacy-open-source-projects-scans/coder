@@ -1,132 +1,157 @@
-import { ChevronDownIcon, LoaderIcon, OctagonXIcon } from "lucide-react";
+import { cn } from "cn";
+import { OctagonXIcon } from "lucide-react";
 import type React from "react";
-import { useRef, useState } from "react";
+import type * as TypesGen from "#/api/typesGenerated";
 import { CopyButton } from "#/components/CopyButton/CopyButton";
-import { ScrollArea } from "#/components/ScrollArea/ScrollArea";
 import {
 	Tooltip,
 	TooltipContent,
 	TooltipTrigger,
 } from "#/components/Tooltip/Tooltip";
-import { cn } from "#/utils/cn";
-import { COLLAPSED_OUTPUT_HEIGHT, signalTooltipLabel } from "./utils";
+import {
+	type AgentDisplayState,
+	resolveAgentDisplayState,
+} from "./displayMode";
+import { TerminalOutput } from "./TerminalOutput";
+import { ToolCall } from "./ToolCall";
+import { signalTooltipLabel, type ToolStatus } from "./utils";
 
-/**
- * Specialized rendering for `process_output` tool calls. Shows
- * process output directly in a terminal-style block with a
- * collapsible preview and an expand chevron at the bottom.
- */
-export const ProcessOutputTool: React.FC<{
+type ProcessOutputToolProps = {
 	output: string;
-	isRunning: boolean;
+	command?: string;
+	status: ToolStatus;
+	/**
+	 * Whether the result snapshot saw the process still alive. This only
+	 * affects label tense and signal badges; the row must not animate for
+	 * it, because the snapshot never updates once the poll completes.
+	 */
+	processRunning: boolean;
 	exitCode: number | null;
 	isError: boolean;
+	errorMessage?: string;
 	killedBySignal?: "kill" | "terminate";
-}> = ({ output, isRunning, exitCode, isError, killedBySignal }) => {
-	const [expanded, setExpanded] = useState(false);
-	const outputRef = useRef<HTMLPreElement | null>(null);
+	shellToolDisplayMode: TypesGen.AgentDisplayMode;
+};
+
+const getProcessOutputLabel = ({
+	command,
+	isRunning,
+	isFailed,
+}: {
+	command: string | undefined;
+	isRunning: boolean;
+	isFailed: boolean;
+}): string => {
+	const trimmedCommand = command?.trim() ?? "";
+	if (!trimmedCommand) {
+		return "Process output";
+	}
+	if (isRunning) {
+		return `Checking ${trimmedCommand}`;
+	}
+	return `${isFailed ? "Failed" : "Checked"} ${trimmedCommand}`;
+};
+
+export const ProcessOutputTool: React.FC<ProcessOutputToolProps> = ({
+	output,
+	command,
+	status,
+	processRunning,
+	exitCode,
+	isError,
+	errorMessage,
+	killedBySignal,
+	shellToolDisplayMode,
+}) => {
+	const autoDisplayState: AgentDisplayState =
+		output.length > 0 ? "preview" : "collapsed";
+	const defaultView = resolveAgentDisplayState(
+		shellToolDisplayMode,
+		autoDisplayState,
+	);
+
+	const isRunning = status === "running" || processRunning;
+	// A clean exit is the expected outcome of a check, so only
+	// failures earn a badge. The label verb carries the rest.
+	const isFailed = exitCode !== null && exitCode !== 0;
 	const hasOutput = output.length > 0;
-
-	const [overflows, setOverflows] = useState(false);
-	const measureRef = (node: HTMLPreElement | null) => {
-		outputRef.current = node;
-		if (node) {
-			setOverflows(node.scrollHeight > COLLAPSED_OUTPUT_HEIGHT);
-		}
-	};
-
-	const showExitCode = exitCode !== null && exitCode !== 0;
+	const hasHeaderActions = Boolean(killedBySignal) || isFailed || hasOutput;
 
 	return (
-		<div className="group/proc w-full overflow-hidden rounded-md border border-solid border-border-default bg-surface-primary">
-			{hasOutput ? (
-				<>
-					<div className="relative">
-						<ScrollArea
-							className="text-2xs"
-							viewportClassName={expanded ? "max-h-96" : ""}
-							scrollBarClassName="w-1.5"
-						>
-							<pre
-								ref={measureRef}
-								style={
-									expanded
-										? undefined
-										: { maxHeight: COLLAPSED_OUTPUT_HEIGHT, overflow: "hidden" }
-								}
-								className={cn(
-									"m-0 border-0 whitespace-pre-wrap break-all bg-transparent px-3 py-2 font-mono text-xs",
-									isError
-										? "text-content-destructive"
-										: "text-content-secondary",
-								)}
-							>
-								{output}
-							</pre>
-						</ScrollArea>
-						<div className="absolute right-1 top-0.5 flex items-center gap-1 opacity-0 transition-opacity group-hover/proc:opacity-100">
-							{isRunning && (
-								<LoaderIcon className="h-3.5 w-3.5 shrink-0 animate-spin motion-reduce:animate-none text-content-secondary" />
-							)}
-							{killedBySignal && !isRunning && (
-								<Tooltip>
-									<TooltipTrigger asChild>
-										<OctagonXIcon className="size-3.5 shrink-0 text-content-secondary" />
-									</TooltipTrigger>
-									<TooltipContent>
-										{signalTooltipLabel(killedBySignal)}
-									</TooltipContent>
-								</Tooltip>
-							)}
-							{showExitCode && (
-								<span className="rounded px-1.5 py-0.5 font-mono text-2xs leading-none bg-surface-red text-content-destructive">
-									exit {exitCode}
-								</span>
-							)}
-							<CopyButton text={output} label="Copy output" />
-						</div>
-					</div>
-
-					{/* Expand / collapse toggle at the bottom */}
-					{overflows && (
-						<button
-							type="button"
-							aria-expanded={expanded}
-							onClick={() => setExpanded((v) => !v)}
-							className="border-0 bg-transparent m-0 font-[inherit] text-[inherit] flex w-full cursor-pointer items-center justify-center py-0.5 text-content-secondary transition-colors hover:bg-surface-secondary hover:text-content-primary"
-							aria-label={expanded ? "Collapse output" : "Expand output"}
-						>
-							<ChevronDownIcon
-								className={cn(
-									"h-3 w-3 transition-transform",
-									expanded && "rotate-180",
-								)}
+		<ToolCall.Root
+			key={`${shellToolDisplayMode}:${autoDisplayState}`}
+			className="group/proc w-full"
+			status={status}
+			isError={isError}
+			errorMessage={errorMessage || "Failed to read process output"}
+			hasContent={hasOutput}
+			defaultView={defaultView}
+			ariaLabel={(expanded) =>
+				expanded ? "Collapse process output" : "Expand process output"
+			}
+		>
+			<ToolCall.HeaderLayout>
+				<ToolCall.HeaderButton>
+					<ToolCall.LeadingIcon name="process_output" />
+					<ToolCall.Label>
+						{getProcessOutputLabel({
+							command,
+							isRunning,
+							isFailed,
+						})}
+					</ToolCall.Label>
+					<ToolCall.Status />
+					<ToolCall.Chevron />
+				</ToolCall.HeaderButton>
+				{hasHeaderActions && (
+					<ToolCall.HeaderActions>
+						{killedBySignal && !isRunning && (
+							<Tooltip>
+								<TooltipTrigger asChild>
+									<span
+										aria-label={signalTooltipLabel(killedBySignal)}
+										role="img"
+										className="flex shrink-0 items-center text-content-secondary"
+									>
+										<OctagonXIcon aria-hidden className="size-3.5 shrink-0" />
+									</span>
+								</TooltipTrigger>
+								<TooltipContent>
+									{signalTooltipLabel(killedBySignal)}
+								</TooltipContent>
+							</Tooltip>
+						)}
+						{isFailed && (
+							<span className="rounded px-1.5 py-0.5 font-mono text-2xs leading-none bg-surface-red text-content-destructive">
+								exit {exitCode}
+							</span>
+						)}
+						{hasOutput && (
+							<CopyButton
+								text={output}
+								label="Copy output"
+								className="-my-0.5 size-6 p-0 opacity-0 transition-opacity hover:bg-surface-tertiary group-hover/proc:opacity-100 focus-visible:opacity-100"
 							/>
-						</button>
-					)}
-				</>
-			) : (
-				<div className="flex items-center gap-1 px-3 py-1.5">
-					{isRunning && (
-						<LoaderIcon className="h-3.5 w-3.5 shrink-0 animate-spin motion-reduce:animate-none text-content-secondary" />
-					)}
-					{killedBySignal && !isRunning && (
-						<Tooltip>
-							<TooltipTrigger asChild>
-								<OctagonXIcon className="size-3.5 shrink-0 text-content-secondary" />
-							</TooltipTrigger>
-							<TooltipContent>
-								{signalTooltipLabel(killedBySignal)}
-							</TooltipContent>
-						</Tooltip>
-					)}
-					{showExitCode && (
-						<span className="rounded px-1.5 py-0.5 font-mono text-2xs leading-none bg-surface-red text-content-destructive">
-							exit {exitCode}
-						</span>
-					)}
-				</div>
-			)}
-		</div>
+						)}
+					</ToolCall.HeaderActions>
+				)}
+			</ToolCall.HeaderLayout>
+			<ToolCall.Content>
+				<TerminalOutput
+					ariaLabel="Process output"
+					command={command}
+					className="mt-2"
+				>
+					<pre
+						className={cn(
+							"m-0 border-0 whitespace-pre-wrap break-all bg-transparent p-0 font-mono text-xs leading-5",
+							isError ? "text-content-destructive" : "text-content-secondary",
+						)}
+					>
+						{output}
+					</pre>
+				</TerminalOutput>
+			</ToolCall.Content>
+		</ToolCall.Root>
 	);
 };

@@ -3,6 +3,7 @@ package messages
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -14,17 +15,17 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/packages/ssestream"
 	"github.com/anthropics/anthropic-sdk-go/shared/constant"
 	"github.com/google/uuid"
-	mcplib "github.com/mark3labs/mcp-go/mcp"
+	mcplib "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/tidwall/sjson"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/xerrors"
 
 	"cdr.dev/slog/v3"
-	"github.com/coder/coder/v2/aibridge/config"
-	aibcontext "github.com/coder/coder/v2/aibridge/context"
+	"github.com/coder/coder/v2/aibridge/credential"
 	"github.com/coder/coder/v2/aibridge/intercept"
 	"github.com/coder/coder/v2/aibridge/intercept/eventstream"
+	"github.com/coder/coder/v2/aibridge/keypool"
 	"github.com/coder/coder/v2/aibridge/mcp"
 	"github.com/coder/coder/v2/aibridge/recorder"
 	"github.com/coder/coder/v2/aibridge/tracing"
@@ -38,24 +39,21 @@ type StreamingInterception struct {
 func NewStreamingInterceptor(
 	id uuid.UUID,
 	reqPayload RequestPayload,
-	providerName string,
-	cfg config.Anthropic,
-	bedrockCfg *config.AWSBedrock,
+	cfg intercept.Config,
+	cred credential.Credential,
+	bedrock *BedrockRuntime,
 	clientHeaders http.Header,
-	authHeaderName string,
 	tracer trace.Tracer,
-	cred intercept.CredentialInfo,
 ) *StreamingInterception {
 	return &StreamingInterception{interceptionBase: interceptionBase{
-		id:             id,
-		providerName:   providerName,
-		reqPayload:     reqPayload,
-		cfg:            cfg,
-		bedrockCfg:     bedrockCfg,
-		clientHeaders:  clientHeaders,
-		authHeaderName: authHeaderName,
-		tracer:         tracer,
-		credential:     cred,
+		id:               id,
+		reqPayload:       reqPayload,
+		cfg:              cfg,
+		cred:             cred,
+		bedrock:          bedrock,
+		clientHeaders:    clientHeaders,
+		tracer:           tracer,
+		isSmallFastModel: isSmallFastModel(reqPayload.model()),
 	}}
 }
 
@@ -68,7 +66,7 @@ func (*StreamingInterception) Streaming() bool {
 }
 
 func (i *StreamingInterception) TraceAttributes(r *http.Request) []attribute.KeyValue {
-	return i.interceptionBase.baseTraceAttributes(r, true)
+	return i.baseTraceAttributes(r, true)
 }
 
 // ProcessRequest handles a request to /v1/messages.
@@ -101,6 +99,7 @@ func (i *StreamingInterception) ProcessRequest(w http.ResponseWriter, r *http.Re
 	// Allow us to interrupt watch via cancel.
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+
 	r = r.WithContext(ctx) // Rewire context for SSE cancellation.
 
 	logger := i.logger.With(slog.F("model", i.Model()))
@@ -117,7 +116,7 @@ func (i *StreamingInterception) ProcessRequest(w http.ResponseWriter, r *http.Re
 	}
 
 	// Claude Code uses a "small/fast model" for certain tasks.
-	if !i.isSmallFastModel() {
+	if !i.isSmallFastModel {
 		// Only inject tools into "actual" request.
 		i.injectTools()
 	}
@@ -125,12 +124,7 @@ func (i *StreamingInterception) ProcessRequest(w http.ResponseWriter, r *http.Re
 	streamCtx, streamCancel := context.WithCancelCause(ctx)
 	defer streamCancel(xerrors.New("deferred"))
 
-	// TODO(ssncferreira): inject actor headers directly in the client-header
-	//   middleware instead of using SDK options.
 	var opts []option.RequestOption
-	if actor := aibcontext.ActorFromContext(ctx); actor != nil && i.cfg.SendActorHeaders {
-		opts = append(opts, intercept.ActorHeadersAsAnthropicOpts(actor)...)
-	}
 
 	svc, err := i.newMessagesService(streamCtx, opts...)
 	if err != nil {
@@ -152,6 +146,15 @@ func (i *StreamingInterception) ProcessRequest(w http.ResponseWriter, r *http.Re
 	var lastErr error
 	var interceptionErr error
 
+	// Sum the key attempts across all iterations and record once when the
+	// interception completes.
+	var totalKeyAttempts int
+	if cp, ok := credential.AsCentralizedPool(i.cred); ok {
+		defer func() {
+			cp.Pool.RecordAttempts(totalKeyAttempts)
+		}()
+	}
+
 	isFirst := true
 newStream:
 	for {
@@ -161,19 +164,94 @@ newStream:
 			break
 		}
 
-		stream := i.newStream(streamCtx, svc)
+		// Per-iteration walker. An iteration is either an agentic
+		// continuation (sending a tool result back in a new
+		// stream) or a failover retry (previous key marked, try
+		// the next one). A pool-less credential (BYOK, or pool-less
+		// centralized such as Bedrock) has no walker and runs as a
+		// single attempt.
+		streamOpts := []option.RequestOption{i.withBody()}
+		var currentPoolKey *keypool.Key
+		if cp, isPool := credential.AsCentralizedPool(i.cred); isPool {
+			walker := cp.Pool.Walker()
+			key, keyPoolErr := cp.NextKey(walker)
+			if keyPoolErr != nil {
+				// Pool exhausted in this iteration. Relay the error to the
+				// client: as an SSE event if events have already been sent,
+				// or by direct write otherwise.
+				respErr := ResponseErrorFromKeyPool(keyPoolErr)
+				// Record the underlying key-pool error (not the masked 502
+				// envelope) so the recorder can categorize by its kind. The
+				// client still receives respErr below.
+				interceptionErr = xerrors.Errorf("key pool exhausted: %w", keyPoolErr)
+				if events.IsStreaming() {
+					payload, mErr := i.marshal(respErr)
+					if mErr != nil {
+						logger.Warn(ctx, "failed to marshal exhaustion error", slog.Error(mErr))
+					} else if sErr := events.Send(streamCtx, payload); sErr != nil {
+						logger.Warn(ctx, "failed to relay exhaustion error", slog.Error(sErr))
+					}
+				} else {
+					i.writeUpstreamError(w, respErr)
+				}
+				break
+			}
+
+			logger.Debug(credential.WithCredentialInfo(ctx, i.cred), "using centralized api key")
+			currentPoolKey = key
+			streamOpts = append(streamOpts,
+				option.WithAPIKey(key.Value()),
+				// Disable SDK retries because the failover loop handles
+				// retries via key rotation.
+				option.WithMaxRetries(0),
+			)
+			totalKeyAttempts += walker.Attempts()
+		}
+
+		stream := i.newStream(streamCtx, svc, streamOpts...)
 
 		var message anthropic.Message
 		var lastToolName string
+		var serviceTier anthropic.UsageServiceTier
 
 		pendingToolCalls := make(map[string]string)
 
-		for stream.Next() {
-			event := stream.Current()
-			if err := message.Accumulate(event); err != nil {
-				logger.Warn(ctx, "failed to accumulate streaming events", slog.Error(err), slog.F("event", event), slog.F("msg", message.RawJSON()))
-				lastErr = xerrors.Errorf("accumulate event: %w", err)
+		// iterationStarted is per-iteration (reset on every
+		// newStream loop): true once the upstream call has
+		// produced any events for this iteration. While false,
+		// a key-specific failure can still fail over to the
+		// next key. Distinct from events.IsStreaming(), which
+		// is stream-wide and stays true once iteration 1 has
+		// sent any event downstream.
+		var iterationStarted bool
+
+		// accumulateErr is the first accumulation failure in this iteration.
+		// Events are still relayed, but injected tools cannot trust the input.
+		var accumulateErr error
+		var messageStopped bool
+
+		for {
+			if !stream.Next() {
+				// An upstream that closes cleanly before message_stop leaves the
+				// client without a terminal event, so the accumulation failure
+				// must be reported.
+				if accumulateErr != nil && !messageStopped {
+					lastErr = xerrors.Errorf("accumulate event: %w", accumulateErr)
+				}
 				break
+			}
+			iterationStarted = true
+			event := stream.Current()
+			if err := message.Accumulate(event); err != nil && accumulateErr == nil {
+				logger.Warn(ctx, "failed to accumulate streaming events", slog.Error(err), slog.F("event", event), slog.F("msg", message.RawJSON()))
+				accumulateErr = err
+			}
+			if event.Type == string(constant.ValueOf[constant.MessageStop]()) {
+				messageStopped = true
+				if accumulateErr != nil && len(pendingToolCalls) > 0 {
+					lastErr = xerrors.Errorf("accumulate event: %w", accumulateErr)
+					break
+				}
 			}
 
 			// Tool-related handling.
@@ -204,23 +282,9 @@ newStream:
 				}
 			case string(constant.ValueOf[constant.MessageStart]()):
 				start := event.AsMessageStart()
+				serviceTier = start.Message.Usage.ServiceTier
 				accumulateUsage(&cumulativeUsage, start.Message.Usage)
-
-				_ = i.recorder.RecordTokenUsage(streamCtx, &recorder.TokenUsageRecord{
-					InterceptionID:        i.ID().String(),
-					MsgID:                 message.ID,
-					Input:                 start.Message.Usage.InputTokens,
-					Output:                start.Message.Usage.OutputTokens,
-					CacheReadInputTokens:  start.Message.Usage.CacheReadInputTokens,
-					CacheWriteInputTokens: start.Message.Usage.CacheCreationInputTokens,
-					ExtraTokenTypes: map[string]int64{
-						"web_search_requests":      start.Message.Usage.ServerToolUse.WebSearchRequests,
-						"cache_creation_input":     start.Message.Usage.CacheCreationInputTokens, // TODO: remove from ExtraTokenTypes (https://github.com/coder/aibridge/issues/243)
-						"cache_read_input":         start.Message.Usage.CacheReadInputTokens,     // TODO: remove from ExtraTokenTypes (https://github.com/coder/aibridge/issues/243)
-						"cache_ephemeral_1h_input": start.Message.Usage.CacheCreation.Ephemeral1hInputTokens,
-						"cache_ephemeral_5m_input": start.Message.Usage.CacheCreation.Ephemeral5mInputTokens,
-					},
-				})
+				i.recordTokenUsage(streamCtx, message.ID, message.Model, start.Message.Usage)
 
 				if !isFirst {
 					// Don't send message_start unless first message!
@@ -233,11 +297,17 @@ newStream:
 				accumulateUsage(&cumulativeUsage, delta.Usage)
 
 				// Only output tokens should change in message_delta.
-				_ = i.recorder.RecordTokenUsage(streamCtx, &recorder.TokenUsageRecord{
-					InterceptionID: i.ID().String(),
-					MsgID:          message.ID,
-					Output:         delta.Usage.OutputTokens,
+				i.recordTokenUsage(streamCtx, message.ID, message.Model, anthropic.Usage{
+					OutputTokens: delta.Usage.OutputTokens,
+					ServiceTier:  serviceTier,
 				})
+
+				// A turn that stopped for another reason (e.g. max_tokens) may carry
+				// truncated tool input, so injected tools must not run. An empty
+				// stop reason marks an interim delta.
+				if stopReason := delta.Delta.StopReason; stopReason != "" && stopReason != anthropic.StopReasonToolUse {
+					clear(pendingToolCalls)
+				}
 
 				// Don't relay message_delta events which indicate injected tool use.
 				if len(pendingToolCalls) > 0 && i.mcpProxy != nil && i.mcpProxy.GetTool(lastToolName) != nil {
@@ -272,6 +342,7 @@ newStream:
 				// Capture any thinking blocks that were returned.
 				for _, t := range i.extractModelThoughts(&message) {
 					_ = i.recorder.RecordModelThought(ctx, &recorder.ModelThoughtRecord{
+						CreatedAt:      time.Now().UTC(),
 						InterceptionID: i.ID().String(),
 						Content:        t.Content,
 						Metadata:       t.Metadata,
@@ -323,6 +394,7 @@ newStream:
 						res, err := tool.Call(streamCtx, input, i.tracer)
 
 						_ = i.recorder.RecordToolUsage(streamCtx, &recorder.ToolUsageRecord{
+							CreatedAt:       time.Now().UTC(),
 							InterceptionID:  i.ID().String(),
 							MsgID:           message.ID,
 							ToolCallID:      id,
@@ -352,27 +424,30 @@ newStream:
 						var hasValidResult bool
 						for _, content := range res.Content {
 							switch cb := content.(type) {
-							case mcplib.TextContent:
+							case *mcplib.TextContent:
 								toolResult.OfToolResult.Content = append(toolResult.OfToolResult.Content, anthropic.ToolResultBlockParamContentUnion{
 									OfText: &anthropic.TextBlockParam{
 										Text: cb.Text,
 									},
 								})
 								hasValidResult = true
-							case mcplib.EmbeddedResource:
-								switch resource := cb.Resource.(type) {
-								case mcplib.TextResourceContents:
-									val := fmt.Sprintf("Binary resource (MIME: %s, URI: %s): %s",
-										resource.MIMEType, resource.URI, resource.Text)
+							case *mcplib.EmbeddedResource:
+								resource := cb.Resource
+								switch {
+								case resource == nil:
+									logger.Warn(ctx, "embedded resource with no contents")
 									toolResult.OfToolResult.Content = append(toolResult.OfToolResult.Content, anthropic.ToolResultBlockParamContentUnion{
 										OfText: &anthropic.TextBlockParam{
-											Text: val,
+											Text: "Error: embedded resource with no contents",
 										},
 									})
+									toolResult.OfToolResult.IsError = anthropic.Bool(true)
 									hasValidResult = true
-								case mcplib.BlobResourceContents:
+								case resource.Blob != nil:
+									// The SDK decodes base64 during unmarshal; re-encode
+									// the bytes for model-facing text.
 									val := fmt.Sprintf("Binary resource (MIME: %s, URI: %s): %s",
-										resource.MIMEType, resource.URI, resource.Blob)
+										resource.MIMEType, resource.URI, base64.StdEncoding.EncodeToString(resource.Blob))
 									toolResult.OfToolResult.Content = append(toolResult.OfToolResult.Content, anthropic.ToolResultBlockParamContentUnion{
 										OfText: &anthropic.TextBlockParam{
 											Text: val,
@@ -380,13 +455,13 @@ newStream:
 									})
 									hasValidResult = true
 								default:
-									logger.Warn(ctx, "unknown embedded resource type", slog.F("type", fmt.Sprintf("%T", resource)))
+									val := fmt.Sprintf("Binary resource (MIME: %s, URI: %s): %s",
+										resource.MIMEType, resource.URI, resource.Text)
 									toolResult.OfToolResult.Content = append(toolResult.OfToolResult.Content, anthropic.ToolResultBlockParamContentUnion{
 										OfText: &anthropic.TextBlockParam{
-											Text: "Error: unknown embedded resource type",
+											Text: val,
 										},
 									})
-									toolResult.OfToolResult.IsError = anthropic.Bool(true)
 									hasValidResult = true
 								}
 							default:
@@ -428,6 +503,11 @@ newStream:
 
 					// Causes a new stream to be run with updated messages.
 					isFirst = false
+					// Commit the SSE stream before the next iteration so a
+					// later IsStreaming check always takes the SSE branch
+					// instead of racing with the Start goroutine.
+					// sync.Once makes this safe.
+					events.InitiateStream(w)
 					continue newStream
 				}
 
@@ -438,12 +518,19 @@ newStream:
 							continue
 						}
 
+						// A failed accumulation leaves the block's raw JSON, and so
+						// variant.Input, stale; block.Input holds the streamed input.
+						var args recorder.ToolArgs = block.Input
+						if !json.Valid(block.Input) {
+							args = string(block.Input)
+						}
 						_ = i.recorder.RecordToolUsage(streamCtx, &recorder.ToolUsageRecord{
+							CreatedAt:      time.Now().UTC(),
 							InterceptionID: i.ID().String(),
 							MsgID:          message.ID,
 							ToolCallID:     variant.ID,
 							Tool:           variant.Name,
-							Args:           variant.Input,
+							Args:           args,
 							Injected:       false,
 						})
 					}
@@ -470,6 +557,7 @@ newStream:
 
 		if promptFound {
 			_ = i.recorder.RecordPromptUsage(ctx, &recorder.PromptUsageRecord{
+				CreatedAt:      time.Now().UTC(),
 				InterceptionID: i.ID().String(),
 				MsgID:          message.ID,
 				Prompt:         prompt,
@@ -478,40 +566,53 @@ newStream:
 			promptFound = false //nolint:ineffassign // reset to prevent double-recording across newStream iterations
 		}
 
-		if events.IsStreaming() {
-			// Check if the stream encountered any errors.
-			if streamErr := stream.Err(); streamErr != nil {
-				if eventstream.IsUnrecoverableError(streamErr) {
-					logger.Debug(ctx, "stream terminated", slog.Error(streamErr))
-					// We can't reflect an error back if there's a connection error or the request context was canceled.
-				} else if antErr := getErrorResponse(streamErr); antErr != nil {
-					logger.Warn(ctx, "anthropic stream error", slog.Error(streamErr))
-					interceptionErr = antErr
-				} else {
-					logger.Warn(ctx, "unknown stream error", slog.Error(streamErr))
-					// Unfortunately, the Anthropic SDK does not support parsing errors received in the stream
-					// into known types (i.e. [shared.OverloadedError]).
-					// See https://github.com/anthropics/anthropic-sdk-go/blob/v1.12.0/packages/ssestream/ssestream.go#L172-L174
-					// All it does is wrap the payload in an error - which is all we can return, currently.
-					interceptionErr = newErrorResponse(xerrors.Errorf("unknown stream error: %w", streamErr))
-				}
-			} else if lastErr != nil {
-				// Otherwise check if any logical errors occurred during processing.
-				logger.Warn(ctx, "stream processing failed", slog.Error(lastErr))
-				interceptionErr = newErrorResponse(xerrors.Errorf("processing error: %w", lastErr))
-			}
-
-			if interceptionErr != nil {
-				payload, err := i.marshal(interceptionErr)
+		if iterationStarted {
+			// Mid-stream error or logical error: events have
+			// already streamed for this iteration, so the
+			// error is relayed as an SSE event.
+			streamErr := stream.Err()
+			if respErr := i.mapStreamError(ctx, logger, streamErr, lastErr); respErr != nil {
+				interceptionErr = respErr
+				payload, err := i.marshal(respErr)
 				if err != nil {
-					logger.Warn(ctx, "failed to marshal error", slog.Error(err), slog.F("error_payload", fmt.Sprintf("%+v", interceptionErr)))
+					logger.Warn(ctx, "failed to marshal error", slog.Error(err), slog.F("error_payload", fmt.Sprintf("%+v", respErr)))
 				} else if err := events.Send(streamCtx, payload); err != nil {
 					logger.Warn(ctx, "failed to relay error", slog.Error(err), slog.F("payload", payload))
 				}
+			} else if streamErr != nil {
+				// Unrecoverable (e.g., broken pipe, context
+				// canceled): can't relay to the client, but record
+				// the error so it isn't silently swallowed.
+				interceptionErr = streamErr
 			}
 		} else {
-			// Stream has not started yet; write to response if present.
-			i.writeUpstreamError(w, getErrorResponse(stream.Err()))
+			// Pre-stream failure of this iteration. For
+			// centralized requests, mark the key and retry with
+			// the next one.
+			if currentPoolKey != nil && i.markKeyOnError(ctx, currentPoolKey, stream.Err()) {
+				continue newStream
+			}
+			// Non-key error: relay it. Use mapStreamError so that
+			// unknown upstream errors (TCP reset, DNS failure, TLS
+			// error, deadline exceeded) are wrapped in a generic
+			// response instead of producing a silent HTTP 200.
+			respErr := i.mapStreamError(ctx, logger, stream.Err(), lastErr)
+			if respErr != nil {
+				interceptionErr = respErr
+				if events.IsStreaming() {
+					// Prior iterations have streamed, so the SSE
+					// connection is open: inject as an SSE event.
+					payload, mErr := i.marshal(respErr)
+					if mErr != nil {
+						logger.Warn(ctx, "failed to marshal error", slog.Error(mErr))
+					} else if sErr := events.Send(streamCtx, payload); sErr != nil {
+						logger.Warn(ctx, "failed to relay error", slog.Error(sErr))
+					}
+				} else {
+					// No events streamed yet, write the response directly.
+					i.writeUpstreamError(w, respErr)
+				}
+			}
 		}
 
 		shutdownCtx, shutdownCancel := context.WithTimeout(ctx, time.Second*30)
@@ -532,6 +633,35 @@ newStream:
 	}
 
 	return interceptionErr
+}
+
+// mapStreamError converts a mid-stream upstream error or
+// processing error into a relayable ResponseError. Returns nil
+// when the error is unrecoverable, in which case nothing can be
+// relayed back.
+func (*StreamingInterception) mapStreamError(ctx context.Context, logger slog.Logger, streamErr, lastErr error) *ResponseError {
+	if streamErr != nil {
+		if eventstream.IsUnrecoverableError(streamErr) {
+			logger.Debug(ctx, "stream terminated", slog.Error(streamErr))
+			// We can't reflect an error back if there's a connection error or the request context was canceled.
+			return nil
+		}
+		if antErr := ResponseErrorFromAPIError(streamErr); antErr != nil {
+			logger.Warn(ctx, "anthropic stream error", slog.Error(streamErr))
+			return antErr
+		}
+		logger.Warn(ctx, "unknown stream error", slog.Error(streamErr))
+		// Unfortunately, the Anthropic SDK does not support parsing errors received in the stream
+		// into known types (i.e. [shared.OverloadedError]).
+		// See https://github.com/anthropics/anthropic-sdk-go/blob/v1.12.0/packages/ssestream/ssestream.go#L172-L174
+		// All it does is wrap the payload in an error - which is all we can return, currently.
+		return newResponseError(fmt.Sprintf("unknown stream error: %s", streamErr), string(constant.ValueOf[constant.Error]()), http.StatusBadGateway, 0)
+	}
+	if lastErr != nil {
+		logger.Warn(ctx, "stream processing failed", slog.Error(lastErr))
+		return newResponseError(fmt.Sprintf("processing error: %s", lastErr), string(constant.ValueOf[constant.Error]()), http.StatusBadGateway, 0)
+	}
+	return nil
 }
 
 func (i *StreamingInterception) marshalEvent(event anthropic.MessageStreamEventUnion) ([]byte, error) {
@@ -585,9 +715,9 @@ func (*StreamingInterception) encodeForStream(payload []byte, typ string) []byte
 }
 
 // newStream traces svc.NewStreaming() call.
-func (i *StreamingInterception) newStream(ctx context.Context, svc anthropic.MessageService) *ssestream.Stream[anthropic.MessageStreamEventUnion] {
+func (i *StreamingInterception) newStream(ctx context.Context, svc anthropic.MessageService, opts ...option.RequestOption) *ssestream.Stream[anthropic.MessageStreamEventUnion] {
 	_, span := i.tracer.Start(ctx, "Intercept.ProcessRequest.Upstream", trace.WithAttributes(tracing.InterceptionAttributesFromContext(ctx)...))
 	defer span.End()
 
-	return svc.NewStreaming(ctx, anthropic.MessageNewParams{}, i.withBody())
+	return svc.NewStreaming(ctx, anthropic.MessageNewParams{}, opts...)
 }

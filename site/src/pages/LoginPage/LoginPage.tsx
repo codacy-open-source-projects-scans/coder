@@ -1,4 +1,4 @@
-import { type FC, useEffect } from "react";
+import { useEffect } from "react";
 import { useQuery } from "react-query";
 import { Navigate, useLocation } from "react-router";
 import { buildInfo } from "#/api/queries/buildInfo";
@@ -10,7 +10,7 @@ import { retrieveRedirect, sanitizeRedirect } from "#/utils/redirect";
 import { sendDeploymentEvent } from "#/utils/telemetry";
 import { LoginPageView } from "./LoginPageView";
 
-const LoginPage: FC = () => {
+const LoginPage: React.FC = () => {
 	const routerLocation = useLocation();
 	const {
 		isLoading,
@@ -27,12 +27,6 @@ const LoginPage: FC = () => {
 	const { metadata } = useEmbeddedMetadata();
 	const buildInfoQuery = useQuery(buildInfo(metadata["build-info"]));
 	let redirectError: Error | null = null;
-	let redirectUrl: URL | null = null;
-	try {
-		redirectUrl = new URL(redirectTo);
-	} catch {
-		// Do nothing
-	}
 
 	const isApiRouteRedirect =
 		redirectTo.startsWith("/api/v2") ||
@@ -61,12 +55,7 @@ const LoginPage: FC = () => {
 			// error state if it doesn't.
 			redirectError = new Error("unable to redirect");
 		} else {
-			return (
-				<Navigate
-					to={redirectUrl ? redirectUrl.pathname : redirectTo}
-					replace
-				/>
-			);
+			return <Navigate to={sanitizeRedirect(redirectTo)} replace />;
 		}
 	}
 

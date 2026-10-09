@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-playground/validator/v10"
 	"github.com/google/uuid"
 	"golang.org/x/xerrors"
 
@@ -27,7 +29,6 @@ import (
 	"github.com/coder/coder/v2/coderd/searchquery"
 	"github.com/coder/coder/v2/coderd/telemetry"
 	"github.com/coder/coder/v2/coderd/userpassword"
-	"github.com/coder/coder/v2/coderd/util/ptr"
 	"github.com/coder/coder/v2/coderd/util/slice"
 	"github.com/coder/coder/v2/codersdk"
 )
@@ -42,7 +43,7 @@ import (
 // @Tags Agents
 // @Success 200 "Success"
 // @Param user path string true "User ID, name, or me"
-// @Router /debug/{user}/debug-link [get]
+// @Router /api/v2/debug/{user}/debug-link [get]
 // @x-apidocgen {"skip": true}
 func (api *API) userDebugOIDC(rw http.ResponseWriter, r *http.Request) {
 	var (
@@ -80,7 +81,7 @@ func (api *API) userDebugOIDC(rw http.ResponseWriter, r *http.Request) {
 // @Produce json
 // @Tags Users
 // @Success 200 {object} codersdk.OIDCClaimsResponse
-// @Router /users/oidc-claims [get]
+// @Router /api/v2/users/oidc-claims [get]
 func (api *API) userOIDCClaims(rw http.ResponseWriter, r *http.Request) {
 	var (
 		ctx    = r.Context()
@@ -138,7 +139,7 @@ func (api *API) userOIDCClaims(rw http.ResponseWriter, r *http.Request) {
 // @Produce json
 // @Tags Users
 // @Success 200 {object} codersdk.Response
-// @Router /users/first [get]
+// @Router /api/v2/users/first [get]
 func (api *API) firstUser(rw http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	// nolint:gocritic // Getting user count is a system function.
@@ -173,7 +174,7 @@ func (api *API) firstUser(rw http.ResponseWriter, r *http.Request) {
 // @Tags Users
 // @Param request body codersdk.CreateFirstUserRequest true "First user request"
 // @Success 201 {object} codersdk.CreateFirstUserResponse
-// @Router /users/first [post]
+// @Router /api/v2/users/first [post]
 func (api *API) postFirstUser(rw http.ResponseWriter, r *http.Request) {
 	// The first user can also be created via oidc, so if making changes to the flow,
 	// ensure that the oidc flow is also updated.
@@ -224,6 +225,7 @@ func (api *API) postFirstUser(rw http.ResponseWriter, r *http.Request) {
 			CompanyName: createUser.TrialInfo.CompanyName,
 			Country:     createUser.TrialInfo.Country,
 			Developers:  createUser.TrialInfo.Developers,
+			Source:      codersdk.LicensorTrialSourceNewUser,
 		})
 		if err != nil {
 			httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
@@ -253,7 +255,7 @@ func (api *API) postFirstUser(rw http.ResponseWriter, r *http.Request) {
 			Password: createUser.Password,
 			// There's no reason to create the first user as dormant, since you have
 			// to login immediately anyways.
-			UserStatus:      ptr.Ref(codersdk.UserStatusActive),
+			UserStatus:      new(codersdk.UserStatusActive),
 			OrganizationIDs: []uuid.UUID{defaultOrg.ID},
 		},
 		LoginType:          database.LoginTypePassword,
@@ -312,7 +314,7 @@ func (api *API) postFirstUser(rw http.ResponseWriter, r *http.Request) {
 // @Param limit query int false "Page limit"
 // @Param offset query int false "Page offset"
 // @Success 200 {object} codersdk.GetUsersResponse
-// @Router /users [get]
+// @Router /api/v2/users [get]
 func (api *API) users(rw http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	users, userCount, ok := api.GetUsers(rw, r)
@@ -390,6 +392,8 @@ func (api *API) GetUsers(rw http.ResponseWriter, r *http.Request) ([]database.Us
 		AfterID:          paginationParams.AfterID,
 		Search:           params.Search,
 		Name:             params.Name,
+		ExactUsername:    params.ExactUsername,
+		ExactEmail:       params.ExactEmail,
 		Status:           params.Status,
 		IsServiceAccount: params.IsServiceAccount,
 		RbacRole:         params.RbacRole,
@@ -430,9 +434,9 @@ func (api *API) GetUsers(rw http.ResponseWriter, r *http.Request) ([]database.Us
 // @Accept json
 // @Produce json
 // @Tags Users
-// @Param request body codersdk.CreateUserRequestWithOrgs true "Create user request"
+// @Param request body codersdk.CreateUserRequest true "Create user request"
 // @Success 201 {object} codersdk.User
-// @Router /users [post]
+// @Router /api/v2/users [post]
 func (api *API) postUser(rw http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	auditor := *api.Auditor.Load()
@@ -486,6 +490,13 @@ func (api *API) postUser(rw http.ResponseWriter, r *http.Request) {
 	} else if req.UserLoginType == "" {
 		// Default to password auth
 		req.UserLoginType = codersdk.LoginTypePassword
+	}
+
+	if !req.ServiceAccount && req.UserLoginType == codersdk.LoginTypeNone {
+		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
+			Message: "Login type 'none' requires a service account.",
+		})
+		return
 	}
 
 	if req.UserLoginType != codersdk.LoginTypePassword && req.Password != "" {
@@ -615,6 +626,7 @@ func (api *API) postUser(rw http.ResponseWriter, r *http.Request) {
 		CreateUserRequestWithOrgs: req,
 		LoginType:                 loginType,
 		accountCreatorName:        accountCreator.Name,
+		RBACRoles:                 req.Roles,
 	})
 
 	if dbauthz.IsNotAuthorizedError(err) {
@@ -649,7 +661,7 @@ func (api *API) postUser(rw http.ResponseWriter, r *http.Request) {
 // @Tags Users
 // @Param user path string true "User ID, name, or me"
 // @Success 200
-// @Router /users/{user} [delete]
+// @Router /api/v2/users/{user} [delete]
 func (api *API) deleteUser(rw http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	auditor := *api.Auditor.Load()
@@ -732,6 +744,7 @@ func (api *API) deleteUser(rw http.ResponseWriter, r *http.Request) {
 				"deleted_account_name":      user.Username,
 				"deleted_account_user_name": user.Name,
 				"initiator":                 accountDeleter.Name,
+				"account_type":              accountTypeLabel(user),
 			},
 			"api-users-delete",
 			user.ID,
@@ -755,7 +768,7 @@ func (api *API) deleteUser(rw http.ResponseWriter, r *http.Request) {
 // @Tags Users
 // @Param user path string true "User ID, username, or me"
 // @Success 200 {object} codersdk.User
-// @Router /users/{user} [get]
+// @Router /api/v2/users/{user} [get]
 func (api *API) userByName(rw http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	user := httpmw.UserParam(r)
@@ -783,7 +796,7 @@ func (api *API) userByName(rw http.ResponseWriter, r *http.Request) {
 // @Param user path string true "User ID, username, or me"
 // @Param template_id query string true "Template ID"
 // @Success 200 {array} codersdk.UserParameter
-// @Router /users/{user}/autofill-parameters [get]
+// @Router /api/v2/users/{user}/autofill-parameters [get]
 func (api *API) userAutofillParameters(rw http.ResponseWriter, r *http.Request) {
 	user := httpmw.UserParam(r)
 
@@ -834,7 +847,7 @@ func (api *API) userAutofillParameters(rw http.ResponseWriter, r *http.Request) 
 // @Tags Users
 // @Param user path string true "User ID, name, or me"
 // @Success 200 {object} codersdk.UserLoginType
-// @Router /users/{user}/login-type [get]
+// @Router /api/v2/users/{user}/login-type [get]
 func (*API) userLoginType(rw http.ResponseWriter, r *http.Request) {
 	var (
 		ctx  = r.Context()
@@ -855,6 +868,156 @@ func (*API) userLoginType(rw http.ResponseWriter, r *http.Request) {
 	})
 }
 
+type updateUserEmailAuditFields struct {
+	OldEmail string `json:"old_email,omitempty"`
+	NewEmail string `json:"new_email,omitempty"`
+}
+
+// putUserEmailExperimental updates a user's email address and revokes all of
+// their Coder credentials.
+//
+// @Summary Update user email
+// @ID update-user-email-experimental
+// @Security CoderSessionToken
+// @Accept json
+// @Tags Users
+// @Param request body codersdk.UpdateUserEmailRequest true "Update email request"
+// @Success 204
+// @Router /api/experimental/users/email [put]
+// @x-apidocgen {"skip": true}
+func (api *API) putUserEmailExperimental(rw http.ResponseWriter, r *http.Request) {
+	var (
+		ctx         = r.Context()
+		apiKey      = httpmw.APIKey(r)
+		auditor     = *api.Auditor.Load()
+		auditFields = &updateUserEmailAuditFields{}
+		aReq, done  = audit.InitRequest[database.User](rw, &audit.RequestParams{
+			Audit:            auditor,
+			Log:              api.Logger,
+			Request:          r,
+			Action:           database.AuditActionWrite,
+			AdditionalFields: auditFields,
+		})
+	)
+	defer done()
+
+	actor, err := api.Database.GetUserByID(ctx, apiKey.UserID)
+	if err != nil {
+		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
+			Message: "Failed to get acting user.",
+			Detail:  err.Error(),
+		})
+		return
+	}
+	aReq.Old = actor
+
+	if !slices.Contains(actor.RBACRoles, rbac.RoleOwner().String()) {
+		httpapi.ResourceNotFound(rw)
+		return
+	}
+
+	var rawReq struct {
+		OldEmail string `json:"old_email"`
+		NewEmail string `json:"new_email"`
+	}
+	if !httpapi.Read(ctx, rw, r, &rawReq) {
+		return
+	}
+	auditFields.OldEmail = rawReq.OldEmail
+	auditFields.NewEmail = rawReq.NewEmail
+
+	req := codersdk.UpdateUserEmailRequest{
+		OldEmail: rawReq.OldEmail,
+		NewEmail: rawReq.NewEmail,
+	}
+	if err := httpapi.Validate.Struct(req); err != nil {
+		var validationErrors validator.ValidationErrors
+		if errors.As(err, &validationErrors) {
+			apiErrors := make([]codersdk.ValidationError, 0, len(validationErrors))
+			for _, validationError := range validationErrors {
+				apiErrors = append(apiErrors, codersdk.ValidationError{
+					Field:  validationError.Field(),
+					Detail: fmt.Sprintf("Validation failed for tag %q with value: \"%v\"", validationError.Tag(), validationError.Value()),
+				})
+			}
+			httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
+				Message:     "Validation failed.",
+				Validations: apiErrors,
+			})
+			return
+		}
+		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
+			Message: "Internal error validating request body payload.",
+			Detail:  err.Error(),
+		})
+		return
+	}
+
+	var updated database.User
+	err = api.Database.InTx(func(tx database.Store) error {
+		target, err := tx.GetUserByEmailOrUsername(ctx, database.GetUserByEmailOrUsernameParams{
+			Email: req.OldEmail,
+		})
+		if err != nil {
+			return err
+		}
+		aReq.Old = target
+
+		if target.ID == actor.ID {
+			return errUpdateUserEmailSelf
+		}
+		if strings.EqualFold(req.OldEmail, req.NewEmail) {
+			return errUpdateUserEmailUnchanged
+		}
+
+		updated, err = tx.UpdateUserEmail(ctx, database.UpdateUserEmailParams{
+			OldEmail:  req.OldEmail,
+			NewEmail:  req.NewEmail,
+			UpdatedAt: dbtime.Now(),
+		})
+		if err != nil {
+			return xerrors.Errorf("update user email: %w", err)
+		}
+
+		//nolint:gocritic // This break-glass operation must revoke all API keys
+		// owned by the target user, not only keys visible to the acting owner.
+		return tx.DeleteAPIKeysByUserID(dbauthz.AsAPIKeyRevoker(ctx, target.ID), target.ID)
+	}, nil)
+	if err != nil {
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			httpapi.ResourceNotFound(rw)
+		case errors.Is(err, errUpdateUserEmailSelf):
+			httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
+				Message: "You cannot update your own email address.",
+			})
+		case errors.Is(err, errUpdateUserEmailUnchanged):
+			httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
+				Message: "The old and new email addresses must differ beyond letter casing.",
+			})
+		case database.IsUniqueViolation(err, database.UniqueIndexUsersEmail),
+			database.IsUniqueViolation(err, database.UniqueUsersEmailLowerIndex):
+			httpapi.Write(ctx, rw, http.StatusConflict, codersdk.Response{
+				Message: "A user with the new email address already exists.",
+			})
+		default:
+			httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
+				Message: "Failed to update user email.",
+				Detail:  err.Error(),
+			})
+		}
+		return
+	}
+
+	aReq.New = updated
+	rw.WriteHeader(http.StatusNoContent)
+}
+
+var (
+	errUpdateUserEmailSelf      = xerrors.New("cannot update own email")
+	errUpdateUserEmailUnchanged = xerrors.New("old and new email are equal")
+)
+
 // @Summary Update user profile
 // @ID update-user-profile
 // @Security CoderSessionToken
@@ -864,7 +1027,7 @@ func (*API) userLoginType(rw http.ResponseWriter, r *http.Request) {
 // @Param user path string true "User ID, name, or me"
 // @Param request body codersdk.UpdateUserProfileRequest true "Updated profile"
 // @Success 200 {object} codersdk.User
-// @Router /users/{user}/profile [put]
+// @Router /api/v2/users/{user}/profile [put]
 func (api *API) putUserProfile(rw http.ResponseWriter, r *http.Request) {
 	var (
 		ctx               = r.Context()
@@ -916,11 +1079,19 @@ func (api *API) putUserProfile(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Avatars for password and none login types are managed manually. For
+	// other login types the avatar is synced from the identity provider on
+	// login, so we preserve the existing value and ignore any submitted one.
+	avatarURL := user.AvatarURL
+	if user.LoginType == database.LoginTypePassword || user.LoginType == database.LoginTypeNone {
+		avatarURL = params.AvatarURL
+	}
+
 	updatedUserProfile, err := api.Database.UpdateUserProfile(ctx, database.UpdateUserProfileParams{
 		ID:        user.ID,
 		Email:     user.Email,
 		Name:      params.Name,
-		AvatarURL: user.AvatarURL,
+		AvatarURL: avatarURL,
 		Username:  params.Username,
 		UpdatedAt: dbtime.Now(),
 	})
@@ -955,7 +1126,7 @@ func (api *API) putUserProfile(rw http.ResponseWriter, r *http.Request) {
 // @Tags Users
 // @Param user path string true "User ID, name, or me"
 // @Success 200 {object} codersdk.User
-// @Router /users/{user}/status/suspend [put]
+// @Router /api/v2/users/{user}/status/suspend [put]
 func (api *API) putSuspendUserAccount() func(rw http.ResponseWriter, r *http.Request) {
 	return api.putUserStatus(database.UserStatusSuspended)
 }
@@ -967,7 +1138,7 @@ func (api *API) putSuspendUserAccount() func(rw http.ResponseWriter, r *http.Req
 // @Tags Users
 // @Param user path string true "User ID, name, or me"
 // @Success 200 {object} codersdk.User
-// @Router /users/{user}/status/activate [put]
+// @Router /api/v2/users/{user}/status/activate [put]
 func (api *API) putActivateUserAccount() func(rw http.ResponseWriter, r *http.Request) {
 	return api.putUserStatus(database.UserStatusActive)
 }
@@ -1062,6 +1233,7 @@ func (api *API) notifyUserStatusChanged(ctx context.Context, actingUserName stri
 			"suspended_account_name":      targetUser.Username,
 			"suspended_account_user_name": targetUser.Name,
 			"initiator":                   actingUserName,
+			"account_type":                accountTypeLabel(targetUser),
 		}
 		data = map[string]any{
 			"user": map[string]any{"id": targetUser.ID, "name": targetUser.Name, "email": targetUser.Email},
@@ -1073,6 +1245,7 @@ func (api *API) notifyUserStatusChanged(ctx context.Context, actingUserName stri
 			"activated_account_name":      targetUser.Username,
 			"activated_account_user_name": targetUser.Name,
 			"initiator":                   actingUserName,
+			"account_type":                accountTypeLabel(targetUser),
 		}
 		data = map[string]any{
 			"user": map[string]any{"id": targetUser.ID, "name": targetUser.Name, "email": targetUser.Email},
@@ -1116,42 +1289,45 @@ func (api *API) notifyUserStatusChanged(ctx context.Context, actingUserName stri
 // @Tags Users
 // @Param user path string true "User ID, name, or me"
 // @Success 200 {object} codersdk.UserAppearanceSettings
-// @Router /users/{user}/appearance [get]
+// @Router /api/v2/users/{user}/appearance [get]
 func (api *API) userAppearanceSettings(rw http.ResponseWriter, r *http.Request) {
 	var (
 		ctx  = r.Context()
 		user = httpmw.UserParam(r)
 	)
 
-	themePreference, err := api.Database.GetUserThemePreference(ctx, user.ID)
+	settings, err := api.Database.GetUserAppearanceSettings(ctx, user.ID)
 	if err != nil {
-		if !errors.Is(err, sql.ErrNoRows) {
-			httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
-				Message: "Error reading user settings.",
-				Detail:  err.Error(),
-			})
-			return
-		}
-
-		themePreference = ""
+		writeUserSettingsReadError(ctx, rw, err)
+		return
 	}
 
-	terminalFont, err := api.Database.GetUserTerminalFont(ctx, user.ID)
-	if err != nil {
-		if !errors.Is(err, sql.ErrNoRows) {
-			httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
-				Message: "Error reading user settings.",
-				Detail:  err.Error(),
-			})
-			return
-		}
+	httpapi.Write(ctx, rw, http.StatusOK, userAppearanceSettingsFromRow(settings))
+}
 
-		terminalFont = ""
+func userAppearanceSettingsFromRow(settings database.GetUserAppearanceSettingsRow) codersdk.UserAppearanceSettings {
+	return codersdk.UserAppearanceSettings{
+		ThemePreference: settings.ThemePreference,
+		ThemeMode:       codersdk.ThemeMode(settings.ThemeMode),
+		ThemeLight:      settings.ThemeLight,
+		ThemeDark:       settings.ThemeDark,
+		TerminalFont:    codersdk.TerminalFontName(settings.TerminalFont),
 	}
+}
 
-	httpapi.Write(ctx, rw, http.StatusOK, codersdk.UserAppearanceSettings{
-		ThemePreference: themePreference,
-		TerminalFont:    codersdk.TerminalFontName(terminalFont),
+func isLegacyAutoThemePreference(themePreference string) bool {
+	switch themePreference {
+	case "auto", "auto-protan-deuter", "auto-tritan":
+		return true
+	default:
+		return false
+	}
+}
+
+func writeUserSettingsReadError(ctx context.Context, rw http.ResponseWriter, err error) {
+	httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
+		Message: "Error reading user settings.",
+		Detail:  err.Error(),
 	})
 }
 
@@ -1164,7 +1340,7 @@ func (api *API) userAppearanceSettings(rw http.ResponseWriter, r *http.Request) 
 // @Param user path string true "User ID, name, or me"
 // @Param request body codersdk.UpdateUserAppearanceSettingsRequest true "New appearance settings"
 // @Success 200 {object} codersdk.UserAppearanceSettings
-// @Router /users/{user}/appearance [put]
+// @Router /api/v2/users/{user}/appearance [put]
 func (api *API) putUserAppearanceSettings(rw http.ResponseWriter, r *http.Request) {
 	var (
 		ctx  = r.Context()
@@ -1183,34 +1359,89 @@ func (api *API) putUserAppearanceSettings(rw http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	updatedThemePreference, err := api.Database.UpdateUserThemePreference(ctx, database.UpdateUserThemePreferenceParams{
-		UserID:          user.ID,
-		ThemePreference: params.ThemePreference,
-	})
+	// theme_mode is optional for backward compatibility. Older CLI
+	// clients do not know about theme_mode or the sync slots, so an
+	// omitted mode must leave those fields untouched instead of replacing
+	// them with single-mode defaults. Legacy auto values are the exception:
+	// the old UI used them to mean sync-with-system, so clearing theme_mode
+	// lets modern clients migrate them on read.
+	themeModeProvided := params.ThemeMode != codersdk.ThemeModeUnset
+	updateThemeMode := themeModeProvided
+	isSyncMode := params.ThemeMode == codersdk.ThemeModeSync
+	isSingleMode := params.ThemeMode == codersdk.ThemeModeSingle
+	updateThemeLight := isSyncMode || (isSingleMode && params.ThemeLight != "")
+	updateThemeDark := isSyncMode || (isSingleMode && params.ThemeDark != "")
+	themeMode := params.ThemeMode
+	if !updateThemeMode && isLegacyAutoThemePreference(params.ThemePreference) {
+		updateThemeMode = true
+		themeMode = codersdk.ThemeModeUnset
+	}
+
+	var updatedSettings database.GetUserAppearanceSettingsRow
+
+	err := api.Database.InTx(func(tx database.Store) error {
+		_, err := tx.UpdateUserThemePreference(ctx, database.UpdateUserThemePreferenceParams{
+			UserID:          user.ID,
+			ThemePreference: params.ThemePreference,
+		})
+		if err != nil {
+			return xerrors.Errorf("update user theme preference: %w", err)
+		}
+
+		if updateThemeMode {
+			_, err = tx.UpdateUserThemeMode(ctx, database.UpdateUserThemeModeParams{
+				UserID:    user.ID,
+				ThemeMode: string(themeMode),
+			})
+			if err != nil {
+				return xerrors.Errorf("update user theme mode: %w", err)
+			}
+		}
+
+		if updateThemeLight {
+			_, err = tx.UpdateUserThemeLight(ctx, database.UpdateUserThemeLightParams{
+				UserID:     user.ID,
+				ThemeLight: params.ThemeLight,
+			})
+			if err != nil {
+				return xerrors.Errorf("update user theme light: %w", err)
+			}
+		}
+
+		if updateThemeDark {
+			_, err = tx.UpdateUserThemeDark(ctx, database.UpdateUserThemeDarkParams{
+				UserID:    user.ID,
+				ThemeDark: params.ThemeDark,
+			})
+			if err != nil {
+				return xerrors.Errorf("update user theme dark: %w", err)
+			}
+		}
+
+		_, err = tx.UpdateUserTerminalFont(ctx, database.UpdateUserTerminalFontParams{
+			UserID:       user.ID,
+			TerminalFont: string(params.TerminalFont),
+		})
+		if err != nil {
+			return xerrors.Errorf("update user terminal font: %w", err)
+		}
+
+		updatedSettings, err = tx.GetUserAppearanceSettings(ctx, user.ID)
+		if err != nil {
+			return xerrors.Errorf("get updated user appearance settings: %w", err)
+		}
+
+		return nil
+	}, nil)
 	if err != nil {
 		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
-			Message: "Internal error updating user theme preference.",
+			Message: "Internal error updating user appearance settings.",
 			Detail:  err.Error(),
 		})
 		return
 	}
 
-	updatedTerminalFont, err := api.Database.UpdateUserTerminalFont(ctx, database.UpdateUserTerminalFontParams{
-		UserID:       user.ID,
-		TerminalFont: string(params.TerminalFont),
-	})
-	if err != nil {
-		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
-			Message: "Internal error updating user terminal font.",
-			Detail:  err.Error(),
-		})
-		return
-	}
-
-	httpapi.Write(ctx, rw, http.StatusOK, codersdk.UserAppearanceSettings{
-		ThemePreference: updatedThemePreference.Value,
-		TerminalFont:    codersdk.TerminalFontName(updatedTerminalFont.Value),
-	})
+	httpapi.Write(ctx, rw, http.StatusOK, userAppearanceSettingsFromRow(updatedSettings))
 }
 
 // @Summary Get user preference settings
@@ -1220,23 +1451,12 @@ func (api *API) putUserAppearanceSettings(rw http.ResponseWriter, r *http.Reques
 // @Tags Users
 // @Param user path string true "User ID, name, or me"
 // @Success 200 {object} codersdk.UserPreferenceSettings
-// @Router /users/{user}/preferences [get]
+// @Router /api/v2/users/{user}/preferences [get]
 func (api *API) userPreferenceSettings(rw http.ResponseWriter, r *http.Request) {
 	var (
 		ctx  = r.Context()
 		user = httpmw.UserParam(r)
 	)
-
-	taskAlertDismissed, err := api.Database.GetUserTaskNotificationAlertDismissed(ctx, user.ID)
-	if err != nil {
-		if !errors.Is(err, sql.ErrNoRows) {
-			httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
-				Message: "Error reading user preference settings.",
-				Detail:  err.Error(),
-			})
-			return
-		}
-	}
 
 	thinkingMode, err := api.Database.GetUserThinkingDisplayMode(ctx, user.ID)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -1247,9 +1467,48 @@ func (api *API) userPreferenceSettings(rw http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	shellToolMode, err := api.Database.GetUserShellToolDisplayMode(ctx, user.ID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
+			Message: "Error reading user preference settings.",
+			Detail:  err.Error(),
+		})
+		return
+	}
+
+	codeDiffMode, err := api.Database.GetUserCodeDiffDisplayMode(ctx, user.ID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
+			Message: "Error reading user preference settings.",
+			Detail:  err.Error(),
+		})
+		return
+	}
+
+	collapseAssistantSteps, err := api.Database.GetUserCollapseAssistantSteps(ctx, user.ID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
+			Message: "Error reading user preference settings.",
+			Detail:  err.Error(),
+		})
+		return
+	}
+
+	agentChatSendShortcut, err := api.Database.GetUserAgentChatSendShortcut(ctx, user.ID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
+			Message: "Error reading user preference settings.",
+			Detail:  err.Error(),
+		})
+		return
+	}
+
 	httpapi.Write(ctx, rw, http.StatusOK, codersdk.UserPreferenceSettings{
-		TaskNotificationAlertDismissed: taskAlertDismissed,
-		ThinkingDisplayMode:            sanitizeThinkingDisplayMode(thinkingMode),
+		ThinkingDisplayMode:    sanitizeThinkingDisplayMode(thinkingMode),
+		ShellToolDisplayMode:   sanitizeShellToolDisplayMode(shellToolMode),
+		CodeDiffDisplayMode:    sanitizeAgentDisplayMode(codeDiffMode),
+		CollapseAssistantSteps: collapseAssistantSteps,
+		AgentChatSendShortcut:  sanitizeAgentChatSendShortcut(agentChatSendShortcut),
 	})
 }
 
@@ -1262,7 +1521,7 @@ func (api *API) userPreferenceSettings(rw http.ResponseWriter, r *http.Request) 
 // @Param user path string true "User ID, name, or me"
 // @Param request body codersdk.UpdateUserPreferenceSettingsRequest true "New preference settings"
 // @Success 200 {object} codersdk.UserPreferenceSettings
-// @Router /users/{user}/preferences [put]
+// @Router /api/v2/users/{user}/preferences [put]
 func (api *API) putUserPreferenceSettings(rw http.ResponseWriter, r *http.Request) {
 	var (
 		ctx  = r.Context()
@@ -1279,68 +1538,175 @@ func (api *API) putUserPreferenceSettings(rw http.ResponseWriter, r *http.Reques
 		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
 			Message: "Invalid thinking display mode.",
 			Validations: []codersdk.ValidationError{
-				{Field: "thinking_display_mode", Detail: "must be one of: auto, preview, always_expanded, always_collapsed"},
+				{Field: "thinking_display_mode", Detail: thinkingDisplayModeValidationDetail},
 			},
 		})
 		return
 	}
-	var err error
-
-	var updatedTaskAlertDismissed bool
-	if params.TaskNotificationAlertDismissed != nil {
-		updatedTaskAlertDismissed, err = api.Database.UpdateUserTaskNotificationAlertDismissed(ctx, database.UpdateUserTaskNotificationAlertDismissedParams{
-			UserID:                         user.ID,
-			TaskNotificationAlertDismissed: *params.TaskNotificationAlertDismissed,
+	if params.ShellToolDisplayMode != "" &&
+		!slices.Contains(codersdk.ValidAgentDisplayModes, params.ShellToolDisplayMode) {
+		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
+			Message: "Invalid shell tool display mode.",
+			Validations: []codersdk.ValidationError{
+				{Field: "shell_tool_display_mode", Detail: agentDisplayModeValidationDetail},
+			},
 		})
-		if err != nil {
-			httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
-				Message: "Internal error updating user task notification alert dismissed.",
-				Detail:  err.Error(),
+		return
+	}
+	if params.CodeDiffDisplayMode != "" &&
+		!slices.Contains(codersdk.ValidAgentDisplayModes, params.CodeDiffDisplayMode) {
+		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
+			Message: "Invalid code diff display mode.",
+			Validations: []codersdk.ValidationError{
+				{Field: "code_diff_display_mode", Detail: agentDisplayModeValidationDetail},
+			},
+		})
+		return
+	}
+	if params.AgentChatSendShortcut != "" &&
+		!slices.Contains(codersdk.ValidAgentChatSendShortcuts, params.AgentChatSendShortcut) {
+		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
+			Message: "Invalid agent chat send shortcut.",
+			Validations: []codersdk.ValidationError{
+				{Field: "agent_chat_send_shortcut", Detail: agentChatSendShortcutValidationDetail},
+			},
+		})
+		return
+	}
+	var settings codersdk.UserPreferenceSettings
+	err := api.Database.InTx(func(tx database.Store) error {
+		if params.ThinkingDisplayMode != "" {
+			updated, err := tx.UpdateUserThinkingDisplayMode(ctx, database.UpdateUserThinkingDisplayModeParams{
+				UserID:              user.ID,
+				ThinkingDisplayMode: string(params.ThinkingDisplayMode),
 			})
+			if err != nil {
+				return newUserPreferenceSettingsAPIError("Internal error updating thinking display mode.", err)
+			}
+			settings.ThinkingDisplayMode = sanitizeThinkingDisplayMode(updated)
+		} else {
+			stored, err := tx.GetUserThinkingDisplayMode(ctx, user.ID)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return newUserPreferenceSettingsAPIError("Error reading thinking display mode.", err)
+			}
+			settings.ThinkingDisplayMode = sanitizeThinkingDisplayMode(stored)
+		}
+
+		if params.ShellToolDisplayMode != "" {
+			updated, err := tx.UpdateUserShellToolDisplayMode(ctx, database.UpdateUserShellToolDisplayModeParams{
+				UserID:               user.ID,
+				ShellToolDisplayMode: string(params.ShellToolDisplayMode),
+			})
+			if err != nil {
+				return newUserPreferenceSettingsAPIError("Internal error updating shell tool display mode.", err)
+			}
+			settings.ShellToolDisplayMode = sanitizeShellToolDisplayMode(updated)
+		} else {
+			stored, err := tx.GetUserShellToolDisplayMode(ctx, user.ID)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return newUserPreferenceSettingsAPIError("Error reading shell tool display mode.", err)
+			}
+			settings.ShellToolDisplayMode = sanitizeShellToolDisplayMode(stored)
+		}
+
+		if params.CodeDiffDisplayMode != "" {
+			updated, err := tx.UpdateUserCodeDiffDisplayMode(ctx, database.UpdateUserCodeDiffDisplayModeParams{
+				UserID:              user.ID,
+				CodeDiffDisplayMode: string(params.CodeDiffDisplayMode),
+			})
+			if err != nil {
+				return newUserPreferenceSettingsAPIError("Internal error updating code diff display mode.", err)
+			}
+			settings.CodeDiffDisplayMode = sanitizeAgentDisplayMode(updated)
+		} else {
+			stored, err := tx.GetUserCodeDiffDisplayMode(ctx, user.ID)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return newUserPreferenceSettingsAPIError("Error reading code diff display mode.", err)
+			}
+			settings.CodeDiffDisplayMode = sanitizeAgentDisplayMode(stored)
+		}
+
+		if params.CollapseAssistantSteps != nil {
+			updated, err := tx.UpdateUserCollapseAssistantSteps(ctx, database.UpdateUserCollapseAssistantStepsParams{
+				UserID:                 user.ID,
+				CollapseAssistantSteps: *params.CollapseAssistantSteps,
+			})
+			if err != nil {
+				return newUserPreferenceSettingsAPIError("Internal error updating user collapse assistant steps.", err)
+			}
+			settings.CollapseAssistantSteps = updated
+		} else {
+			stored, err := tx.GetUserCollapseAssistantSteps(ctx, user.ID)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return newUserPreferenceSettingsAPIError("Error reading collapse assistant steps.", err)
+			}
+			settings.CollapseAssistantSteps = stored
+		}
+
+		if params.AgentChatSendShortcut != "" {
+			updated, err := tx.UpdateUserAgentChatSendShortcut(ctx, database.UpdateUserAgentChatSendShortcutParams{
+				UserID:                user.ID,
+				AgentChatSendShortcut: string(params.AgentChatSendShortcut),
+			})
+			if err != nil {
+				return newUserPreferenceSettingsAPIError("Internal error updating agent chat send shortcut.", err)
+			}
+			settings.AgentChatSendShortcut = sanitizeAgentChatSendShortcut(updated)
+		} else {
+			stored, err := tx.GetUserAgentChatSendShortcut(ctx, user.ID)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return newUserPreferenceSettingsAPIError("Error reading agent chat send shortcut.", err)
+			}
+			settings.AgentChatSendShortcut = sanitizeAgentChatSendShortcut(stored)
+		}
+		return nil
+	}, database.DefaultTXOptions().WithID("user_preference_settings"))
+	if err != nil {
+		var apiErr userPreferenceSettingsAPIError
+		if errors.As(err, &apiErr) {
+			httpapi.Write(ctx, rw, apiErr.statusCode, apiErr.response)
 			return
 		}
-	} else {
-		updatedTaskAlertDismissed, err = api.Database.GetUserTaskNotificationAlertDismissed(ctx, user.ID)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
-				Message: "Error reading task notification alert dismissed.",
-				Detail:  err.Error(),
-			})
-			return
-		}
+		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
+			Message: "Internal error updating user preference settings.",
+			Detail:  err.Error(),
+		})
+		return
 	}
 
-	var resolvedThinkingMode codersdk.ThinkingDisplayMode
-	if params.ThinkingDisplayMode != "" {
-		updated, err := api.Database.UpdateUserThinkingDisplayMode(ctx, database.UpdateUserThinkingDisplayModeParams{
-			UserID:              user.ID,
-			ThinkingDisplayMode: string(params.ThinkingDisplayMode),
-		})
-		if err != nil {
-			httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
-				Message: "Internal error updating thinking display mode.",
-				Detail:  err.Error(),
-			})
-			return
-		}
-		resolvedThinkingMode = codersdk.ThinkingDisplayMode(updated)
-	} else {
-		stored, err := api.Database.GetUserThinkingDisplayMode(ctx, user.ID)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
-				Message: "Error reading thinking display mode.",
-				Detail:  err.Error(),
-			})
-			return
-		}
-		resolvedThinkingMode = sanitizeThinkingDisplayMode(stored)
-	}
-
-	httpapi.Write(ctx, rw, http.StatusOK, codersdk.UserPreferenceSettings{
-		TaskNotificationAlertDismissed: updatedTaskAlertDismissed,
-		ThinkingDisplayMode:            resolvedThinkingMode,
-	})
+	httpapi.Write(ctx, rw, http.StatusOK, settings)
 }
+
+type userPreferenceSettingsAPIError struct {
+	statusCode int
+	response   codersdk.Response
+	err        error
+}
+
+func newUserPreferenceSettingsAPIError(message string, err error) userPreferenceSettingsAPIError {
+	return userPreferenceSettingsAPIError{
+		statusCode: http.StatusInternalServerError,
+		response: codersdk.Response{
+			Message: message,
+			Detail:  err.Error(),
+		},
+		err: err,
+	}
+}
+
+func (e userPreferenceSettingsAPIError) Error() string {
+	return fmt.Sprintf("%s: %s", e.response.Message, e.err)
+}
+
+func (e userPreferenceSettingsAPIError) Unwrap() error {
+	return e.err
+}
+
+const (
+	thinkingDisplayModeValidationDetail   = "must be one of: auto, preview, always_expanded, always_collapsed"
+	agentDisplayModeValidationDetail      = "must be one of: auto, always_expanded, always_collapsed"
+	agentChatSendShortcutValidationDetail = "must be one of: enter, modifier_enter"
+)
 
 func sanitizeThinkingDisplayMode(raw string) codersdk.ThinkingDisplayMode {
 	mode := codersdk.ThinkingDisplayMode(raw)
@@ -1348,6 +1714,30 @@ func sanitizeThinkingDisplayMode(raw string) codersdk.ThinkingDisplayMode {
 		return mode
 	}
 	return codersdk.ThinkingDisplayModeAuto
+}
+
+func sanitizeShellToolDisplayMode(raw string) codersdk.AgentDisplayMode {
+	mode := sanitizeAgentDisplayMode(raw)
+	if mode == "" {
+		return codersdk.AgentDisplayModeAlwaysCollapsed
+	}
+	return mode
+}
+
+func sanitizeAgentDisplayMode(raw string) codersdk.AgentDisplayMode {
+	mode := codersdk.AgentDisplayMode(raw)
+	if slices.Contains(codersdk.ValidAgentDisplayModes, mode) {
+		return mode
+	}
+	return ""
+}
+
+func sanitizeAgentChatSendShortcut(raw string) codersdk.AgentChatSendShortcut {
+	shortcut := codersdk.AgentChatSendShortcut(raw)
+	if slices.Contains(codersdk.ValidAgentChatSendShortcuts, shortcut) {
+		return shortcut
+	}
+	return codersdk.AgentChatSendShortcutEnter
 }
 
 func isValidFontName(font codersdk.TerminalFontName) bool {
@@ -1362,7 +1752,7 @@ func isValidFontName(font codersdk.TerminalFontName) bool {
 // @Param user path string true "User ID, name, or me"
 // @Param request body codersdk.UpdateUserPasswordRequest true "Update password request"
 // @Success 204
-// @Router /users/{user}/password [put]
+// @Router /api/v2/users/{user}/password [put]
 func (api *API) putUserPassword(rw http.ResponseWriter, r *http.Request) {
 	var (
 		ctx               = r.Context()
@@ -1383,6 +1773,24 @@ func (api *API) putUserPassword(rw http.ResponseWriter, r *http.Request) {
 	if !api.Authorize(r, policy.ActionUpdatePersonal, user) {
 		httpapi.ResourceNotFound(rw)
 		return
+	}
+
+	// Only owners can change the password of another owner.
+	if apiKey.UserID != user.ID && slices.Contains(user.RBACRoles, rbac.RoleOwner().String()) {
+		actingUser, err := api.Database.GetUserByID(ctx, apiKey.UserID)
+		if err != nil {
+			httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
+				Message: "Internal error fetching acting user.",
+				Detail:  err.Error(),
+			})
+			return
+		}
+		if !slices.Contains(actingUser.RBACRoles, rbac.RoleOwner().String()) {
+			httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
+				Message: "Only owners can change the password of an owner.",
+			})
+			return
+		}
 	}
 
 	if !httpapi.Read(ctx, rw, r, &params) {
@@ -1468,7 +1876,9 @@ func (api *API) putUserPassword(rw http.ResponseWriter, r *http.Request) {
 			return xerrors.Errorf("update user hashed password: %w", err)
 		}
 
-		err = tx.DeleteAPIKeysByUserID(ctx, user.ID)
+		//nolint:gocritic // Password resets must revoke all keys owned by the
+		// target user, not just keys addressable by the caller's actor.
+		err = tx.DeleteAPIKeysByUserID(dbauthz.AsAPIKeyRevoker(ctx, user.ID), user.ID)
 		if err != nil {
 			return xerrors.Errorf("delete api keys by user ID: %w", err)
 		}
@@ -1497,7 +1907,7 @@ func (api *API) putUserPassword(rw http.ResponseWriter, r *http.Request) {
 // @Tags Users
 // @Param user path string true "User ID, name, or me"
 // @Success 200 {object} codersdk.User
-// @Router /users/{user}/roles [get]
+// @Router /api/v2/users/{user}/roles [get]
 func (api *API) userRoles(rw http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	user := httpmw.UserParam(r)
@@ -1543,7 +1953,7 @@ func (api *API) userRoles(rw http.ResponseWriter, r *http.Request) {
 // @Param user path string true "User ID, name, or me"
 // @Param request body codersdk.UpdateRoles true "Update roles request"
 // @Success 200 {object} codersdk.User
-// @Router /users/{user}/roles [put]
+// @Router /api/v2/users/{user}/roles [put]
 func (api *API) putUserRoles(rw http.ResponseWriter, r *http.Request) {
 	var (
 		ctx = r.Context()
@@ -1620,7 +2030,7 @@ func (api *API) putUserRoles(rw http.ResponseWriter, r *http.Request) {
 // @Tags Users
 // @Param user path string true "User ID, name, or me"
 // @Success 200 {array} codersdk.Organization
-// @Router /users/{user}/organizations [get]
+// @Router /api/v2/users/{user}/organizations [get]
 func (api *API) organizationsByUser(rw http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	user := httpmw.UserParam(r)
@@ -1662,7 +2072,7 @@ func (api *API) organizationsByUser(rw http.ResponseWriter, r *http.Request) {
 // @Param user path string true "User ID, name, or me"
 // @Param organizationname path string true "Organization name"
 // @Success 200 {object} codersdk.Organization
-// @Router /users/{user}/organizations/{organizationname} [get]
+// @Router /api/v2/users/{user}/organizations/{organizationname} [get]
 func (api *API) organizationByUserAndName(rw http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	organizationName := chi.URLParam(r, "organizationname")
@@ -1748,11 +2158,12 @@ func (api *API) CreateUser(ctx context.Context, store database.Store, req Create
 			return xerrors.Errorf("generate user gitsshkey: %w", err)
 		}
 		_, err = tx.InsertGitSSHKey(ctx, database.InsertGitSSHKeyParams{
-			UserID:     user.ID,
-			CreatedAt:  dbtime.Now(),
-			UpdatedAt:  dbtime.Now(),
-			PrivateKey: privateKey,
-			PublicKey:  publicKey,
+			UserID:          user.ID,
+			CreatedAt:       dbtime.Now(),
+			UpdatedAt:       dbtime.Now(),
+			PrivateKey:      privateKey,
+			PrivateKeyKeyID: sql.NullString{}, // dbcrypt will set as required
+			PublicKey:       publicKey,
 		})
 		if err != nil {
 			return xerrors.Errorf("insert user gitsshkey: %w", err)
@@ -1783,6 +2194,8 @@ func (api *API) CreateUser(ctx context.Context, store database.Store, req Create
 		return user, xerrors.Errorf("find user admins: %w", err)
 	}
 
+	accountType := accountTypeLabel(user)
+
 	for _, u := range userAdmins {
 		if u.ID == user.ID {
 			// If the new user is an admin, don't notify them about themselves.
@@ -1797,6 +2210,7 @@ func (api *API) CreateUser(ctx context.Context, store database.Store, req Create
 				"created_account_name":      user.Username,
 				"created_account_user_name": user.Name,
 				"initiator":                 req.accountCreatorName,
+				"account_type":              accountType,
 			},
 			map[string]any{
 				"user": map[string]any{"id": user.ID, "name": user.Name, "email": user.Email},
@@ -1809,6 +2223,15 @@ func (api *API) CreateUser(ctx context.Context, store database.Store, req Create
 	}
 
 	return user, err
+}
+
+// accountTypeLabel returns the notification label value that account lifecycle
+// templates branch on to describe the account as a user or a service account.
+func accountTypeLabel(u database.User) string {
+	if u.IsServiceAccount {
+		return "service"
+	}
+	return "user"
 }
 
 // findUserAdmins fetches all users with user admin permission including owners.

@@ -1,5 +1,4 @@
 import { ArrowDownIcon, ArrowUpIcon } from "lucide-react";
-import type { FC } from "react";
 import { Badge } from "#/components/Badge/Badge";
 import {
 	Tooltip,
@@ -10,15 +9,13 @@ import {
 import { JsonPrettyPrinter } from "./JsonPrettyPrinter";
 import { roundTokenDisplay } from "./utils";
 
-interface TokenBadgesProps {
-	size?: "xs" | "sm" | "md";
+type TokenBadgesProps = {
 	inputTokens: number;
 	outputTokens: number;
 	tokenUsageMetadata?: Record<string, unknown>;
-}
+};
 
-export const TokenBadges: FC<TokenBadgesProps> = ({
-	size = "sm",
+export const TokenBadges: React.FC<TokenBadgesProps> = ({
 	inputTokens,
 	outputTokens,
 	tokenUsageMetadata,
@@ -27,29 +24,29 @@ export const TokenBadges: FC<TokenBadgesProps> = ({
 		<TooltipProvider>
 			<Tooltip>
 				<TooltipTrigger asChild>
-					<span>
-						<Badge className="gap-0 rounded-e-none" size={size}>
-							<ArrowDownIcon className="size-icon-lg flex-shrink-0" />
+					<button
+						type="button"
+						className="m-0 flex items-center whitespace-nowrap border-0 bg-transparent p-0 text-inherit rounded-md focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-content-link"
+					>
+						<Badge className="gap-0.5 rounded-e-none">
+							<ArrowDownIcon className="size-icon-xs shrink-0" />
 							<span className="truncate min-w-0">
 								{roundTokenDisplay(inputTokens)}
 							</span>
 						</Badge>
-						<Badge
-							className="gap-0 bg-surface-tertiary rounded-s-none"
-							size={size}
-						>
-							<ArrowUpIcon className="size-icon-lg flex-shrink-0" />
+						<Badge className="gap-0.5 bg-surface-tertiary rounded-s-none">
+							<ArrowUpIcon className="size-icon-xs shrink-0" />
 							<span className="truncate min-w-0">
 								{roundTokenDisplay(outputTokens)}
 							</span>
 						</Badge>
-					</span>
+					</button>
 				</TooltipTrigger>
 				<TooltipContent>
 					<div className="grid grid-cols-2 gap-8">
 						<div>
 							<div className="flex items-center gap-1">
-								<ArrowDownIcon className="size-icon-sm flex-shrink-0" />
+								<ArrowDownIcon className="size-icon-sm shrink-0" />
 								<span className="text-content-primary text-sm">
 									Input tokens
 								</span>
@@ -64,7 +61,7 @@ export const TokenBadges: FC<TokenBadgesProps> = ({
 
 						<div>
 							<div className="flex items-center gap-1">
-								<ArrowUpIcon className="size-icon-sm flex-shrink-0" />
+								<ArrowUpIcon className="size-icon-sm shrink-0" />
 								<span className="text-content-primary text-sm">
 									Output tokens
 								</span>

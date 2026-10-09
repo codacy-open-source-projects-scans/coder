@@ -1,5 +1,4 @@
 import { CopyIcon } from "lucide-react";
-import type { FC } from "react";
 import { CheckIcon } from "#/components/AnimatedIcons/Check";
 import { Button, type ButtonProps } from "#/components/Button/Button";
 import {
@@ -15,7 +14,7 @@ type CopyButtonProps = ButtonProps & {
 	tooltipSide?: "top" | "bottom" | "left" | "right";
 };
 
-export const CopyButton: FC<CopyButtonProps> = ({
+export const CopyButton: React.FC<CopyButtonProps> = ({
 	text,
 	label,
 	tooltipSide,
@@ -29,11 +28,11 @@ export const CopyButton: FC<CopyButtonProps> = ({
 				<Button
 					size="icon"
 					variant="subtle"
+					aria-label={label}
 					onClick={() => copyToClipboard(text)}
 					{...buttonProps}
 				>
 					{showCopiedSuccess ? <CheckIcon /> : <CopyIcon />}
-					<span className="sr-only">{label}</span>
 				</Button>
 			</TooltipTrigger>
 			<TooltipContent side={tooltipSide}>{label}</TooltipContent>

@@ -1,31 +1,28 @@
 import { ArrowUpRightIcon } from "lucide-react";
-import type { FC } from "react";
-import type { BuildInfoResponse, Experiment } from "#/api/typesGenerated";
+import type { BuildInfoResponse } from "#/api/typesGenerated";
+import { PREMIUM_PAGE_PATH } from "#/components/Paywall/Paywall";
 import {
 	Sidebar as BaseSidebar,
 	SettingsSidebarNavItem as SidebarNavItem,
 } from "#/components/Sidebar/Sidebar";
 import type { Permissions } from "#/modules/permissions";
-import { getPrereleaseFlag } from "#/utils/buildInfo";
 
-interface DeploymentSidebarViewProps {
+type DeploymentSidebarViewProps = {
 	/** Site-wide permissions. */
 	permissions: Permissions;
 	showOrganizations: boolean;
-	hasPremiumLicense: boolean;
-	experiments: Experiment[];
+	hidePremiumTab: boolean;
 	buildInfo: BuildInfoResponse;
-}
+};
 
 /**
  * Displays navigation for deployment settings.  If active, highlight the main
  * menu heading.
  */
-export const DeploymentSidebarView: FC<DeploymentSidebarViewProps> = ({
+export const DeploymentSidebarView: React.FC<DeploymentSidebarViewProps> = ({
 	permissions,
 	showOrganizations,
-	hasPremiumLicense,
-	experiments,
+	hidePremiumTab,
 	buildInfo,
 }) => {
 	return (
@@ -52,13 +49,11 @@ export const DeploymentSidebarView: FC<DeploymentSidebarViewProps> = ({
 						External Authentication
 					</SidebarNavItem>
 				)}
-				{permissions.viewDeploymentConfig &&
-					(experiments.includes("oauth2") ||
-						getPrereleaseFlag(buildInfo) === "devel") && (
-						<SidebarNavItem href="/deployment/oauth2-provider/apps">
-							OAuth2 Applications
-						</SidebarNavItem>
-					)}
+				{permissions.viewDeploymentConfig && buildInfo.oauth2_provider && (
+					<SidebarNavItem href="/deployment/oauth2-provider/apps">
+						OAuth2 Applications
+					</SidebarNavItem>
+				)}
 				{permissions.viewDeploymentConfig && (
 					<SidebarNavItem href="/deployment/network">Network</SidebarNavItem>
 				)}
@@ -75,11 +70,7 @@ export const DeploymentSidebarView: FC<DeploymentSidebarViewProps> = ({
 						Observability
 					</SidebarNavItem>
 				)}
-				{permissions.viewDeploymentConfig && (
-					<SidebarNavItem href="/deployment/ai-governance">
-						AI Governance
-					</SidebarNavItem>
-				)}
+
 				{permissions.viewAllUsers && (
 					<SidebarNavItem href="/deployment/users">Users</SidebarNavItem>
 				)}
@@ -102,14 +93,9 @@ export const DeploymentSidebarView: FC<DeploymentSidebarViewProps> = ({
 						</div>
 					</SidebarNavItem>
 				)}
-				{!hasPremiumLicense && (
-					<SidebarNavItem href="/deployment/premium">Premium</SidebarNavItem>
-				)}
-				{permissions.editDeploymentConfig && (
-					<SidebarNavItem href="/agents/settings/agents">
-						<div className="flex flex-row items-center gap-1">
-							Manage Coder Agents <ArrowUpRightIcon size={16} />
-						</div>
+				{!hidePremiumTab && (
+					<SidebarNavItem href={PREMIUM_PAGE_PATH}>
+						Trial Upgrade
 					</SidebarNavItem>
 				)}
 			</div>

@@ -2,7 +2,6 @@ package codersdk
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -108,6 +107,14 @@ type GetUsersResponse struct {
 	Count int    `json:"count"`
 }
 
+// Trial request source origination reported to the licensor.
+const (
+	// LicensorTrialSourceNewUser is the first user setup flow.
+	LicensorTrialSourceNewUser = "NewUser"
+	// LicensorTrialSourceProduct is a request from within the product in-app trial request
+	LicensorTrialSourceProduct = "Product"
+)
+
 // @typescript-ignore LicensorTrialRequest
 type LicensorTrialRequest struct {
 	DeploymentID string `json:"deployment_id"`
@@ -157,26 +164,7 @@ type CreateFirstUserResponse struct {
 	OrganizationID uuid.UUID `json:"organization_id" format:"uuid"`
 }
 
-// CreateUserRequest
-// Deprecated: Use CreateUserRequestWithOrgs instead. This will be removed.
-// TODO: When removing, we should rename CreateUserRequestWithOrgs -> CreateUserRequest
-// Then alias CreateUserRequestWithOrgs to CreateUserRequest.
-// @typescript-ignore CreateUserRequest
 type CreateUserRequest struct {
-	Email    string `json:"email" validate:"required,email" format:"email"`
-	Username string `json:"username" validate:"required,username"`
-	Name     string `json:"name" validate:"user_real_name"`
-	Password string `json:"password"`
-	// UserLoginType defaults to LoginTypePassword.
-	UserLoginType LoginType `json:"login_type"`
-	// DisableLogin sets the user's login type to 'none'. This prevents the user
-	// from being able to use a password or any other authentication method to login.
-	// Deprecated: Set UserLoginType=LoginTypeDisabled instead.
-	DisableLogin   bool      `json:"disable_login"`
-	OrganizationID uuid.UUID `json:"organization_id" validate:"" format:"uuid"`
-}
-
-type CreateUserRequestWithOrgs struct {
 	Email    string `json:"email" validate:"required_unless=ServiceAccount true,omitempty,email" format:"email"`
 	Username string `json:"username" validate:"required,username"`
 	Name     string `json:"name" validate:"user_real_name"`
@@ -189,39 +177,29 @@ type CreateUserRequestWithOrgs struct {
 	OrganizationIDs []uuid.UUID `json:"organization_ids" validate:"" format:"uuid"`
 	// Service accounts are admin-managed accounts that cannot login.
 	ServiceAccount bool `json:"service_account,omitempty"`
+	// Roles is an optional list of site-level roles to assign at creation.
+	Roles []string `json:"roles,omitempty"`
 }
 
-// UnmarshalJSON implements the unmarshal for the legacy param "organization_id".
-// To accommodate multiple organizations, the field has been switched to a slice.
-// The previous field will just be appended to the slice.
-// Note in the previous behavior, omitting the field would result in the
-// default org being applied, but that is no longer the case.
-// TODO: Remove this method in it's entirety after some period of time.
-// This will be released in v1.16.0, and is associated with the multiple orgs
-// feature.
-func (r *CreateUserRequestWithOrgs) UnmarshalJSON(data []byte) error {
-	// By using a type alias, we prevent an infinite recursion when unmarshalling.
-	// This allows us to use the default unmarshal behavior of the original type.
-	type AliasedReq CreateUserRequestWithOrgs
-	type DeprecatedCreateUserRequest struct {
-		AliasedReq
-		OrganizationID *uuid.UUID `json:"organization_id" format:"uuid"`
-	}
-	var dep DeprecatedCreateUserRequest
-	err := json.Unmarshal(data, &dep)
-	if err != nil {
-		return err
-	}
-	*r = CreateUserRequestWithOrgs(dep.AliasedReq)
-	if dep.OrganizationID != nil {
-		r.OrganizationIDs = append(r.OrganizationIDs, *dep.OrganizationID)
-	}
-	return nil
-}
+// CreateUserRequestWithOrgs is kept for callers that predate the rename.
+// Deprecated: Use CreateUserRequest instead.
+// @typescript-ignore CreateUserRequestWithOrgs
+type CreateUserRequestWithOrgs = CreateUserRequest
 
 type UpdateUserProfileRequest struct {
 	Username string `json:"username" validate:"required,username"`
 	Name     string `json:"name" validate:"user_real_name"`
+	// AvatarURL is only applied for users whose login type is password or
+	// none. For other login types the avatar is synced from the identity
+	// provider on login, so a submitted value is ignored.
+	AvatarURL string `json:"avatar_url" format:"uri"`
+}
+
+// UpdateUserEmailRequest changes a user's email by matching their current
+// email address. This API is experimental and may change without notice.
+type UpdateUserEmailRequest struct {
+	OldEmail string `json:"old_email" validate:"required,email" format:"email"`
+	NewEmail string `json:"new_email" validate:"required,email" format:"email"`
 }
 
 type ValidateUserPasswordRequest struct {
@@ -250,24 +228,82 @@ const (
 	TerminalFontJetBrainsMono TerminalFontName = "jetbrains-mono"
 )
 
+type ThemeMode string
+
+const (
+	// ThemeModeUnset is the server-side default when the user has never
+	// set a theme_mode. It is also stored for legacy auto preferences so
+	// clients can migrate the old sync-with-system setting. Clients should
+	// inspect ThemePreference for legacy auto values before treating unset
+	// mode as ThemeModeSingle for backward compatibility with PR #24672.
+	ThemeModeUnset  ThemeMode = ""
+	ThemeModeSync   ThemeMode = "sync"
+	ThemeModeSingle ThemeMode = "single"
+)
+
 type UserAppearanceSettings struct {
-	ThemePreference string           `json:"theme_preference"`
-	TerminalFont    TerminalFontName `json:"terminal_font"`
+	// ThemePreference is the legacy single-field appearance setting. In
+	// "single" mode it mirrors the active theme. In "sync" mode modern
+	// clients normally mirror the active OS slot, but older clients can
+	// update only this field, so it may diverge from ThemeLight or
+	// ThemeDark until a modern client saves the full appearance state
+	// again.
+	ThemePreference string    `json:"theme_preference"`
+	ThemeMode       ThemeMode `json:"theme_mode"`
+	// Ignored when ThemeMode is "single"
+	ThemeLight string `json:"theme_light"`
+	// Ignored when ThemeMode is "single"
+	ThemeDark    string           `json:"theme_dark"`
+	TerminalFont TerminalFontName `json:"terminal_font"`
 }
 
 type UpdateUserAppearanceSettingsRequest struct {
-	ThemePreference string           `json:"theme_preference" validate:"required"`
-	TerminalFont    TerminalFontName `json:"terminal_font" validate:"required"`
+	ThemePreference string `json:"theme_preference" validate:"required"`
+	// ThemeMode is optional for backward compatibility. When empty,
+	// the server leaves theme_mode, theme_light, and theme_dark
+	// unchanged so older CLI clients do not erase sync-mode settings.
+	// Legacy auto preferences are the exception: they clear theme_mode
+	// so clients can migrate the old sync-with-system setting.
+	ThemeMode ThemeMode `json:"theme_mode" validate:"omitempty,oneof=sync single"`
+	// ThemeLight is required when ThemeMode is "sync". In "single"
+	// mode an empty value means "preserve the previously persisted
+	// slot" rather than "clear the slot", so partial updates that send
+	// only one slot keep the other intact.
+	ThemeLight string `json:"theme_light" validate:"required_if=ThemeMode sync,omitempty,oneof=light light-protan-deuter light-tritan dark dark-protan-deuter dark-tritan"`
+	// ThemeDark is required when ThemeMode is "sync". In "single" mode
+	// an empty value means "preserve the previously persisted slot"
+	// rather than "clear the slot", so partial updates that send only
+	// one slot keep the other intact.
+	ThemeDark    string           `json:"theme_dark" validate:"required_if=ThemeMode sync,omitempty,oneof=light light-protan-deuter light-tritan dark dark-protan-deuter dark-tritan"`
+	TerminalFont TerminalFontName `json:"terminal_font" validate:"required"`
 }
 
 type UserPreferenceSettings struct {
-	TaskNotificationAlertDismissed bool                `json:"task_notification_alert_dismissed"`
-	ThinkingDisplayMode            ThinkingDisplayMode `json:"thinking_display_mode"`
+	ThinkingDisplayMode    ThinkingDisplayMode   `json:"thinking_display_mode"`
+	ShellToolDisplayMode   AgentDisplayMode      `json:"shell_tool_display_mode"`
+	CodeDiffDisplayMode    AgentDisplayMode      `json:"code_diff_display_mode"`
+	CollapseAssistantSteps bool                  `json:"collapse_assistant_steps"`
+	AgentChatSendShortcut  AgentChatSendShortcut `json:"agent_chat_send_shortcut"`
 }
 
 type UpdateUserPreferenceSettingsRequest struct {
-	TaskNotificationAlertDismissed *bool               `json:"task_notification_alert_dismissed,omitempty"`
-	ThinkingDisplayMode            ThinkingDisplayMode `json:"thinking_display_mode,omitempty"`
+	ThinkingDisplayMode    ThinkingDisplayMode   `json:"thinking_display_mode,omitempty"`
+	ShellToolDisplayMode   AgentDisplayMode      `json:"shell_tool_display_mode,omitempty"`
+	CodeDiffDisplayMode    AgentDisplayMode      `json:"code_diff_display_mode,omitempty"`
+	CollapseAssistantSteps *bool                 `json:"collapse_assistant_steps,omitempty"`
+	AgentChatSendShortcut  AgentChatSendShortcut `json:"agent_chat_send_shortcut,omitempty"`
+}
+
+type AgentChatSendShortcut string
+
+const (
+	AgentChatSendShortcutEnter         AgentChatSendShortcut = "enter"
+	AgentChatSendShortcutModifierEnter AgentChatSendShortcut = "modifier_enter"
+)
+
+var ValidAgentChatSendShortcuts = []AgentChatSendShortcut{
+	AgentChatSendShortcutEnter,
+	AgentChatSendShortcutModifierEnter,
 }
 
 type ThinkingDisplayMode string
@@ -284,6 +320,20 @@ var ValidThinkingDisplayModes = []ThinkingDisplayMode{
 	ThinkingDisplayModePreview,
 	ThinkingDisplayModeAlwaysExpanded,
 	ThinkingDisplayModeAlwaysCollapsed,
+}
+
+type AgentDisplayMode string
+
+const (
+	AgentDisplayModeAuto            AgentDisplayMode = "auto"
+	AgentDisplayModeAlwaysExpanded  AgentDisplayMode = "always_expanded"
+	AgentDisplayModeAlwaysCollapsed AgentDisplayMode = "always_collapsed"
+)
+
+var ValidAgentDisplayModes = []AgentDisplayMode{
+	AgentDisplayModeAuto,
+	AgentDisplayModeAlwaysExpanded,
+	AgentDisplayModeAlwaysCollapsed,
 }
 
 type UpdateUserPasswordRequest struct {
@@ -421,7 +471,7 @@ func (c *Client) UserAutofillParameters(ctx context.Context, user string, templa
 	}
 
 	var params []UserParameter
-	return params, json.NewDecoder(res.Body).Decode(&params)
+	return params, ReadBodyAsJSON(res, &params)
 }
 
 // HasFirstUser returns whether the first user has been created.
@@ -460,29 +510,11 @@ func (c *Client) CreateFirstUser(ctx context.Context, req CreateFirstUserRequest
 		return CreateFirstUserResponse{}, ReadBodyAsError(res)
 	}
 	var resp CreateFirstUserResponse
-	return resp, json.NewDecoder(res.Body).Decode(&resp)
+	return resp, ReadBodyAsJSON(res, &resp)
 }
 
-// CreateUser
-// Deprecated: Use CreateUserWithOrgs instead. This will be removed.
-// TODO: When removing, we should rename CreateUserWithOrgs -> CreateUser
-// with an alias of CreateUserWithOrgs.
+// CreateUser creates a new user.
 func (c *Client) CreateUser(ctx context.Context, req CreateUserRequest) (User, error) {
-	if req.DisableLogin {
-		req.UserLoginType = LoginTypeNone
-	}
-	return c.CreateUserWithOrgs(ctx, CreateUserRequestWithOrgs{
-		Email:           req.Email,
-		Username:        req.Username,
-		Name:            req.Name,
-		Password:        req.Password,
-		UserLoginType:   req.UserLoginType,
-		OrganizationIDs: []uuid.UUID{req.OrganizationID},
-	})
-}
-
-// CreateUserWithOrgs creates a new user.
-func (c *Client) CreateUserWithOrgs(ctx context.Context, req CreateUserRequestWithOrgs) (User, error) {
 	res, err := c.Request(ctx, http.MethodPost, "/api/v2/users", req)
 	if err != nil {
 		return User{}, err
@@ -492,7 +524,13 @@ func (c *Client) CreateUserWithOrgs(ctx context.Context, req CreateUserRequestWi
 		return User{}, ReadBodyAsError(res)
 	}
 	var user User
-	return user, json.NewDecoder(res.Body).Decode(&user)
+	return user, ReadBodyAsJSON(res, &user)
+}
+
+// CreateUserWithOrgs creates a new user.
+// Deprecated: Use CreateUser instead.
+func (c *Client) CreateUserWithOrgs(ctx context.Context, req CreateUserRequest) (User, error) {
+	return c.CreateUser(ctx, req)
 }
 
 // DeleteUser deletes a user.
@@ -521,7 +559,21 @@ func (c *Client) UpdateUserProfile(ctx context.Context, user string, req UpdateU
 		return User{}, ReadBodyAsError(res)
 	}
 	var resp User
-	return resp, json.NewDecoder(res.Body).Decode(&resp)
+	return resp, ReadBodyAsJSON(res, &resp)
+}
+
+// UpdateUserEmail changes a user's email address. This API is experimental and
+// may change without notice.
+func (c *Client) UpdateUserEmail(ctx context.Context, req UpdateUserEmailRequest) error {
+	res, err := c.Request(ctx, http.MethodPut, "/api/experimental/users/email", req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusNoContent {
+		return ReadBodyAsError(res)
+	}
+	return nil
 }
 
 // ValidateUserPassword validates the complexity of a user password and that it is secured enough.
@@ -535,7 +587,7 @@ func (c *Client) ValidateUserPassword(ctx context.Context, req ValidateUserPassw
 		return ValidateUserPasswordResponse{}, ReadBodyAsError(res)
 	}
 	var resp ValidateUserPasswordResponse
-	return resp, json.NewDecoder(res.Body).Decode(&resp)
+	return resp, ReadBodyAsJSON(res, &resp)
 }
 
 // UpdateUserStatus sets the user status to the given status
@@ -560,7 +612,7 @@ func (c *Client) UpdateUserStatus(ctx context.Context, user string, status UserS
 	}
 
 	var resp User
-	return resp, json.NewDecoder(res.Body).Decode(&resp)
+	return resp, ReadBodyAsJSON(res, &resp)
 }
 
 // GetUserAppearanceSettings fetches the appearance settings for a user.
@@ -574,7 +626,7 @@ func (c *Client) GetUserAppearanceSettings(ctx context.Context, user string) (Us
 		return UserAppearanceSettings{}, ReadBodyAsError(res)
 	}
 	var resp UserAppearanceSettings
-	return resp, json.NewDecoder(res.Body).Decode(&resp)
+	return resp, ReadBodyAsJSON(res, &resp)
 }
 
 // UpdateUserAppearanceSettings updates the appearance settings for a user.
@@ -588,7 +640,7 @@ func (c *Client) UpdateUserAppearanceSettings(ctx context.Context, user string, 
 		return UserAppearanceSettings{}, ReadBodyAsError(res)
 	}
 	var resp UserAppearanceSettings
-	return resp, json.NewDecoder(res.Body).Decode(&resp)
+	return resp, ReadBodyAsJSON(res, &resp)
 }
 
 // GetUserPreferenceSettings fetches the preference settings for a user.
@@ -602,7 +654,7 @@ func (c *Client) GetUserPreferenceSettings(ctx context.Context, user string) (Us
 		return UserPreferenceSettings{}, ReadBodyAsError(res)
 	}
 	var resp UserPreferenceSettings
-	return resp, json.NewDecoder(res.Body).Decode(&resp)
+	return resp, ReadBodyAsJSON(res, &resp)
 }
 
 // UpdateUserPreferenceSettings updates the preference settings for a user.
@@ -616,7 +668,7 @@ func (c *Client) UpdateUserPreferenceSettings(ctx context.Context, user string, 
 		return UserPreferenceSettings{}, ReadBodyAsError(res)
 	}
 	var resp UserPreferenceSettings
-	return resp, json.NewDecoder(res.Body).Decode(&resp)
+	return resp, ReadBodyAsJSON(res, &resp)
 }
 
 // UpdateUserPassword updates a user password.
@@ -644,7 +696,7 @@ func (c *Client) PostOrganizationMember(ctx context.Context, organizationID uuid
 		return OrganizationMember{}, ReadBodyAsError(res)
 	}
 	var member OrganizationMember
-	return member, json.NewDecoder(res.Body).Decode(&member)
+	return member, ReadBodyAsJSON(res, &member)
 }
 
 // DeleteOrganizationMember removes a user from an organization
@@ -722,7 +774,7 @@ func (c *Client) OrganizationMember(ctx context.Context, organizationIdent, user
 		return OrganizationMemberWithUserData{}, ReadBodyAsError(res)
 	}
 	var member OrganizationMemberWithUserData
-	return member, json.NewDecoder(res.Body).Decode(&member)
+	return member, ReadBodyAsJSON(res, &member)
 }
 
 // OrganizationMembers lists all members in an organization
@@ -740,7 +792,7 @@ func (c *Client) OrganizationMembers(ctx context.Context, organizationID uuid.UU
 		return nil, ReadBodyAsError(res)
 	}
 	var members []OrganizationMemberWithUserData
-	return members, json.NewDecoder(res.Body).Decode(&members)
+	return members, ReadBodyAsJSON(res, &members)
 }
 
 // OrganizationMembers lists filtered and paginated members in an organization
@@ -759,7 +811,7 @@ func (c *Client) OrganizationMembersPaginated(ctx context.Context, organizationI
 		return PaginatedMembersResponse{}, ReadBodyAsError(res)
 	}
 	var membersRes PaginatedMembersResponse
-	return membersRes, json.NewDecoder(res.Body).Decode(&membersRes)
+	return membersRes, ReadBodyAsJSON(res, &membersRes)
 }
 
 // UpdateUserRoles grants the userID the specified roles.
@@ -774,7 +826,7 @@ func (c *Client) UpdateUserRoles(ctx context.Context, user string, req UpdateRol
 		return User{}, ReadBodyAsError(res)
 	}
 	var resp User
-	return resp, json.NewDecoder(res.Body).Decode(&resp)
+	return resp, ReadBodyAsJSON(res, &resp)
 }
 
 // UpdateOrganizationMemberRoles grants the userID the specified roles in an org.
@@ -789,7 +841,7 @@ func (c *Client) UpdateOrganizationMemberRoles(ctx context.Context, organization
 		return OrganizationMember{}, ReadBodyAsError(res)
 	}
 	var member OrganizationMember
-	return member, json.NewDecoder(res.Body).Decode(&member)
+	return member, ReadBodyAsJSON(res, &member)
 }
 
 // UserRoles returns all roles the user has
@@ -803,7 +855,7 @@ func (c *Client) UserRoles(ctx context.Context, user string) (UserRoles, error) 
 		return UserRoles{}, ReadBodyAsError(res)
 	}
 	var roles UserRoles
-	return roles, json.NewDecoder(res.Body).Decode(&roles)
+	return roles, ReadBodyAsJSON(res, &roles)
 }
 
 // UserOIDCClaims returns the merged OIDC claims for the authenticated user.
@@ -817,7 +869,7 @@ func (c *Client) UserOIDCClaims(ctx context.Context) (OIDCClaimsResponse, error)
 		return OIDCClaimsResponse{}, ReadBodyAsError(res)
 	}
 	var resp OIDCClaimsResponse
-	return resp, json.NewDecoder(res.Body).Decode(&resp)
+	return resp, ReadBodyAsJSON(res, &resp)
 }
 
 // LoginWithPassword creates a session token authenticating with an email and password.
@@ -832,7 +884,7 @@ func (c *Client) LoginWithPassword(ctx context.Context, req LoginWithPasswordReq
 		return LoginWithPasswordResponse{}, ReadBodyAsError(res)
 	}
 	var resp LoginWithPasswordResponse
-	err = json.NewDecoder(res.Body).Decode(&resp)
+	err = ReadBodyAsJSON(res, &resp)
 	if err != nil {
 		return LoginWithPasswordResponse{}, err
 	}
@@ -887,7 +939,7 @@ func (c *Client) ConvertUserLoginType(ctx context.Context, user string, req Conv
 		return OAuthConversionResponse{}, ReadBodyAsError(res)
 	}
 	var resp OAuthConversionResponse
-	err = json.NewDecoder(res.Body).Decode(&resp)
+	err = ReadBodyAsJSON(res, &resp)
 	if err != nil {
 		return OAuthConversionResponse{}, err
 	}
@@ -918,7 +970,7 @@ func (c *Client) User(ctx context.Context, userIdent string) (User, error) {
 		return User{}, ReadBodyAsError(res)
 	}
 	var user User
-	return user, json.NewDecoder(res.Body).Decode(&user)
+	return user, ReadBodyAsJSON(res, &user)
 }
 
 // UserQuietHoursSchedule returns the quiet hours settings for the user. This
@@ -933,7 +985,7 @@ func (c *Client) UserQuietHoursSchedule(ctx context.Context, userIdent string) (
 		return UserQuietHoursScheduleResponse{}, ReadBodyAsError(res)
 	}
 	var resp UserQuietHoursScheduleResponse
-	return resp, json.NewDecoder(res.Body).Decode(&resp)
+	return resp, ReadBodyAsJSON(res, &resp)
 }
 
 // UpdateUserQuietHoursSchedule updates the quiet hours settings for the user.
@@ -948,7 +1000,7 @@ func (c *Client) UpdateUserQuietHoursSchedule(ctx context.Context, userIdent str
 		return UserQuietHoursScheduleResponse{}, ReadBodyAsError(res)
 	}
 	var resp UserQuietHoursScheduleResponse
-	return resp, json.NewDecoder(res.Body).Decode(&resp)
+	return resp, ReadBodyAsJSON(res, &resp)
 }
 
 // Users returns all users according to the request parameters. If no parameters are set,
@@ -968,7 +1020,7 @@ func (c *Client) Users(ctx context.Context, req UsersRequest) (GetUsersResponse,
 	}
 
 	var usersRes GetUsersResponse
-	return usersRes, json.NewDecoder(res.Body).Decode(&usersRes)
+	return usersRes, ReadBodyAsJSON(res, &usersRes)
 }
 
 // OrganizationsByUser returns all organizations the user is a member of.
@@ -982,7 +1034,7 @@ func (c *Client) OrganizationsByUser(ctx context.Context, user string) ([]Organi
 		return nil, ReadBodyAsError(res)
 	}
 	var orgs []Organization
-	return orgs, json.NewDecoder(res.Body).Decode(&orgs)
+	return orgs, ReadBodyAsJSON(res, &orgs)
 }
 
 func (c *Client) OrganizationByUserAndName(ctx context.Context, user string, name string) (Organization, error) {
@@ -995,7 +1047,7 @@ func (c *Client) OrganizationByUserAndName(ctx context.Context, user string, nam
 		return Organization{}, ReadBodyAsError(res)
 	}
 	var org Organization
-	return org, json.NewDecoder(res.Body).Decode(&org)
+	return org, ReadBodyAsJSON(res, &org)
 }
 
 // AuthMethods returns types of authentication available to the user.
@@ -1011,5 +1063,5 @@ func (c *Client) AuthMethods(ctx context.Context) (AuthMethods, error) {
 	}
 
 	var userAuth AuthMethods
-	return userAuth, json.NewDecoder(res.Body).Decode(&userAuth)
+	return userAuth, ReadBodyAsJSON(res, &userAuth)
 }

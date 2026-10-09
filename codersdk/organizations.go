@@ -55,6 +55,10 @@ type Organization struct {
 	CreatedAt           time.Time `table:"created at" json:"created_at" validate:"required" format:"date-time"`
 	UpdatedAt           time.Time `table:"updated at" json:"updated_at" validate:"required" format:"date-time"`
 	IsDefault           bool      `table:"default" json:"is_default" validate:"required"`
+	// DefaultOrgMemberRoles are unioned into every member's effective
+	// roles at request time. Changes propagate to all members on the
+	// next request.
+	DefaultOrgMemberRoles []string `table:"default org member roles" json:"default_org_member_roles"`
 }
 
 func (o Organization) HumanName() string {
@@ -113,6 +117,9 @@ type UpdateOrganizationRequest struct {
 	DisplayName string  `json:"display_name,omitempty" validate:"omitempty,organization_display_name"`
 	Description *string `json:"description,omitempty"`
 	Icon        *string `json:"icon,omitempty"`
+	// DefaultOrgMemberRoles, when non-nil, replaces the org's default
+	// member roles.
+	DefaultOrgMemberRoles *[]string `json:"default_org_member_roles,omitempty"`
 }
 
 // CreateTemplateVersionRequest enables callers to create a new Template Version.
@@ -142,8 +149,8 @@ type CreateTemplateRequest struct {
 	// DisplayName is the displayed name of the template.
 	DisplayName string `json:"display_name,omitempty" validate:"template_display_name"`
 	// Description is a description of what the template contains. It must be
-	// less than 128 bytes.
-	Description string `json:"description,omitempty" validate:"lt=128"`
+	// no longer than 128 Unicode code points.
+	Description string `json:"description,omitempty" validate:"lte=128"`
 	// Icon is a relative path or external URL that specifies
 	// an icon to be displayed in the dashboard.
 	Icon string `json:"icon,omitempty"`
@@ -163,6 +170,10 @@ type CreateTemplateRequest struct {
 	// duration for all workspaces created from this template. Defaults to 1h
 	// but can be set to 0 to disable activity bumping.
 	ActivityBumpMillis *int64 `json:"activity_bump_ms,omitempty"`
+	// TimeTilAutostopNotifyMillis allows optionally specifying the duration
+	// before the autostop deadline at which a reminder notification is sent for
+	// workspaces created from this template. Defaults to 0 (disabled).
+	TimeTilAutostopNotifyMillis *int64 `json:"time_til_autostop_notify_ms,omitempty"`
 	// AutostopRequirement allows optionally specifying the autostop requirement
 	// for workspaces created from this template. This is an enterprise feature.
 	AutostopRequirement *TemplateAutostopRequirement `json:"autostop_requirement,omitempty"`
@@ -218,6 +229,15 @@ type CreateTemplateRequest struct {
 
 	// CORSBehavior allows optionally specifying the CORS behavior for all shared ports.
 	CORSBehavior *CORSBehavior `json:"cors_behavior"`
+
+	// AgentsAllowed controls whether Coder Agents can create workspaces using
+	// this template. Defaults to true.
+	AgentsAllowed *bool `json:"agents_allowed,omitempty"`
+
+	// AllowWorkspaceRenames permits users to rename workspaces built from this
+	// template. Renaming can be destructive for templates whose Terraform
+	// references the workspace name, so this defaults to false.
+	AllowWorkspaceRenames *bool `json:"allow_workspace_renames,omitempty"`
 }
 
 // CreateWorkspaceRequest provides options for creating a new workspace.
@@ -259,7 +279,7 @@ func (c *Client) OrganizationByName(ctx context.Context, name string) (Organizat
 	}
 
 	var organization Organization
-	return organization, json.NewDecoder(res.Body).Decode(&organization)
+	return organization, ReadBodyAsJSON(res, &organization)
 }
 
 func (c *Client) Organizations(ctx context.Context) ([]Organization, error) {
@@ -274,7 +294,7 @@ func (c *Client) Organizations(ctx context.Context) ([]Organization, error) {
 	}
 
 	var organizations []Organization
-	return organizations, json.NewDecoder(res.Body).Decode(&organizations)
+	return organizations, ReadBodyAsJSON(res, &organizations)
 }
 
 func (c *Client) Organization(ctx context.Context, id uuid.UUID) (Organization, error) {
@@ -296,7 +316,7 @@ func (c *Client) CreateOrganization(ctx context.Context, req CreateOrganizationR
 	}
 
 	var org Organization
-	return org, json.NewDecoder(res.Body).Decode(&org)
+	return org, ReadBodyAsJSON(res, &org)
 }
 
 // UpdateOrganization will update information about the corresponding organization, based on
@@ -313,7 +333,7 @@ func (c *Client) UpdateOrganization(ctx context.Context, orgID string, req Updat
 	}
 
 	var organization Organization
-	return organization, json.NewDecoder(res.Body).Decode(&organization)
+	return organization, ReadBodyAsJSON(res, &organization)
 }
 
 // DeleteOrganization will remove the corresponding organization from the deployment, based on
@@ -349,7 +369,7 @@ func (c *Client) ProvisionerDaemons(ctx context.Context) ([]ProvisionerDaemon, e
 	}
 
 	var daemons []ProvisionerDaemon
-	return daemons, json.NewDecoder(res.Body).Decode(&daemons)
+	return daemons, ReadBodyAsJSON(res, &daemons)
 }
 
 type OrganizationProvisionerDaemonsOptions struct {
@@ -402,7 +422,7 @@ func (c *Client) OrganizationProvisionerDaemons(ctx context.Context, organizatio
 	}
 
 	var daemons []ProvisionerDaemon
-	return daemons, json.NewDecoder(res.Body).Decode(&daemons)
+	return daemons, ReadBodyAsJSON(res, &daemons)
 }
 
 type OrganizationProvisionerJobsOptions struct {
@@ -451,7 +471,7 @@ func (c *Client) OrganizationProvisionerJobs(ctx context.Context, organizationID
 	}
 
 	var jobs []ProvisionerJob
-	return jobs, json.NewDecoder(res.Body).Decode(&jobs)
+	return jobs, ReadBodyAsJSON(res, &jobs)
 }
 
 func (c *Client) OrganizationProvisionerJob(ctx context.Context, organizationID, jobID uuid.UUID) (job ProvisionerJob, err error) {
@@ -467,7 +487,7 @@ func (c *Client) OrganizationProvisionerJob(ctx context.Context, organizationID,
 	if res.StatusCode != http.StatusOK {
 		return job, ReadBodyAsError(res)
 	}
-	return job, json.NewDecoder(res.Body).Decode(&job)
+	return job, ReadBodyAsJSON(res, &job)
 }
 
 func joinSlice[T ~string](s []T) string {
@@ -503,7 +523,7 @@ func (c *Client) CreateTemplateVersion(ctx context.Context, organizationID uuid.
 	}
 
 	var templateVersion TemplateVersion
-	return templateVersion, json.NewDecoder(res.Body).Decode(&templateVersion)
+	return templateVersion, ReadBodyAsJSON(res, &templateVersion)
 }
 
 func (c *Client) TemplateVersionByOrganizationAndName(ctx context.Context, organizationID uuid.UUID, templateName, versionName string) (TemplateVersion, error) {
@@ -521,7 +541,7 @@ func (c *Client) TemplateVersionByOrganizationAndName(ctx context.Context, organ
 	}
 
 	var templateVersion TemplateVersion
-	return templateVersion, json.NewDecoder(res.Body).Decode(&templateVersion)
+	return templateVersion, ReadBodyAsJSON(res, &templateVersion)
 }
 
 // CreateTemplate creates a new template inside an organization.
@@ -540,7 +560,7 @@ func (c *Client) CreateTemplate(ctx context.Context, organizationID uuid.UUID, r
 	}
 
 	var template Template
-	return template, json.NewDecoder(res.Body).Decode(&template)
+	return template, ReadBodyAsJSON(res, &template)
 }
 
 // TemplatesByOrganization lists all templates inside of an organization.
@@ -559,7 +579,7 @@ func (c *Client) TemplatesByOrganization(ctx context.Context, organizationID uui
 	}
 
 	var templates []Template
-	return templates, json.NewDecoder(res.Body).Decode(&templates)
+	return templates, ReadBodyAsJSON(res, &templates)
 }
 
 type TemplateFilter struct {
@@ -620,7 +640,7 @@ func (c *Client) Templates(ctx context.Context, filter TemplateFilter) ([]Templa
 	}
 
 	var templates []Template
-	return templates, json.NewDecoder(res.Body).Decode(&templates)
+	return templates, ReadBodyAsJSON(res, &templates)
 }
 
 // TemplateByName finds a template inside the organization provided with a case-insensitive name.
@@ -642,7 +662,7 @@ func (c *Client) TemplateByName(ctx context.Context, organizationID uuid.UUID, n
 	}
 
 	var template Template
-	return template, json.NewDecoder(res.Body).Decode(&template)
+	return template, ReadBodyAsJSON(res, &template)
 }
 
 // CreateWorkspace creates a new workspace for the template specified.
@@ -654,6 +674,10 @@ func (c *Client) CreateWorkspace(ctx context.Context, _ uuid.UUID, user string, 
 
 // CreateUserWorkspace creates a new workspace for the template specified.
 func (c *Client) CreateUserWorkspace(ctx context.Context, user string, request CreateWorkspaceRequest) (Workspace, error) {
+	// Validate before URL resolution can interpret user input as a path or query.
+	if err := validateWorkspacePathSegment(user); err != nil {
+		return Workspace{}, xerrors.Errorf("invalid user: %w", err)
+	}
 	res, err := c.Request(ctx, http.MethodPost, fmt.Sprintf("/api/v2/users/%s/workspaces", user), request)
 	if err != nil {
 		return Workspace{}, err
@@ -665,5 +689,5 @@ func (c *Client) CreateUserWorkspace(ctx context.Context, user string, request C
 	}
 
 	var workspace Workspace
-	return workspace, json.NewDecoder(res.Body).Decode(&workspace)
+	return workspace, ReadBodyAsJSON(res, &workspace)
 }

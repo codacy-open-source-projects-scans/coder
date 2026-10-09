@@ -1,4 +1,3 @@
-import type { FC } from "react";
 import { useMutation, useQueryClient } from "react-query";
 import { toast } from "sonner";
 import { getErrorDetail, getErrorMessage } from "#/api/errors";
@@ -9,7 +8,6 @@ import {
 import type { UpdateAppearanceConfig } from "#/api/typesGenerated";
 import { useAuthenticated } from "#/hooks/useAuthenticated";
 import { useDashboard } from "#/modules/dashboard/useDashboard";
-import { useFeatureVisibility } from "#/modules/dashboard/useFeatureVisibility";
 import { RequirePermission } from "#/modules/permissions/RequirePermission";
 import { pageTitle } from "#/utils/page";
 import { AppearanceSettingsPageView } from "./AppearanceSettingsPageView";
@@ -18,9 +16,8 @@ import { AppearanceSettingsPageView } from "./AppearanceSettingsPageView";
 // implements a form, whereas the others are read-only. We make this
 // exception because the Service Banner is visual, and configuring it from
 // the command line would be a significantly worse user experience.
-const AppearanceSettingsPage: FC = () => {
+const AppearanceSettingsPage: React.FC = () => {
 	const { appearance, entitlements } = useDashboard();
-	const { multiple_organizations: hasPremiumLicense } = useFeatureVisibility();
 	const queryClient = useQueryClient();
 	const updateAppearanceMutation = useMutation(updateAppearance(queryClient));
 	const { permissions } = useAuthenticated();
@@ -61,7 +58,7 @@ const AppearanceSettingsPage: FC = () => {
 					isEntitled={
 						entitlements.features.appearance.entitlement !== "not_entitled"
 					}
-					isPremium={hasPremiumLicense}
+					canViewPremium={permissions.viewAllLicenses}
 				/>
 			</RequirePermission>
 		</>

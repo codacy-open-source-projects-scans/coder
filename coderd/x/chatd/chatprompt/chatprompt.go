@@ -11,13 +11,17 @@ import (
 	"strings"
 
 	"charm.land/fantasy"
+	"github.com/dustin/go-humanize"
 	"github.com/google/uuid"
 	"github.com/sqlc-dev/pqtype"
 	"golang.org/x/xerrors"
 
 	"cdr.dev/slog/v3"
 	"github.com/coder/coder/v2/coderd/database"
+	"github.com/coder/coder/v2/coderd/util/shellparse"
+	"github.com/coder/coder/v2/coderd/x/chatd/chatsanitize"
 	"github.com/coder/coder/v2/coderd/x/chatd/chattool"
+	"github.com/coder/coder/v2/coderd/x/chatfiles"
 	"github.com/coder/coder/v2/codersdk"
 )
 
@@ -29,6 +33,8 @@ var syntheticPasteTruncationWarning = fmt.Sprintf(
 	"\n\n[pasted-text] The pasted text was truncated to %d bytes before sending to the model.",
 	syntheticPasteInlineBudget,
 )
+
+const inlinedFilePrefix = "[inlined-file] The user uploaded a file attachment. The target provider cannot accept this file type as a native attachment, so its full content is inlined below for direct model consumption.\n\n"
 
 var toolCallIDSanitizer = regexp.MustCompile(`[^a-zA-Z0-9_-]`)
 
@@ -90,16 +96,32 @@ func ExtractFileID(raw json.RawMessage) (uuid.UUID, error) {
 	return uuid.Parse(envelope.Data.FileID)
 }
 
+// FileIDs returns the valid file IDs referenced by file parts.
+func FileIDs(parts []codersdk.ChatMessagePart) []uuid.UUID {
+	var ids []uuid.UUID
+	for _, part := range parts {
+		if part.Type != codersdk.ChatMessagePartTypeFile || !part.FileID.Valid {
+			continue
+		}
+		ids = append(ids, part.FileID.UUID)
+	}
+	return ids
+}
+
 // ConvertMessagesWithFiles converts persisted chat messages into LLM
 // prompt messages, resolving user file references via the provided
 // resolver. Missing-data placeholders are emitted only for replayed
 // user uploads; assistant-side and tool-side file metadata without
-// bytes is dropped from later model turns.
+// bytes is dropped from later model turns. acceptsFilePart, when
+// non-nil, gates whether text-family file parts are inlined as text for
+// providers that would drop them; nil preserves them as FilePart.
 func ConvertMessagesWithFiles(
 	ctx context.Context,
 	messages []database.ChatMessage,
 	resolver FileResolver,
 	logger slog.Logger,
+	acceptsFilePart func(mediaType string) bool,
+	chatWorkspaceID uuid.NullUUID,
 ) ([]fantasy.Message, error) {
 	// Phase 1: Parse all messages via ParseContent (→ SDK parts)
 	// and collect file_id references from user messages for batch
@@ -181,6 +203,8 @@ func ConvertMessagesWithFiles(
 				pm.parts,
 				resolved,
 				userMissingFilePolicy,
+				acceptsFilePart,
+				chatWorkspaceID,
 			)
 			if len(userParts) == 0 {
 				continue
@@ -191,7 +215,7 @@ func ConvertMessagesWithFiles(
 			})
 		case codersdk.ChatMessageRoleAssistant:
 			fantasyParts := normalizeAssistantToolCallInputs(
-				partsToMessageParts(ctx, logger, pm.parts, nil, dropMissingFiles),
+				partsToMessageParts(ctx, logger, pm.parts, nil, dropMissingFiles, nil, chatWorkspaceID),
 			)
 			for _, toolCall := range ExtractToolCalls(fantasyParts) {
 				if toolCall.ToolCallID == "" || strings.TrimSpace(toolCall.ToolName) == "" {
@@ -215,7 +239,7 @@ func ConvertMessagesWithFiles(
 					}
 				}
 			}
-			toolParts := partsToMessageParts(ctx, logger, pm.parts, nil, dropMissingFiles)
+			toolParts := partsToMessageParts(ctx, logger, pm.parts, nil, dropMissingFiles, nil, chatWorkspaceID)
 			if len(toolParts) == 0 {
 				continue
 			}
@@ -231,39 +255,6 @@ func ConvertMessagesWithFiles(
 		toolNameByCallID,
 	)
 	return prompt, nil
-}
-
-// PrependSystem prepends a system message unless an existing system
-// message already mentions create_workspace guidance.
-func PrependSystem(prompt []fantasy.Message, instruction string) []fantasy.Message {
-	instruction = strings.TrimSpace(instruction)
-	if instruction == "" {
-		return prompt
-	}
-	for _, message := range prompt {
-		if message.Role != fantasy.MessageRoleSystem {
-			continue
-		}
-		for _, part := range message.Content {
-			textPart, ok := fantasy.AsMessagePart[fantasy.TextPart](part)
-			if !ok {
-				continue
-			}
-			if strings.Contains(strings.ToLower(textPart.Text), "create_workspace") {
-				return prompt
-			}
-		}
-	}
-
-	out := make([]fantasy.Message, 0, len(prompt)+1)
-	out = append(out, fantasy.Message{
-		Role: fantasy.MessageRoleSystem,
-		Content: []fantasy.MessagePart{
-			fantasy.TextPart{Text: instruction},
-		},
-	})
-	out = append(out, prompt...)
-	return out
 }
 
 // InsertSystem inserts a system message after the existing system
@@ -293,24 +284,6 @@ func InsertSystem(prompt []fantasy.Message, instruction string) []fantasy.Messag
 	if !inserted {
 		out = append(out, systemMessage)
 	}
-	return out
-}
-
-// AppendUser appends an instruction as a user message at the end of
-// the prompt.
-func AppendUser(prompt []fantasy.Message, instruction string) []fantasy.Message {
-	instruction = strings.TrimSpace(instruction)
-	if instruction == "" {
-		return prompt
-	}
-	out := make([]fantasy.Message, 0, len(prompt)+1)
-	out = append(out, prompt...)
-	out = append(out, fantasy.Message{
-		Role: fantasy.MessageRoleUser,
-		Content: []fantasy.MessagePart{
-			fantasy.TextPart{Text: instruction},
-		},
-	})
 	return out
 }
 
@@ -646,85 +619,6 @@ func ExtractToolCalls(parts []fantasy.MessagePart) []fantasy.ToolCallContent {
 	return toolCalls
 }
 
-// MarshalContent encodes message content blocks in legacy fantasy
-// envelope format. Retained for backward-compatible test fixtures
-// that create legacy-format DB rows. Production write paths use
-// MarshalParts instead.
-func MarshalContent(blocks []fantasy.Content, fileIDs map[int]uuid.UUID) (pqtype.NullRawMessage, error) {
-	if len(blocks) == 0 {
-		return pqtype.NullRawMessage{}, nil
-	}
-
-	encodedBlocks := make([]json.RawMessage, 0, len(blocks))
-	for i, block := range blocks {
-		encoded, err := json.Marshal(block)
-		if err != nil {
-			return pqtype.NullRawMessage{}, xerrors.Errorf(
-				"encode content block %d: %w",
-				i,
-				err,
-			)
-		}
-		if fid, ok := fileIDs[i]; ok {
-			// Inline file_id injection into the fantasy envelope's
-			// data sub-object, stripping inline data.
-			var envelope struct {
-				Type string `json:"type"`
-				Data struct {
-					MediaType        string           `json:"media_type"`
-					Data             json.RawMessage  `json:"data,omitempty"`
-					FileID           string           `json:"file_id,omitempty"`
-					ProviderMetadata *json.RawMessage `json:"provider_metadata,omitempty"`
-				} `json:"data"`
-			}
-			if err := json.Unmarshal(encoded, &envelope); err == nil {
-				envelope.Data.FileID = fid.String()
-				envelope.Data.Data = nil
-				if patched, err := json.Marshal(envelope); err == nil {
-					encoded = patched
-				}
-			}
-		}
-		encodedBlocks = append(encodedBlocks, encoded)
-	}
-
-	data, err := json.Marshal(encodedBlocks)
-	if err != nil {
-		return pqtype.NullRawMessage{}, xerrors.Errorf("encode content blocks: %w", err)
-	}
-	return pqtype.NullRawMessage{RawMessage: data, Valid: true}, nil
-}
-
-// MarshalToolResult encodes a single tool result in the legacy
-// tool-row format. Retained for test fixtures that create
-// legacy-format DB rows. Production write paths use MarshalParts.
-// The stored shape is
-// [{"tool_call_id":…,"tool_name":…,"result":…,"is_error":…,"is_media":…}].
-func MarshalToolResult(toolCallID, toolName string, result json.RawMessage, isError bool, isMedia bool, providerExecuted bool, providerMetadata fantasy.ProviderMetadata) (pqtype.NullRawMessage, error) {
-	var metaJSON json.RawMessage
-	if len(providerMetadata) > 0 {
-		var err error
-		metaJSON, err = json.Marshal(providerMetadata)
-		if err != nil {
-			return pqtype.NullRawMessage{}, xerrors.Errorf("encode provider metadata: %w", err)
-		}
-	}
-	row := toolResultRaw{
-		ToolCallID:       toolCallID,
-		ToolName:         toolName,
-		Result:           result,
-		IsError:          isError,
-		IsMedia:          isMedia,
-		ProviderExecuted: providerExecuted,
-		ProviderMetadata: metaJSON,
-	}
-	data, err := json.Marshal([]toolResultRaw{row})
-	if err != nil {
-		return pqtype.NullRawMessage{}, xerrors.Errorf("encode tool result: %w", err)
-	}
-	return pqtype.NullRawMessage{RawMessage: data, Valid: true}, nil
-}
-
 // PartFromContent converts fantasy content into a SDK chat message
 // part, preserving ProviderMetadata and ProviderExecuted fields.
 func PartFromContent(block fantasy.Content) codersdk.ChatMessagePart {
@@ -778,20 +672,24 @@ func sdkPartFromContent(
 			ProviderMetadata: marshalProviderMetadata(value.ProviderMetadata),
 		}
 	case fantasy.ToolCallContent:
+		args := safeToolCallArgs(value.Input)
 		return codersdk.ChatMessagePart{
 			Type:             codersdk.ChatMessagePartTypeToolCall,
 			ToolCallID:       value.ToolCallID,
 			ToolName:         value.ToolName,
-			Args:             safeToolCallArgs(value.Input),
+			Args:             args,
+			ParsedCommands:   executeToolParsedCommands(value.ToolName, args),
 			ProviderExecuted: value.ProviderExecuted,
 			ProviderMetadata: marshalProviderMetadata(value.ProviderMetadata),
 		}
 	case *fantasy.ToolCallContent:
+		args := safeToolCallArgs(value.Input)
 		return codersdk.ChatMessagePart{
 			Type:             codersdk.ChatMessagePartTypeToolCall,
 			ToolCallID:       value.ToolCallID,
 			ToolName:         value.ToolName,
-			Args:             safeToolCallArgs(value.Input),
+			Args:             args,
+			ParsedCommands:   executeToolParsedCommands(value.ToolName, args),
 			ProviderExecuted: value.ProviderExecuted,
 			ProviderMetadata: marshalProviderMetadata(value.ProviderMetadata),
 		}
@@ -832,14 +730,6 @@ func sdkPartFromContent(
 	default:
 		return codersdk.ChatMessagePart{}
 	}
-}
-
-// ToolResultToPart converts a tool call ID, raw result, error flag,
-// and media flag into a ChatMessagePart. This is the minimal
-// conversion used both during streaming and when reading from the
-// database.
-func ToolResultToPart(toolCallID, toolName string, result json.RawMessage, isError bool, isMedia bool) codersdk.ChatMessagePart {
-	return codersdk.ChatMessageToolResult(toolCallID, toolName, result, isError, isMedia)
 }
 
 // toolResultContentToPart converts a fantasy ToolResultContent into a
@@ -915,7 +805,7 @@ func toolResultContentToPart(
 		result = []byte(`{}`)
 	}
 
-	part := ToolResultToPart(content.ToolCallID, content.ToolName, result, isError, isMedia)
+	part := codersdk.ChatMessageToolResult(content.ToolCallID, content.ToolName, result, isError, isMedia)
 	part.ProviderExecuted = content.ProviderExecuted
 	part.ProviderMetadata = marshalProviderMetadata(content.ProviderMetadata)
 	return part
@@ -941,10 +831,12 @@ func matchingAttachmentForMedia(
 	return chattool.AttachmentMetadata{}, false
 }
 
-// Keep in sync with coderd/x/chatd/subagent.go.
+// isSubagentLifecycleToolName lists subagent tools whose error results
+// may carry structured JSON. Keep in sync with coderd/x/chatd/subagent.go.
+// See subagentToolNameAliases for the full alias map.
 func isSubagentLifecycleToolName(name string) bool {
 	switch name {
-	case "spawn_agent", "wait_agent", "message_agent", "close_agent":
+	case "spawn_agent", "wait_agent", "message_agent", "interrupt_agent", "close_agent":
 		return true
 	default:
 		return false
@@ -960,9 +852,20 @@ func hasErrorField(raw json.RawMessage) bool {
 	return ok
 }
 
+// injectMissingToolResults keeps tool results adjacent to the
+// assistant message that issued the calls. Hook effects, such as
+// pre_tool_use model context, can persist rows between an assistant
+// tool call and its result rows, so matching result rows found before
+// the next assistant message are hoisted back next to the call;
+// otherwise the interleaved row would make the real result look
+// orphaned. Unanswered local calls get synthetic interrupted results.
 func injectMissingToolResults(prompt []fantasy.Message) []fantasy.Message {
 	result := make([]fantasy.Message, 0, len(prompt))
+	hoisted := make(map[int]bool)
 	for i := 0; i < len(prompt); i++ {
+		if hoisted[i] {
+			continue
+		}
 		msg := prompt[i]
 		result = append(result, msg)
 
@@ -973,28 +876,38 @@ func injectMissingToolResults(prompt []fantasy.Message) []fantasy.Message {
 		if len(toolCalls) == 0 {
 			continue
 		}
+		callIDs := make(map[string]struct{}, len(toolCalls))
+		for _, tc := range toolCalls {
+			callIDs[tc.ToolCallID] = struct{}{}
+		}
 
-		// Collect the tool call IDs that have results in the
-		// following tool message(s).
+		// Hoist tool rows answering this assistant's calls, in
+		// persisted order, from anywhere before the next assistant
+		// message. Interleaved non-tool rows keep their relative
+		// order after the results.
 		answered := make(map[string]struct{})
-		j := i + 1
-		for ; j < len(prompt); j++ {
-			if prompt[j].Role != fantasy.MessageRoleTool {
+		for j := i + 1; j < len(prompt); j++ {
+			if prompt[j].Role == fantasy.MessageRoleAssistant {
 				break
 			}
+			if prompt[j].Role != fantasy.MessageRoleTool {
+				continue
+			}
+			answersThisCall := false
 			for _, part := range prompt[j].Content {
 				tr, ok := safeAsToolResultPart(part)
 				if !ok {
 					continue
 				}
-				answered[tr.ToolCallID] = struct{}{}
+				if _, ok := callIDs[tr.ToolCallID]; ok {
+					answersThisCall = true
+					answered[tr.ToolCallID] = struct{}{}
+				}
 			}
-		}
-		if i+1 < j {
-			// Preserve persisted tool result ordering and inject any
-			// synthetic results after the existing contiguous tool messages.
-			result = append(result, prompt[i+1:j]...)
-			i = j - 1
+			if answersThisCall {
+				result = append(result, prompt[j])
+				hoisted[j] = true
+			}
 		}
 
 		// Build synthetic results for any unanswered tool calls.
@@ -1179,18 +1092,21 @@ func sanitizeToolCallID(id string) string {
 }
 
 // MarshalParts encodes SDK chat message parts for persistence.
-// NUL characters in string fields are encoded as PUA sentinel
-// pairs (U+E000 U+E001) before marshaling so the resulting JSON
-// never contains \u0000 (rejected by PostgreSQL jsonb). The
-// encoding operates on Go string values, not JSON bytes, so it
-// survives jsonb text normalization.
+// NUL characters in free-form and opaque fields are encoded as PUA
+// sentinel pairs (U+E000 U+E001) so PostgreSQL jsonb can store them.
+// Structured fields such as identifiers, paths, and media types reject
+// NUL because their downstream representations cannot consume it.
 func MarshalParts(parts []codersdk.ChatMessagePart) (pqtype.NullRawMessage, error) {
 	if len(parts) == 0 {
 		return pqtype.NullRawMessage{}, nil
 	}
-	data, err := json.Marshal(encodeNulInParts(parts))
+	encoded, err := encodeNulInParts(parts)
 	if err != nil {
-		return pqtype.NullRawMessage{}, xerrors.Errorf("encode chat message parts: %w", err)
+		return pqtype.NullRawMessage{}, xerrors.Errorf("validate chat message parts: %w", err)
+	}
+	data, err := json.Marshal(encoded)
+	if err != nil {
+		return pqtype.NullRawMessage{}, xerrors.Errorf("marshal chat message parts: %w", err)
 	}
 	return pqtype.NullRawMessage{RawMessage: data, Valid: true}, nil
 }
@@ -1269,8 +1185,28 @@ func safeToolCallArgs(input string) json.RawMessage {
 	return raw
 }
 
+func executeToolParsedCommands(toolName string, args json.RawMessage) [][]string {
+	if toolName != chattool.ExecuteToolName || len(args) == 0 {
+		return nil
+	}
+	var parsed struct {
+		Command string `json:"command"`
+	}
+	if err := json.Unmarshal(args, &parsed); err != nil || parsed.Command == "" {
+		return nil
+	}
+	steps, err := shellparse.Parse(parsed.Command)
+	if err != nil {
+		return nil
+	}
+	return steps
+}
+
+// IsSyntheticPaste reports whether a file name and media type identify
+// a synthetic pasted-text attachment created by the chat UI.
+//
 // TODO: Replace filename-based detection with explicit origin metadata.
-func isSyntheticPaste(name string, mediaType string) bool {
+func IsSyntheticPaste(name string, mediaType string) bool {
 	if !syntheticPasteFileNamePattern.MatchString(name) {
 		return false
 	}
@@ -1278,11 +1214,11 @@ func isSyntheticPaste(name string, mediaType string) bool {
 	if err == nil {
 		mediaType = parsedMediaType
 	}
-	if strings.HasPrefix(mediaType, "text/") {
+	if strings.HasPrefix(mediaType, "text/") || chatfiles.IsTextAttachmentMediaType(mediaType) {
 		return true
 	}
 	switch mediaType {
-	case "application/json", "application/xml", "application/javascript", "application/x-yaml":
+	case "application/xml", "application/javascript", "application/x-yaml":
 		return true
 	default:
 		return false
@@ -1303,6 +1239,23 @@ func formatSyntheticPasteText(name string, body []byte) string {
 	if len(body) > syntheticPasteInlineBudget {
 		_, _ = sb.WriteString(syntheticPasteTruncationWarning)
 	}
+	return sb.String()
+}
+
+// formatInlinedFileText renders a file's full content as prompt text
+// for providers that would drop the file part. Unlike the
+// synthetic-paste path, no truncation is applied.
+func formatInlinedFileText(name string, body []byte) string {
+	const fileNameLabel = "Attachment filename: "
+	const fileNameSuffix = "\n\n"
+
+	var sb strings.Builder
+	sb.Grow(len(inlinedFilePrefix) + len(fileNameLabel) + len(name) + len(fileNameSuffix) + len(body))
+	_, _ = sb.WriteString(inlinedFilePrefix)
+	if name != "" {
+		_, _ = fmt.Fprintf(&sb, "%s%s%s", fileNameLabel, name, fileNameSuffix)
+	}
+	_, _ = sb.Write(body)
 	return sb.String()
 }
 
@@ -1339,6 +1292,32 @@ func fileReferencePartToText(part codersdk.ChatMessagePart) string {
 	if content := strings.TrimSpace(part.Content); content != "" {
 		_, _ = fmt.Fprintf(&sb, "\n```%s\n%s\n```", part.FileName, content)
 	}
+	return sb.String()
+}
+
+// workspaceFilePartToText formats a workspace-file-reference SDK
+// part as plain text for LLM consumption. The uploaded bytes stay on
+// the workspace filesystem; only the metadata reference reaches the
+// model, which can read the file with its workspace tools.
+//
+// References carry the workspace they were uploaded to. When the chat
+// has since been rebound (or unbound), the path no longer exists for
+// the current agent, so the reference renders as unavailable instead
+// of steering the model toward a dead path.
+func workspaceFilePartToText(part codersdk.ChatMessagePart, chatWorkspaceID uuid.NullUUID) string {
+	var sb strings.Builder
+	_, _ = sb.WriteString("[workspace file: ")
+	_, _ = sb.WriteString(part.WorkspaceFileName)
+	if part.WorkspaceFileSize > 0 {
+		_, _ = fmt.Fprintf(&sb, " (%s)", humanize.IBytes(uint64(part.WorkspaceFileSize)))
+	}
+	if !chatWorkspaceID.Valid || part.WorkspaceFileWorkspaceID != chatWorkspaceID.UUID {
+		_, _ = sb.WriteString(", uploaded to a previously attached workspace and no longer accessible]")
+		return sb.String()
+	}
+	_, _ = sb.WriteString(" at ")
+	_, _ = sb.WriteString(part.WorkspaceFilePath)
+	_, _ = sb.WriteString("]")
 	return sb.String()
 }
 
@@ -1471,14 +1450,18 @@ const (
 
 // partsToMessageParts converts SDK chat message parts into fantasy
 // message parts for LLM dispatch. resolved is a lookup map for file
-// bytes, and policy controls whether missing file-backed parts are
-// dropped or replaced with text placeholders.
+// bytes, policy controls whether missing file-backed parts are dropped
+// or replaced with text placeholders, and acceptsFilePart (when non-nil)
+// gates whether text-family file parts are inlined as text for providers
+// that would drop them.
 func partsToMessageParts(
 	ctx context.Context,
 	logger slog.Logger,
 	parts []codersdk.ChatMessagePart,
 	resolved map[uuid.UUID]FileData,
 	policy missingFilePolicy,
+	acceptsFilePart func(mediaType string) bool,
+	chatWorkspaceID uuid.NullUUID,
 ) []fantasy.MessagePart {
 	result := make([]fantasy.MessagePart, 0, len(parts))
 	for _, part := range parts {
@@ -1497,13 +1480,13 @@ func partsToMessageParts(
 				ProviderOptions: providerMetadataToOptions(logger, part.ProviderMetadata),
 			})
 		case codersdk.ChatMessagePartTypeReasoning:
-			// Same guard as text parts above.
-			if strings.TrimSpace(part.Text) == "" {
+			opts := providerMetadataToOptions(logger, part.ProviderMetadata)
+			if strings.TrimSpace(part.Text) == "" && !chatsanitize.HasAnthropicSignedReasoningOptions(opts) {
 				continue
 			}
 			result = append(result, fantasy.ReasoningPart{
 				Text:            part.Text,
-				ProviderOptions: providerMetadataToOptions(logger, part.ProviderMetadata),
+				ProviderOptions: opts,
 			})
 		case codersdk.ChatMessagePartTypeToolCall:
 			result = append(result, fantasy.ToolCallPart{
@@ -1536,7 +1519,7 @@ func partsToMessageParts(
 			// paste sent as a text/plain FilePart is dropped or rejected,
 			// so the model sees nothing. Converting it to TextPart keeps
 			// the pasted content visible to every provider.
-			if isSyntheticPaste(name, mediaType) {
+			if IsSyntheticPaste(name, mediaType) {
 				result = append(result, fantasy.TextPart{
 					Text:            formatSyntheticPasteText(name, data),
 					ProviderOptions: opts,
@@ -1564,7 +1547,28 @@ func partsToMessageParts(
 				// not look expired.
 				continue
 			}
+			// When the target provider would drop a text-family file part,
+			// inline the content as text so the model still sees it.
+			//
+			// This must run after the IsSyntheticPaste check above;
+			// synthetic pastes use a truncating path and must not fall
+			// through to the non-truncating inline path.
+			if acceptsFilePart != nil &&
+				chatfiles.IsTextAttachmentMediaType(mediaType) &&
+				!acceptsFilePart(mediaType) {
+				logger.Info(ctx,
+					"inlining text-family file part as text for provider that would drop it",
+					slog.F("file_name", name),
+					slog.F("media_type", mediaType),
+				)
+				result = append(result, fantasy.TextPart{
+					Text:            formatInlinedFileText(name, data),
+					ProviderOptions: opts,
+				})
+				continue
+			}
 			result = append(result, fantasy.FilePart{
+				Filename:        name,
 				Data:            data,
 				MediaType:       mediaType,
 				ProviderOptions: opts,
@@ -1573,6 +1577,10 @@ func partsToMessageParts(
 			// LLMs don't understand file-reference natively.
 			result = append(result, fantasy.TextPart{
 				Text: fileReferencePartToText(part),
+			})
+		case codersdk.ChatMessagePartTypeWorkspaceFileReference:
+			result = append(result, fantasy.TextPart{
+				Text: workspaceFilePartToText(part, chatWorkspaceID),
 			})
 		case codersdk.ChatMessagePartTypeContextFile:
 			if part.ContextFileContent == "" {
@@ -1600,6 +1608,16 @@ func partsToMessageParts(
 			_, _ = sb.WriteString(part.ContextFileContent)
 			_, _ = sb.WriteString("\n</workspace-context>")
 			result = append(result, fantasy.TextPart{Text: sb.String()})
+		case codersdk.ChatMessagePartTypeHookContext:
+			// Lifecycle hook model context rides inside the user
+			// message and is sent to the model as plain text.
+			if strings.TrimSpace(part.Text) == "" {
+				continue
+			}
+			result = append(result, fantasy.TextPart{Text: part.Text})
+		case codersdk.ChatMessagePartTypeHookNotice:
+			// Client-only hook notice, never sent to the model.
+			continue
 		case codersdk.ChatMessagePartTypeSource:
 			// Source parts are metadata-only, not sent to LLM.
 			continue
@@ -1712,16 +1730,12 @@ func decodeNulInValue(v any) any {
 }
 
 // encodeNulInJSON walks all string values (and keys) inside a
-// json.RawMessage and applies encodeNulInString. Returns the
-// original unchanged when the raw message does not contain NUL
-// escapes or U+E000 bytes, or when parsing fails.
+// json.RawMessage and applies encodeNulInString. It also normalizes
+// unpaired UTF-16 surrogate escapes, which PostgreSQL jsonb rejects.
+// Returns the original unchanged when no transformation is needed or
+// when parsing fails.
 func encodeNulInJSON(raw json.RawMessage) json.RawMessage {
-	if len(raw) == 0 {
-		return raw
-	}
-	// Quick exit: no \u0000 escape and no U+E000 UTF-8 bytes.
-	if !bytes.Contains(raw, []byte(`\u0000`)) &&
-		!bytes.Contains(raw, []byte{0xEE, 0x80, 0x80}) {
+	if len(raw) == 0 || !needsNulEncodingInJSON(raw) || !json.Valid(raw) {
 		return raw
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
@@ -1735,6 +1749,80 @@ func encodeNulInJSON(raw json.RawMessage) json.RawMessage {
 		return raw
 	}
 	return result
+}
+
+// needsNulEncodingInJSON reports whether valid JSON contains a string
+// value or object key that encodeNulInJSON must transform. It only
+// detects candidates; encoding/json owns parsing and normalization.
+func needsNulEncodingInJSON(raw json.RawMessage) bool {
+	// encoding/json emits U+E000 literally, while json.RawMessage may
+	// contain either the literal UTF-8 bytes or a Unicode escape.
+	if bytes.Contains(raw, []byte{0xEE, 0x80, 0x80}) {
+		return true
+	}
+
+	inString := false
+	for i := 0; i < len(raw); {
+		switch raw[i] {
+		case '"':
+			inString = !inString
+			i++
+		case '\\':
+			if !inString || i+1 >= len(raw) {
+				i++
+				continue
+			}
+			if raw[i+1] != 'u' {
+				i += 2
+				continue
+			}
+			value, ok := parseJSONHexEscape(raw[i+2:])
+			if !ok {
+				return true
+			}
+			switch {
+			case value == 0 || value == 0xE000:
+				return true
+			case 0xD800 <= value && value <= 0xDBFF:
+				if i+12 <= len(raw) && raw[i+6] == '\\' && raw[i+7] == 'u' {
+					low, lowOK := parseJSONHexEscape(raw[i+8:])
+					if lowOK && 0xDC00 <= low && low <= 0xDFFF {
+						i += 12
+						continue
+					}
+				}
+				return true
+			case 0xDC00 <= value && value <= 0xDFFF:
+				return true
+			default:
+				i += 6
+			}
+		default:
+			i++
+		}
+	}
+	return false
+}
+
+func parseJSONHexEscape(raw []byte) (uint16, bool) {
+	if len(raw) < 4 {
+		return 0, false
+	}
+	var value uint16
+	for _, c := range raw[:4] {
+		value <<= 4
+		switch {
+		case '0' <= c && c <= '9':
+			value |= uint16(c - '0')
+		case 'a' <= c && c <= 'f':
+			value |= uint16(c-'a') + 10
+		case 'A' <= c && c <= 'F':
+			value |= uint16(c-'A') + 10
+		default:
+			return 0, false
+		}
+	}
+	return value, true
 }
 
 // decodeNulInJSON walks all string values (and keys) inside a
@@ -1760,33 +1848,158 @@ func decodeNulInJSON(raw json.RawMessage) json.RawMessage {
 	return result
 }
 
-// encodeNulInParts returns a shallow copy of parts with all
-// string and json.RawMessage fields NUL-encoded. The caller's
-// slice is not modified.
-func encodeNulInParts(parts []codersdk.ChatMessagePart) []codersdk.ChatMessagePart {
+// nulPolicy classifies how MarshalParts treats NUL in one persisted
+// ChatMessagePart field.
+type nulPolicy int
+
+const (
+	// nulEncode reversibly encodes NUL as PUA sentinel pairs. Used for
+	// free-form text and opaque provider data that must survive
+	// persistence byte-for-byte, e.g. Gemini binary thought signatures
+	// in ProviderMetadata.
+	nulEncode nulPolicy = iota
+	// nulReject fails MarshalParts with an actionable error. Used for
+	// structured values (enums, identifiers, paths, filenames, URLs,
+	// media types, OS labels, and parsed commands) whose downstream
+	// consumers cannot handle NUL, so persisting an encoded form would
+	// only hide invalid input.
+	nulReject
+)
+
+// partNulField binds one string-bearing ChatMessagePart field to its
+// NUL policy. Pointer accessors let encoding, decoding, and validation
+// share the table. Exactly one accessor is set per entry; grid is only
+// supported with nulReject and raw only with nulEncode. Unsupported
+// combinations and missing entries for new string-bearing fields are
+// caught by TestChatMessagePartNULCoverage.
+type partNulField struct {
+	name   string
+	policy nulPolicy
+	str    func(*codersdk.ChatMessagePart) *string
+	raw    func(*codersdk.ChatMessagePart) *json.RawMessage
+	grid   func(*codersdk.ChatMessagePart) [][]string
+}
+
+// partNulFields classifies every persisted string-bearing field of
+// codersdk.ChatMessagePart. Adding a string-bearing field to the struct
+// requires an entry here.
+var partNulFields = []partNulField{
+	{name: "Text", policy: nulEncode, str: func(p *codersdk.ChatMessagePart) *string { return &p.Text }},
+	{name: "Args", policy: nulEncode, raw: func(p *codersdk.ChatMessagePart) *json.RawMessage { return &p.Args }},
+	{name: "ArgsDelta", policy: nulEncode, str: func(p *codersdk.ChatMessagePart) *string { return &p.ArgsDelta }},
+	{name: "Result", policy: nulEncode, raw: func(p *codersdk.ChatMessagePart) *json.RawMessage { return &p.Result }},
+	{name: "ResultDelta", policy: nulEncode, str: func(p *codersdk.ChatMessagePart) *string { return &p.ResultDelta }},
+	{name: "ReasoningDelta", policy: nulEncode, str: func(p *codersdk.ChatMessagePart) *string { return &p.ReasoningDelta }},
+	{name: "Title", policy: nulEncode, str: func(p *codersdk.ChatMessagePart) *string { return &p.Title }},
+	{name: "Content", policy: nulEncode, str: func(p *codersdk.ChatMessagePart) *string { return &p.Content }},
+	{name: "ProviderMetadata", policy: nulEncode, raw: func(p *codersdk.ChatMessagePart) *json.RawMessage { return &p.ProviderMetadata }},
+	{name: "ContextFileContent", policy: nulEncode, str: func(p *codersdk.ChatMessagePart) *string { return &p.ContextFileContent }},
+	{name: "SkillDescription", policy: nulEncode, str: func(p *codersdk.ChatMessagePart) *string { return &p.SkillDescription }},
+	{name: "Type", policy: nulReject, str: func(p *codersdk.ChatMessagePart) *string { return (*string)(&p.Type) }},
+	{name: "ToolCallID", policy: nulReject, str: func(p *codersdk.ChatMessagePart) *string { return &p.ToolCallID }},
+	{name: "ToolName", policy: nulReject, str: func(p *codersdk.ChatMessagePart) *string { return &p.ToolName }},
+	{name: "ParsedCommands", policy: nulReject, grid: func(p *codersdk.ChatMessagePart) [][]string { return p.ParsedCommands }},
+	{name: "SourceID", policy: nulReject, str: func(p *codersdk.ChatMessagePart) *string { return &p.SourceID }},
+	{name: "URL", policy: nulReject, str: func(p *codersdk.ChatMessagePart) *string { return &p.URL }},
+	{name: "MediaType", policy: nulReject, str: func(p *codersdk.ChatMessagePart) *string { return &p.MediaType }},
+	{name: "Name", policy: nulReject, str: func(p *codersdk.ChatMessagePart) *string { return &p.Name }},
+	{name: "FileName", policy: nulReject, str: func(p *codersdk.ChatMessagePart) *string { return &p.FileName }},
+	{name: "ContextFilePath", policy: nulReject, str: func(p *codersdk.ChatMessagePart) *string { return &p.ContextFilePath }},
+	{name: "ContextFileOS", policy: nulReject, str: func(p *codersdk.ChatMessagePart) *string { return &p.ContextFileOS }},
+	{name: "ContextFileDirectory", policy: nulReject, str: func(p *codersdk.ChatMessagePart) *string { return &p.ContextFileDirectory }},
+	{name: "ContextFileSkillMetaFile", policy: nulReject, str: func(p *codersdk.ChatMessagePart) *string { return &p.ContextFileSkillMetaFile }},
+	{name: "SkillName", policy: nulReject, str: func(p *codersdk.ChatMessagePart) *string { return &p.SkillName }},
+	{name: "SkillDir", policy: nulReject, str: func(p *codersdk.ChatMessagePart) *string { return &p.SkillDir }},
+	{name: "WorkspaceFilePath", policy: nulReject, str: func(p *codersdk.ChatMessagePart) *string { return &p.WorkspaceFilePath }},
+	{name: "WorkspaceFileName", policy: nulReject, str: func(p *codersdk.ChatMessagePart) *string { return &p.WorkspaceFileName }},
+	{name: "WorkspaceFileMediaType", policy: nulReject, str: func(p *codersdk.ChatMessagePart) *string { return &p.WorkspaceFileMediaType }},
+}
+
+// encode applies the reversible NUL encoding to a nulEncode field.
+func (f partNulField) encode(p *codersdk.ChatMessagePart) {
+	switch {
+	case f.str != nil:
+		*f.str(p) = encodeNulInString(*f.str(p))
+	case f.raw != nil:
+		*f.raw(p) = encodeNulInJSON(*f.raw(p))
+	}
+}
+
+// decode reverses encode.
+func (f partNulField) decode(p *codersdk.ChatMessagePart) {
+	switch {
+	case f.str != nil:
+		*f.str(p) = decodeNulInString(*f.str(p))
+	case f.raw != nil:
+		*f.raw(p) = decodeNulInJSON(*f.raw(p))
+	}
+}
+
+// validateNulFree returns an actionable error when a nulReject field
+// contains NUL.
+func (f partNulField) validateNulFree(partIndex int, p *codersdk.ChatMessagePart) error {
+	switch {
+	case f.str != nil:
+		if nul := strings.IndexByte(*f.str(p), 0); nul >= 0 {
+			return xerrors.Errorf(
+				"chat message part %d field %s contains NUL at byte %d",
+				partIndex,
+				f.name,
+				nul,
+			)
+		}
+	case f.grid != nil:
+		for i, values := range f.grid(p) {
+			for j, value := range values {
+				if nul := strings.IndexByte(value, 0); nul >= 0 {
+					return xerrors.Errorf(
+						"chat message part %d field %s[%d][%d] contains NUL at byte %d",
+						partIndex,
+						f.name,
+						i,
+						j,
+						nul,
+					)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// encodeNulInParts returns a copy of parts with every nulEncode field
+// encoded and every nulReject field validated per partNulFields. The
+// caller's values are not modified.
+//
+// Content version 1 cannot distinguish sentinel pairs written by this
+// codec from matching natural text stored before a field was covered, so
+// matching historical values in encoded fields decode as NUL.
+func encodeNulInParts(parts []codersdk.ChatMessagePart) ([]codersdk.ChatMessagePart, error) {
 	encoded := make([]codersdk.ChatMessagePart, len(parts))
 	copy(encoded, parts)
 	for i := range encoded {
 		p := &encoded[i]
-		p.Text = encodeNulInString(p.Text)
-		p.Content = encodeNulInString(p.Content)
-		p.Args = encodeNulInJSON(p.Args)
-		p.ArgsDelta = encodeNulInString(p.ArgsDelta)
-		p.Result = encodeNulInJSON(p.Result)
-		p.ResultDelta = encodeNulInString(p.ResultDelta)
+		for _, f := range partNulFields {
+			switch f.policy {
+			case nulEncode:
+				f.encode(p)
+			case nulReject:
+				if err := f.validateNulFree(i, p); err != nil {
+					return nil, err
+				}
+			}
+		}
 	}
-	return encoded
+	return encoded, nil
 }
 
 // decodeNulInParts reverses encodeNulInParts in place.
 func decodeNulInParts(parts []codersdk.ChatMessagePart) {
 	for i := range parts {
-		p := &parts[i]
-		p.Text = decodeNulInString(p.Text)
-		p.Content = decodeNulInString(p.Content)
-		p.Args = decodeNulInJSON(p.Args)
-		p.ArgsDelta = decodeNulInString(p.ArgsDelta)
-		p.Result = decodeNulInJSON(p.Result)
-		p.ResultDelta = decodeNulInString(p.ResultDelta)
+		for _, f := range partNulFields {
+			if f.policy == nulEncode {
+				f.decode(&parts[i])
+			}
+		}
 	}
 }

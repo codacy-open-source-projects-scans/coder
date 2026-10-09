@@ -1,6 +1,4 @@
-import TextField from "@mui/material/TextField";
 import { ChevronLeftIcon } from "lucide-react";
-import type { FC } from "react";
 import { Link as RouterLink } from "react-router";
 import { toast } from "sonner";
 import { getErrorDetail } from "#/api/errors";
@@ -12,6 +10,7 @@ import {
 	SettingsHeaderDescription,
 	SettingsHeaderTitle,
 } from "#/components/SettingsHeader/SettingsHeader";
+import { Textarea } from "#/components/Textarea/Textarea";
 import { Fieldset } from "../Fieldset";
 import { DividerWithText } from "./DividerWithText";
 
@@ -21,7 +20,7 @@ type AddNewLicenseProps = {
 	savingLicenseError?: unknown;
 };
 
-export const AddNewLicensePageView: FC<AddNewLicenseProps> = ({
+export const AddNewLicensePageView: React.FC<AddNewLicenseProps> = ({
 	onSaveLicenseKey,
 	isSavingLicense,
 	savingLicenseError,
@@ -98,12 +97,10 @@ export const AddNewLicensePageView: FC<AddNewLicenseProps> = ({
 						</Button>
 					}
 				>
-					<TextField
+					<Textarea
 						name="licenseKey"
 						placeholder="Enter your license..."
-						multiline
 						rows={3}
-						fullWidth
 					/>
 				</Fieldset>
 			</div>

@@ -1,8 +1,9 @@
+import { cn } from "cn";
 import { InfoIcon, NetworkIcon } from "lucide-react";
-import { type FC, type KeyboardEvent, useState } from "react";
+import { useState } from "react";
 import { Link as RouterLink } from "react-router";
 import userAgentParser from "ua-parser-js";
-import type { AuditLog, BuildReason } from "#/api/typesGenerated";
+import type { AuditLog } from "#/api/typesGenerated";
 import { ChevronDownIcon } from "#/components/AnimatedIcons/ChevronDown";
 import { Avatar } from "#/components/Avatar/Avatar";
 import {
@@ -10,7 +11,7 @@ import {
 	CollapsibleContent,
 } from "#/components/Collapsible/Collapsible";
 import { Link } from "#/components/Link/Link";
-import { StatusPill } from "#/components/StatusPill/StatusPill";
+import { StatusBadge } from "#/components/StatusBadge/StatusBadge";
 import { TableCell } from "#/components/Table/Table";
 import { TimelineEntry } from "#/components/Timeline/TimelineEntry";
 import {
@@ -18,23 +19,19 @@ import {
 	TooltipContent,
 	TooltipTrigger,
 } from "#/components/Tooltip/Tooltip";
-import { cn } from "#/utils/cn";
-import { buildReasonLabels } from "#/utils/workspace";
+import { getBuildReasonLabel } from "#/utils/workspace";
 import { AuditLogDescription } from "./AuditLogDescription/AuditLogDescription";
 import { AuditLogDiff } from "./AuditLogDiff/AuditLogDiff";
-import {
-	determineGroupDiff,
-	determineIdPSyncMappingDiff,
-} from "./AuditLogDiff/auditUtils";
+import { determineGroupDiff } from "./AuditLogDiff/auditUtils";
 
-interface AuditLogRowProps {
+type AuditLogRowProps = {
 	auditLog: AuditLog;
 	// Useful for Storybook
 	defaultIsDiffOpen?: boolean;
 	showOrgDetails: boolean;
-}
+};
 
-export const AuditLogRow: FC<AuditLogRowProps> = ({
+export const AuditLogRow: React.FC<AuditLogRowProps> = ({
 	auditLog,
 	defaultIsDiffOpen = false,
 	showOrgDetails,
@@ -53,14 +50,6 @@ export const AuditLogRow: FC<AuditLogRowProps> = ({
 		auditDiff = determineGroupDiff(auditLog.diff);
 	}
 
-	if (
-		auditLog.resource_type === "idp_sync_settings_organization" ||
-		auditLog.resource_type === "idp_sync_settings_group" ||
-		auditLog.resource_type === "idp_sync_settings_role"
-	) {
-		auditDiff = determineIdPSyncMappingDiff(auditLog.diff);
-	}
-
 	const toggle = () => {
 		if (shouldDisplayDiff) {
 			setIsDiffOpen((v) => !v);
@@ -73,7 +62,7 @@ export const AuditLogRow: FC<AuditLogRowProps> = ({
 			data-testid={`audit-log-row-${auditLog.id}`}
 			clickable={shouldDisplayDiff}
 		>
-			<TableCell className="!p-0 border-0 border-b text-base">
+			<TableCell className="p-0! border-0 border-t text-base">
 				<Collapsible open={isDiffOpen} onOpenChange={setIsDiffOpen}>
 					<div
 						className={cn(
@@ -85,7 +74,7 @@ export const AuditLogRow: FC<AuditLogRowProps> = ({
 							role: "button",
 							"aria-expanded": isDiffOpen,
 							onClick: toggle,
-							onKeyDown: (event: KeyboardEvent<HTMLDivElement>) => {
+							onKeyDown: (event: React.KeyboardEvent<HTMLDivElement>) => {
 								if (event.key === "Enter" || event.key === " ") {
 									event.preventDefault();
 									toggle();
@@ -124,14 +113,14 @@ export const AuditLogRow: FC<AuditLogRowProps> = ({
 									</div>
 
 									<div className="flex flex-row items-center gap-4">
-										<StatusPill isHttpCode={true} code={auditLog.status_code} />
+										<StatusBadge isHttpCode code={auditLog.status_code} />
 
 										{/* With multi-org, there is not enough space so show
                       everything in a tooltip. */}
 										{showOrgDetails ? (
 											<Tooltip>
 												<TooltipTrigger asChild>
-													<InfoIcon className="text-content-link" />
+													<InfoIcon className="size-icon-sm text-content-secondary" />
 												</TooltipTrigger>
 												<TooltipContent side="bottom">
 													<div className="flex flex-col gap-2">
@@ -188,12 +177,9 @@ export const AuditLogRow: FC<AuditLogRowProps> = ({
 																		Reason:
 																	</h4>
 																	<div>
-																		{
-																			buildReasonLabels[
-																				auditLog.additional_fields
-																					.build_reason as BuildReason
-																			]
-																		}
+																		{getBuildReasonLabel(
+																			auditLog.additional_fields.build_reason,
+																		)}
 																	</div>
 																</div>
 															)}
@@ -228,12 +214,9 @@ export const AuditLogRow: FC<AuditLogRowProps> = ({
 														<span className="text-xs text-content-secondary block">
 															<span>Reason: </span>
 															<strong>
-																{
-																	buildReasonLabels[
-																		auditLog.additional_fields
-																			.build_reason as BuildReason
-																	]
-																}
+																{getBuildReasonLabel(
+																	auditLog.additional_fields.build_reason,
+																)}
 															</strong>
 														</span>
 													)}
@@ -245,8 +228,8 @@ export const AuditLogRow: FC<AuditLogRowProps> = ({
 						</div>
 
 						{shouldDisplayDiff ? (
-							<div>
-								<ChevronDownIcon open={isDiffOpen} className="ml-2" />
+							<div className="size-6 flex items-center justify-center">
+								<ChevronDownIcon open={isDiffOpen} />
 							</div>
 						) : (
 							<div className="ml-6" />

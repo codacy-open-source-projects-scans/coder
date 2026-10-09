@@ -1,9 +1,9 @@
-import type { FC } from "react";
 import { useQuery } from "react-query";
 import { useParams, useSearchParams } from "react-router";
 import { buildInfo } from "#/api/queries/buildInfo";
 import { provisionerDaemons } from "#/api/queries/organizations";
 import { EmptyState } from "#/components/EmptyState/EmptyState";
+import { useAuthenticated } from "#/hooks/useAuthenticated";
 import { useEmbeddedMetadata } from "#/hooks/useEmbeddedMetadata";
 import { useDashboard } from "#/modules/dashboard/useDashboard";
 import { useOrganizationSettings } from "#/modules/management/OrganizationSettingsLayout";
@@ -11,7 +11,8 @@ import { RequirePermission } from "#/modules/permissions/RequirePermission";
 import { pageTitle } from "#/utils/page";
 import { OrganizationProvisionersPageView } from "./OrganizationProvisionersPageView";
 
-const OrganizationProvisionersPage: FC = () => {
+const OrganizationProvisionersPage: React.FC = () => {
+	const { permissions } = useAuthenticated();
 	const { organization: organizationName } = useParams() as {
 		organization: string;
 	};
@@ -63,6 +64,7 @@ const OrganizationProvisionersPage: FC = () => {
 				error={provisionersQuery.error}
 				provisioners={provisionersQuery.data}
 				buildVersion={buildInfoQuery.data?.version}
+				permissions={permissions}
 				onRetry={provisionersQuery.refetch}
 				filter={queryParams}
 				onFilterChange={({ ids, offline }) => {

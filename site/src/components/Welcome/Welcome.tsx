@@ -1,16 +1,15 @@
-import type { FC, PropsWithChildren } from "react";
-import { CoderIcon } from "../Icons/CoderIcon";
+import { ProductLogo } from "../Icons/ProductLogo";
 
 type WelcomeProps = Readonly<
-	PropsWithChildren<{
+	React.PropsWithChildren<{
 		className?: string;
 	}>
 >;
-export const Welcome: FC<WelcomeProps> = ({ children, className }) => {
+export const Welcome: React.FC<WelcomeProps> = ({ children, className }) => {
 	return (
 		<div className={className}>
 			<div className="flex justify-center pb-1">
-				<CoderIcon className="w-12 h-12" />
+				<ProductLogo />
 			</div>
 
 			<h1 className="text-3xl font-semibold m-0 flex justify-center items-center text-center leading-snug">

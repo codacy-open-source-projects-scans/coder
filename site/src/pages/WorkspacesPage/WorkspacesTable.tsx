@@ -1,21 +1,18 @@
+import { cn } from "cn";
 import {
 	BanIcon,
-	CloudIcon,
+	CircleAlertIcon,
 	EllipsisVerticalIcon,
 	ExternalLinkIcon,
 	FileIcon,
 	PlayIcon,
 	RefreshCcwIcon,
+	RotateCcwIcon,
 	SquareTerminalIcon,
 	StarIcon,
 } from "lucide-react";
 import type React from "react";
-import {
-	type FC,
-	type PropsWithChildren,
-	type ReactNode,
-	useState,
-} from "react";
+import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "react-query";
 import { Link, useNavigate } from "react-router";
 import { API } from "#/api/api";
@@ -23,6 +20,7 @@ import { templateVersion } from "#/api/queries/templates";
 import {
 	cancelBuild,
 	deleteWorkspace,
+	setOptimisticWorkspaceListBuildStatus,
 	startWorkspace,
 	stopWorkspace,
 } from "#/api/queries/workspaces";
@@ -38,10 +36,8 @@ import { AvatarDataSkeleton } from "#/components/Avatar/AvatarDataSkeleton";
 import { Badge } from "#/components/Badge/Badge";
 import { Button } from "#/components/Button/Button";
 import { Checkbox } from "#/components/Checkbox/Checkbox";
-import { ConfirmDialog } from "#/components/Dialogs/ConfirmDialog/ConfirmDialog";
+import { ConfirmDialog } from "#/components/Dialog/ConfirmDialog/ConfirmDialog";
 import { ExternalImage } from "#/components/ExternalImage/ExternalImage";
-import { VSCodeIcon } from "#/components/Icons/VSCodeIcon";
-import { VSCodeInsidersIcon } from "#/components/Icons/VSCodeInsidersIcon";
 import { Skeleton } from "#/components/Skeleton/Skeleton";
 import { Spinner } from "#/components/Spinner/Spinner";
 import {
@@ -67,9 +63,11 @@ import { useClickableTableRow } from "#/hooks/useClickableTableRow";
 import {
 	getTerminalHref,
 	getVSCodeHref,
+	isAppUrlValid,
 	openAppInNewWindow,
 } from "#/modules/apps/apps";
 import { useAppLink } from "#/modules/apps/useAppLink";
+import { findWorkspaceAppWithAgent } from "#/modules/apps/workspaceApps";
 import { useDashboard } from "#/modules/dashboard/useDashboard";
 import { abilitiesByWorkspaceStatus } from "#/modules/workspaces/actions";
 import { WorkspaceBuildCancelDialog } from "#/modules/workspaces/WorkspaceBuildCancelDialog/WorkspaceBuildCancelDialog";
@@ -80,31 +78,34 @@ import {
 	useWorkspaceUpdate,
 	WorkspaceUpdateDialogs,
 } from "#/modules/workspaces/WorkspaceUpdateDialogs";
-import { cn } from "#/utils/cn";
 import { getDisplayWorkspaceTemplateName } from "#/utils/workspace";
 import { WorkspaceSharingIndicator } from "./WorkspaceSharingIndicator";
 import { WorkspacesEmpty } from "./WorkspacesEmpty";
 
-interface WorkspacesTableProps {
+type WorkspacesTableProps = {
 	workspaces?: readonly Workspace[];
 	checkedWorkspaces: readonly Workspace[];
 	error?: unknown;
 	isUsingFilter: boolean;
+	onClearFilter: () => void;
 	onCheckChange: (checkedWorkspaces: readonly Workspace[]) => void;
 	templates?: Template[];
 	canCreateTemplate: boolean;
+	canCreateWorkspace: boolean;
 	onActionSuccess: () => Promise<void>;
 	onActionError: (error: unknown) => void;
 	chatsByWorkspace?: Record<string, string>;
-}
+};
 
-export const WorkspacesTable: FC<WorkspacesTableProps> = ({
+export const WorkspacesTable: React.FC<WorkspacesTableProps> = ({
 	workspaces,
 	checkedWorkspaces,
 	isUsingFilter,
+	onClearFilter,
 	onCheckChange,
 	templates,
 	canCreateTemplate,
+	canCreateWorkspace,
 	onActionSuccess,
 	onActionError,
 	chatsByWorkspace,
@@ -166,7 +167,9 @@ export const WorkspacesTable: FC<WorkspacesTableProps> = ({
 							<WorkspacesEmpty
 								templates={templates}
 								isUsingFilter={isUsingFilter}
+								onClearFilter={onClearFilter}
 								canCreateTemplate={canCreateTemplate}
+								canCreateWorkspace={canCreateWorkspace}
 							/>
 						</TableCell>
 					</TableRow>
@@ -176,10 +179,12 @@ export const WorkspacesTable: FC<WorkspacesTableProps> = ({
 					const activeOrg = dashboard.organizations.find(
 						(o) => o.id === workspace.organization_id,
 					);
+					const workspacePageLink = `/@${workspace.owner_name}/${workspace.name}`;
 
 					return (
 						<WorkspacesRow
 							workspace={workspace}
+							workspacePageLink={workspacePageLink}
 							key={workspace.id}
 							checked={checked}
 						>
@@ -207,20 +212,18 @@ export const WorkspacesTable: FC<WorkspacesTableProps> = ({
 									/>
 									<AvatarData
 										title={
-											<div className="flex items-center gap-0.5">
-												<span className="whitespace-nowrap">
+											<div className="flex items-center gap-1">
+												<Link
+													to={workspacePageLink}
+													className="whitespace-nowrap select-none"
+												>
 													{workspace.name}
-												</span>
+												</Link>
 												{workspace.favorite && (
 													<StarIcon className="size-icon-xs" />
 												)}
 												{workspace.outdated && (
 													<WorkspaceOutdatedTooltip workspace={workspace} />
-												)}
-												{workspace.task_id && (
-													<Badge size="xs" variant="default">
-														Task
-													</Badge>
 												)}
 												{chatsByWorkspace?.[workspace.id] && (
 													<Badge size="xs" variant="info" hover asChild>
@@ -304,20 +307,21 @@ export const WorkspacesTable: FC<WorkspacesTableProps> = ({
 	);
 };
 
-interface WorkspacesRowProps {
+type WorkspacesRowProps = {
 	workspace: Workspace;
-	children?: ReactNode;
+	workspacePageLink: string;
+	children?: React.ReactNode;
 	checked: boolean;
-}
+};
 
-const WorkspacesRow: FC<WorkspacesRowProps> = ({
+const WorkspacesRow: React.FC<WorkspacesRowProps> = ({
 	workspace,
+	workspacePageLink,
 	children,
 	checked,
 }) => {
 	const navigate = useNavigate();
 
-	const workspacePageLink = `/@${workspace.owner_name}/${workspace.name}`;
 	const openLinkInNewTab = () => window.open(workspacePageLink, "_blank");
 	const { role, hover, ...clickableProps } = useClickableTableRow({
 		onMiddleClick: openLinkInNewTab,
@@ -350,7 +354,7 @@ const WorkspacesRow: FC<WorkspacesRowProps> = ({
 	);
 };
 
-const TableLoader: FC = () => {
+const TableLoader: React.FC = () => {
 	return (
 		<TableLoaderSkeleton>
 			<TableRowSkeleton>
@@ -368,7 +372,7 @@ const TableLoader: FC = () => {
 				</TableCell>
 				<TableCell className="w-0 ">
 					<div className="flex gap-1 justify-end">
-						<Skeleton className="h-10 w-10" />
+						<Skeleton className="size-10" />
 						<Button size="icon-lg" variant="subtle" disabled>
 							<EllipsisVerticalIcon aria-hidden="true" />
 						</Button>
@@ -389,7 +393,7 @@ type WorkspaceActionsCellProps = {
 	onActionError: (error: unknown) => void;
 };
 
-const WorkspaceActionsCell: FC<WorkspaceActionsCellProps> = ({
+const WorkspaceActionsCell: React.FC<WorkspaceActionsCellProps> = ({
 	workspace,
 	onActionSuccess,
 	onActionError,
@@ -420,6 +424,34 @@ const WorkspaceActionsCell: FC<WorkspaceActionsCellProps> = ({
 			await onActionSuccess();
 		},
 		onError: onActionError,
+	});
+
+	const restartWorkspaceMutation = useMutation({
+		mutationFn: API.restartWorkspace,
+		// restartWorkspace resolves only after the full stop/start sequence and
+		// the list has no live updates, so optimistically show the row as
+		// stopping. This reflects the restart immediately and flips the list to
+		// its fast poll interval, which then tracks the real build statuses.
+		onMutate: async () => {
+			await queryClient.cancelQueries({
+				queryKey: ["workspaces"],
+			});
+			return {
+				rollback: setOptimisticWorkspaceListBuildStatus(
+					queryClient,
+					workspace.id,
+					"stopping",
+					"stop",
+				),
+			};
+		},
+		onSuccess: async () => {
+			await onActionSuccess();
+		},
+		onError: (error, _variables, context) => {
+			context?.rollback?.();
+			onActionError(error);
+		},
 	});
 
 	const cancelJobOptions = cancelBuild(workspace, queryClient);
@@ -454,6 +486,7 @@ const WorkspaceActionsCell: FC<WorkspaceActionsCellProps> = ({
 	});
 
 	const [isStopConfirmOpen, setIsStopConfirmOpen] = useState(false);
+	const [isRestartConfirmOpen, setIsRestartConfirmOpen] = useState(false);
 	const [isCancelConfirmOpen, setIsCancelConfirmOpen] = useState(false);
 
 	const isRetrying =
@@ -507,9 +540,9 @@ const WorkspaceActionsCell: FC<WorkspaceActionsCellProps> = ({
 							isLoading={workspaceUpdate.isUpdating}
 							label="Update and start workspace"
 						>
-							<CloudIcon />
+							<RotateCcwIcon />
 						</PrimaryAction>
-						<WorkspaceUpdateDialogs {...workspaceUpdate.dialogs} />
+						<WorkspaceUpdateDialogs {...workspaceUpdate.dialogProps} />
 					</>
 				)}
 
@@ -522,7 +555,7 @@ const WorkspaceActionsCell: FC<WorkspaceActionsCellProps> = ({
 						>
 							<PlayIcon />
 						</PrimaryAction>
-						<WorkspaceUpdateDialogs {...workspaceUpdate.dialogs} />
+						<WorkspaceUpdateDialogs {...workspaceUpdate.dialogProps} />
 					</>
 				)}
 
@@ -533,9 +566,9 @@ const WorkspaceActionsCell: FC<WorkspaceActionsCellProps> = ({
 							isLoading={workspaceUpdate.isUpdating}
 							label="Update and restart workspace"
 						>
-							<CloudIcon />
+							<RotateCcwIcon />
 						</PrimaryAction>
-						<WorkspaceUpdateDialogs {...workspaceUpdate.dialogs} />
+						<WorkspaceUpdateDialogs {...workspaceUpdate.dialogProps} />
 					</>
 				)}
 
@@ -548,7 +581,7 @@ const WorkspaceActionsCell: FC<WorkspaceActionsCellProps> = ({
 						>
 							<PlayIcon />
 						</PrimaryAction>
-						<WorkspaceUpdateDialogs {...workspaceUpdate.dialogs} />
+						<WorkspaceUpdateDialogs {...workspaceUpdate.dialogProps} />
 					</>
 				)}
 
@@ -581,6 +614,12 @@ const WorkspaceActionsCell: FC<WorkspaceActionsCellProps> = ({
 							: undefined
 					}
 					isStopping={stopWorkspaceMutation.isPending}
+					onRestart={
+						abilities.actions.includes("restart")
+							? () => setIsRestartConfirmOpen(true)
+							: undefined
+					}
+					isRestarting={restartWorkspaceMutation.isPending}
 					onActionSuccess={onActionSuccess}
 				/>
 			</div>
@@ -598,6 +637,20 @@ const WorkspaceActionsCell: FC<WorkspaceActionsCellProps> = ({
 				type="delete"
 			/>
 
+			{/* Restart workspace confirmation dialog */}
+			<ConfirmDialog
+				open={isRestartConfirmOpen}
+				title="Restart workspace"
+				description={`Are you sure you want to restart the workspace "${workspace.name}"? This will stop all running processes and delete non-persistent data.`}
+				confirmText="Restart"
+				onClose={() => setIsRestartConfirmOpen(false)}
+				onConfirm={() => {
+					restartWorkspaceMutation.mutate({ workspace });
+					setIsRestartConfirmOpen(false);
+				}}
+				type="info"
+			/>
+
 			<WorkspaceBuildCancelDialog
 				open={isCancelConfirmOpen}
 				onClose={() => setIsCancelConfirmOpen(false)}
@@ -611,13 +664,13 @@ const WorkspaceActionsCell: FC<WorkspaceActionsCellProps> = ({
 	);
 };
 
-type PrimaryActionProps = PropsWithChildren<{
+type PrimaryActionProps = React.PropsWithChildren<{
 	label: string;
 	isLoading?: boolean;
 	onClick: () => void;
 }>;
 
-const PrimaryAction: FC<PrimaryActionProps> = ({
+const PrimaryAction: React.FC<PrimaryActionProps> = ({
 	onClick,
 	isLoading,
 	label,
@@ -650,20 +703,26 @@ type WorkspaceAppsProps = {
 	workspace: Workspace;
 };
 
-const WorkspaceApps: FC<WorkspaceAppsProps> = ({ workspace }) => {
+const WorkspaceApps: React.FC<WorkspaceAppsProps> = ({ workspace }) => {
 	/**
 	 * Coder is pretty flexible and allows an enormous variety of use cases, such
 	 * as having multiple resources with many agents, but they are not common. The
 	 * most common scenario is to have one single compute resource with one single
-	 * agent containing all the apps. Lets test this getting the apps for the
-	 * first resource, and first agent - they are sorted to return the compute
-	 * resource first - and see what customers and ourselves, using dogfood, think
-	 * about that.
+	 * agent containing all the apps. We get the apps from the first compute
+	 * resource (they are sorted to return the compute resource first).
+	 *
+	 * For multi-agent workspaces with sub-agents we show the apps from the parent
+	 * agent (the one without a `parent_id`). Sub-agents, such as those created by
+	 * devcontainers, are skipped so agent ordering does not determine which apps
+	 * appear.
+	 *
+	 * When a workspace has multiple parent-level agents we show the apps from the
+	 * first one only; aggregating apps across agents is tracked separately.
 	 */
 	const agent = workspace.latest_build.resources
 		.filter((r) => !r.hide)
 		.at(0)
-		?.agents?.at(0);
+		?.agents?.find((a) => a.parent_id === null);
 	if (!agent) {
 		return null;
 	}
@@ -680,7 +739,7 @@ const WorkspaceApps: FC<WorkspaceAppsProps> = ({ workspace }) => {
 		)
 		.slice(0, remainingSlots);
 
-	const buttons: ReactNode[] = [];
+	const buttons: React.ReactNode[] = [];
 
 	if (builtinApps.has("vscode")) {
 		buttons.push(
@@ -692,9 +751,7 @@ const WorkspaceApps: FC<WorkspaceAppsProps> = ({ workspace }) => {
 				workspace={workspace.name}
 				agent={agent.name}
 				folder={agent.expanded_directory}
-			>
-				<VSCodeIcon />
-			</VSCodeIconLink>,
+			/>,
 		);
 	}
 
@@ -708,9 +765,7 @@ const WorkspaceApps: FC<WorkspaceAppsProps> = ({ workspace }) => {
 				workspace={workspace.name}
 				agent={agent.name}
 				folder={agent.expanded_directory}
-			>
-				<VSCodeInsidersIcon />
-			</VSCodeIconLink>,
+			/>,
 		);
 	}
 
@@ -741,7 +796,7 @@ const WorkspaceApps: FC<WorkspaceAppsProps> = ({ workspace }) => {
 				}}
 				label="Open Terminal"
 			>
-				<SquareTerminalIcon className="!size-7" />
+				<SquareTerminalIcon className="size-7!" />
 			</BaseIconLink>,
 		);
 	}
@@ -755,19 +810,22 @@ type WorkspaceAppStatusLinksProps = {
 	workspace: Workspace;
 };
 
-const WorkspaceAppStatusLinks: FC<WorkspaceAppStatusLinksProps> = ({
+const WorkspaceAppStatusLinks: React.FC<WorkspaceAppStatusLinksProps> = ({
 	workspace,
 }) => {
 	const status = workspace.latest_app_status;
-	const agent = workspace.latest_build.resources
-		.flatMap((r) => r.agents)
-		.find((a) => a?.id === status?.agent_id);
-	const app = agent?.apps.find((a) => a.id === status?.app_id);
+	const appWithAgent = status
+		? findWorkspaceAppWithAgent(workspace, status.agent_id, status.app_id)
+		: undefined;
 
 	return (
 		<>
-			{agent && app && (
-				<IconAppLink app={app} workspace={workspace} agent={agent} />
+			{appWithAgent && (
+				<IconAppLink
+					app={appWithAgent}
+					workspace={workspace}
+					agent={appWithAgent.agent}
+				/>
 			)}
 
 			{status?.uri && status?.uri !== "n/a" && (
@@ -789,11 +847,32 @@ type IconAppLinkProps = {
 	agent: WorkspaceAgent;
 };
 
-const IconAppLink: FC<IconAppLinkProps> = ({ app, workspace, agent }) => {
+const IconAppLink: React.FC<IconAppLinkProps> = ({ app, workspace, agent }) => {
 	const link = useAppLink(app, {
 		workspace,
 		agent,
 	});
+
+	// A malformed external app URL can't be opened. Render a non-navigating
+	// icon with an explanatory tooltip instead of a broken link.
+	if (!isAppUrlValid(app)) {
+		return (
+			<BaseIconLink
+				key={app.id}
+				label={`${link.label} has an invalid URL`}
+				onClick={() => {}}
+			>
+				{app.icon ? (
+					<ExternalImage src={app.icon} />
+				) : (
+					<CircleAlertIcon
+						aria-hidden="true"
+						className="size-icon-sm text-content-warning"
+					/>
+				)}
+			</BaseIconLink>
+		);
+	}
 
 	return (
 		<BaseIconLink
@@ -807,26 +886,25 @@ const IconAppLink: FC<IconAppLinkProps> = ({ app, workspace, agent }) => {
 	);
 };
 
-type VSCodeIconLinkProps = PropsWithChildren<{
+type VSCodeIconLinkProps = {
 	variant: "vscode" | "vscode-insiders";
 	label: string;
 	owner: string;
 	workspace: string;
 	agent: string;
 	folder?: string;
-}>;
+};
 
 // Generates an API key on click instead of on page load, since
 // key generation is a POST request that should only fire when
 // the user actually wants to open VS Code.
-const VSCodeIconLink: FC<VSCodeIconLinkProps> = ({
+const VSCodeIconLink: React.FC<VSCodeIconLinkProps> = ({
 	variant,
 	label,
 	owner,
 	workspace,
 	agent,
 	folder,
-	children,
 }) => {
 	const generateKeyMutation = useMutation({
 		mutationFn: () => API.getApiKey(),
@@ -853,12 +931,17 @@ const VSCodeIconLink: FC<VSCodeIconLinkProps> = ({
 				}
 			}}
 		>
-			{children}
+			<ExternalImage
+				src={
+					variant === "vscode" ? "/icon/code.svg" : "/icon/code-insiders.svg"
+				}
+				alt=""
+			/>
 		</BaseIconLink>
 	);
 };
 
-type BaseIconLinkCommonProps = PropsWithChildren<{
+type BaseIconLinkCommonProps = React.PropsWithChildren<{
 	label: string;
 	isLoading?: boolean;
 }>;
@@ -876,7 +959,7 @@ type BaseIconLinkButtonProps = BaseIconLinkCommonProps & {
 
 type BaseIconLinkProps = BaseIconLinkAnchorProps | BaseIconLinkButtonProps;
 
-const BaseIconLink: FC<BaseIconLinkProps> = ({
+const BaseIconLink: React.FC<BaseIconLinkProps> = ({
 	isLoading,
 	label,
 	children,

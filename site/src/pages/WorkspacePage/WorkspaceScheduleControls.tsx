@@ -1,7 +1,7 @@
-import Link, { type LinkProps } from "@mui/material/Link";
+import { cn } from "cn";
 import dayjs, { type Dayjs } from "dayjs";
 import { ClockIcon, MinusIcon, PlusIcon } from "lucide-react";
-import { type FC, type ReactNode, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { useMutation, useQueryClient } from "react-query";
 import { Link as RouterLink } from "react-router";
 import { toast } from "sonner";
@@ -13,6 +13,7 @@ import {
 import type { Template, Workspace } from "#/api/typesGenerated";
 import { Button } from "#/components/Button/Button";
 import { TopbarData, TopbarIcon } from "#/components/FullPageLayout/Topbar";
+import { Link, type LinkProps } from "#/components/Link/Link";
 import {
 	Tooltip,
 	TooltipContent,
@@ -20,7 +21,6 @@ import {
 } from "#/components/Tooltip/Tooltip";
 import { useTime } from "#/hooks/useTime";
 import { getWorkspaceActivityStatus } from "#/modules/workspaces/activity";
-import { cn } from "#/utils/cn";
 import {
 	autostartDisplay,
 	autostopDisplay,
@@ -31,12 +31,12 @@ import {
 } from "#/utils/schedule";
 import { isWorkspaceOn } from "#/utils/workspace";
 
-interface WorkspaceScheduleContainerProps {
-	children?: ReactNode;
+type WorkspaceScheduleContainerProps = {
+	children?: React.ReactNode;
 	onClickIcon?: () => void;
-}
+};
 
-const WorkspaceScheduleContainer: FC<WorkspaceScheduleContainerProps> = ({
+const WorkspaceScheduleContainer: React.FC<WorkspaceScheduleContainerProps> = ({
 	children,
 	onClickIcon,
 }) => {
@@ -73,17 +73,15 @@ const WorkspaceScheduleContainer: FC<WorkspaceScheduleContainerProps> = ({
 	);
 };
 
-interface WorkspaceScheduleControlsProps {
+type WorkspaceScheduleControlsProps = {
 	workspace: Workspace;
 	template: Template;
 	canUpdateSchedule: boolean;
-}
+};
 
-export const WorkspaceScheduleControls: FC<WorkspaceScheduleControlsProps> = ({
-	workspace,
-	template,
-	canUpdateSchedule,
-}) => {
+export const WorkspaceScheduleControls: React.FC<
+	WorkspaceScheduleControlsProps
+> = ({ workspace, template, canUpdateSchedule }) => {
 	if (!shouldDisplayScheduleControls(workspace)) {
 		return null;
 	}
@@ -110,13 +108,13 @@ export const WorkspaceScheduleControls: FC<WorkspaceScheduleControlsProps> = ({
 	);
 };
 
-interface AutostopDisplayProps {
+type AutostopDisplayProps = {
 	workspace: Workspace;
 	template: Template;
 	canUpdateSchedule: boolean;
-}
+};
 
-const AutostopDisplay: FC<AutostopDisplayProps> = ({
+const AutostopDisplay: React.FC<AutostopDisplayProps> = ({
 	workspace,
 	template,
 	canUpdateSchedule,
@@ -204,7 +202,7 @@ const AutostopDisplay: FC<AutostopDisplayProps> = ({
 	const display = (
 		<ScheduleSettingsLink
 			data-testid="schedule-controls-autostop"
-			className={cn(danger && "!text-content-destructive")}
+			className={cn(danger && "text-content-destructive!")}
 		>
 			{message}
 		</ScheduleSettingsLink>
@@ -271,14 +269,23 @@ const AutostopDisplay: FC<AutostopDisplayProps> = ({
 	);
 };
 
-const ScheduleSettingsLink: React.FC<LinkProps> = ({ ...props }) => {
+const ScheduleSettingsLink: React.FC<LinkProps> = ({
+	children,
+	className,
+	...props
+}) => {
 	return (
 		<Link
-			component={RouterLink}
-			to="settings/schedule"
-			className="text-inherit [&::first-letter]:uppercase"
+			className={cn(
+				"first-letter:uppercase p-0 hover:no-underline text-content-link text-xs",
+				className,
+			)}
+			showExternalIcon={false}
 			{...props}
-		/>
+			asChild
+		>
+			<RouterLink to="settings/schedule">{children}</RouterLink>
+		</Link>
 	);
 };
 

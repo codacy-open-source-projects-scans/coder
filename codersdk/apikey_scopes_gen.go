@@ -6,6 +6,22 @@ const (
 	APIKeyScopeAll APIKeyScope = "all"
 	// Deprecated: use codersdk.APIKeyScopeCoderApplicationConnect instead.
 	APIKeyScopeApplicationConnect                  APIKeyScope = "application_connect"
+	APIKeyScopeAiGatewayKeyAll                     APIKeyScope = "ai_gateway_key:*"
+	APIKeyScopeAiGatewayKeyCreate                  APIKeyScope = "ai_gateway_key:create"
+	APIKeyScopeAiGatewayKeyDelete                  APIKeyScope = "ai_gateway_key:delete"
+	APIKeyScopeAiGatewayKeyRead                    APIKeyScope = "ai_gateway_key:read"
+	APIKeyScopeAiGatewayKeyUpdate                  APIKeyScope = "ai_gateway_key:update"
+	APIKeyScopeAiModelPriceAll                     APIKeyScope = "ai_model_price:*"
+	APIKeyScopeAiModelPriceRead                    APIKeyScope = "ai_model_price:read"
+	APIKeyScopeAiModelPriceUpdate                  APIKeyScope = "ai_model_price:update"
+	APIKeyScopeAiProviderAll                       APIKeyScope = "ai_provider:*"
+	APIKeyScopeAiProviderCreate                    APIKeyScope = "ai_provider:create"
+	APIKeyScopeAiProviderDelete                    APIKeyScope = "ai_provider:delete"
+	APIKeyScopeAiProviderRead                      APIKeyScope = "ai_provider:read"
+	APIKeyScopeAiProviderUpdate                    APIKeyScope = "ai_provider:update"
+	APIKeyScopeAiSeatAll                           APIKeyScope = "ai_seat:*"
+	APIKeyScopeAiSeatCreate                        APIKeyScope = "ai_seat:create"
+	APIKeyScopeAiSeatRead                          APIKeyScope = "ai_seat:read"
 	APIKeyScopeAibridgeInterceptionAll             APIKeyScope = "aibridge_interception:*"
 	APIKeyScopeAibridgeInterceptionCreate          APIKeyScope = "aibridge_interception:create"
 	APIKeyScopeAibridgeInterceptionRead            APIKeyScope = "aibridge_interception:read"
@@ -29,6 +45,10 @@ const (
 	APIKeyScopeAuditLogAll                         APIKeyScope = "audit_log:*"
 	APIKeyScopeAuditLogCreate                      APIKeyScope = "audit_log:create"
 	APIKeyScopeAuditLogRead                        APIKeyScope = "audit_log:read"
+	APIKeyScopeBoundaryLogAll                      APIKeyScope = "boundary_log:*"
+	APIKeyScopeBoundaryLogCreate                   APIKeyScope = "boundary_log:create"
+	APIKeyScopeBoundaryLogDelete                   APIKeyScope = "boundary_log:delete"
+	APIKeyScopeBoundaryLogRead                     APIKeyScope = "boundary_log:read"
 	APIKeyScopeBoundaryUsageAll                    APIKeyScope = "boundary_usage:*"
 	APIKeyScopeBoundaryUsageDelete                 APIKeyScope = "boundary_usage:delete"
 	APIKeyScopeBoundaryUsageRead                   APIKeyScope = "boundary_usage:read"
@@ -37,7 +57,28 @@ const (
 	APIKeyScopeChatCreate                          APIKeyScope = "chat:create"
 	APIKeyScopeChatDelete                          APIKeyScope = "chat:delete"
 	APIKeyScopeChatRead                            APIKeyScope = "chat:read"
+	APIKeyScopeChatShare                           APIKeyScope = "chat:share"
 	APIKeyScopeChatUpdate                          APIKeyScope = "chat:update"
+	APIKeyScopeChatAutomationAll                   APIKeyScope = "chat_automation:*"
+	APIKeyScopeChatAutomationCreate                APIKeyScope = "chat_automation:create"
+	APIKeyScopeChatAutomationDelete                APIKeyScope = "chat_automation:delete"
+	APIKeyScopeChatAutomationRead                  APIKeyScope = "chat_automation:read"
+	APIKeyScopeChatAutomationUpdate                APIKeyScope = "chat_automation:update"
+	APIKeyScopeChatModelConfigAll                  APIKeyScope = "chat_model_config:*"
+	APIKeyScopeChatModelConfigCreate               APIKeyScope = "chat_model_config:create"
+	APIKeyScopeChatModelConfigDelete               APIKeyScope = "chat_model_config:delete"
+	APIKeyScopeChatModelConfigRead                 APIKeyScope = "chat_model_config:read"
+	APIKeyScopeChatModelConfigShare                APIKeyScope = "chat_model_config:share"
+	APIKeyScopeChatModelConfigUpdate               APIKeyScope = "chat_model_config:update"
+	APIKeyScopeChatProjectAll                      APIKeyScope = "chat_project:*"
+	APIKeyScopeChatProjectCreate                   APIKeyScope = "chat_project:create"
+	APIKeyScopeChatProjectDelete                   APIKeyScope = "chat_project:delete"
+	APIKeyScopeChatProjectRead                     APIKeyScope = "chat_project:read"
+	APIKeyScopeChatProjectUpdate                   APIKeyScope = "chat_project:update"
+	APIKeyScopeChatProjectMemoryAll                APIKeyScope = "chat_project_memory:*"
+	APIKeyScopeChatProjectMemoryCreate             APIKeyScope = "chat_project_memory:create"
+	APIKeyScopeChatProjectMemoryDelete             APIKeyScope = "chat_project_memory:delete"
+	APIKeyScopeChatProjectMemoryRead               APIKeyScope = "chat_project_memory:read"
 	APIKeyScopeCoderAll                            APIKeyScope = "coder:all"
 	APIKeyScopeCoderApikeysManageSelf              APIKeyScope = "coder:apikeys.manage_self"
 	APIKeyScopeCoderApplicationConnect             APIKeyScope = "coder:application_connect"
@@ -83,6 +124,12 @@ const (
 	APIKeyScopeLicenseCreate                       APIKeyScope = "license:create"
 	APIKeyScopeLicenseDelete                       APIKeyScope = "license:delete"
 	APIKeyScopeLicenseRead                         APIKeyScope = "license:read"
+	APIKeyScopeMcpServerConfigAll                  APIKeyScope = "mcp_server_config:*"
+	APIKeyScopeMcpServerConfigCreate               APIKeyScope = "mcp_server_config:create"
+	APIKeyScopeMcpServerConfigDelete               APIKeyScope = "mcp_server_config:delete"
+	APIKeyScopeMcpServerConfigRead                 APIKeyScope = "mcp_server_config:read"
+	APIKeyScopeMcpServerConfigShare                APIKeyScope = "mcp_server_config:share"
+	APIKeyScopeMcpServerConfigUpdate               APIKeyScope = "mcp_server_config:update"
 	APIKeyScopeNotificationMessageAll              APIKeyScope = "notification_message:*"
 	APIKeyScopeNotificationMessageCreate           APIKeyScope = "notification_message:create"
 	APIKeyScopeNotificationMessageDelete           APIKeyScope = "notification_message:delete"
@@ -142,11 +189,6 @@ const (
 	APIKeyScopeTailnetCoordinatorDelete            APIKeyScope = "tailnet_coordinator:delete"
 	APIKeyScopeTailnetCoordinatorRead              APIKeyScope = "tailnet_coordinator:read"
 	APIKeyScopeTailnetCoordinatorUpdate            APIKeyScope = "tailnet_coordinator:update"
-	APIKeyScopeTaskAll                             APIKeyScope = "task:*"
-	APIKeyScopeTaskCreate                          APIKeyScope = "task:create"
-	APIKeyScopeTaskDelete                          APIKeyScope = "task:delete"
-	APIKeyScopeTaskRead                            APIKeyScope = "task:read"
-	APIKeyScopeTaskUpdate                          APIKeyScope = "task:update"
 	APIKeyScopeTemplateAll                         APIKeyScope = "template:*"
 	APIKeyScopeTemplateCreate                      APIKeyScope = "template:create"
 	APIKeyScopeTemplateDelete                      APIKeyScope = "template:delete"
@@ -170,6 +212,11 @@ const (
 	APIKeyScopeUserSecretDelete                    APIKeyScope = "user_secret:delete"
 	APIKeyScopeUserSecretRead                      APIKeyScope = "user_secret:read"
 	APIKeyScopeUserSecretUpdate                    APIKeyScope = "user_secret:update"
+	APIKeyScopeUserSkillAll                        APIKeyScope = "user_skill:*"
+	APIKeyScopeUserSkillCreate                     APIKeyScope = "user_skill:create"
+	APIKeyScopeUserSkillDelete                     APIKeyScope = "user_skill:delete"
+	APIKeyScopeUserSkillRead                       APIKeyScope = "user_skill:read"
+	APIKeyScopeUserSkillUpdate                     APIKeyScope = "user_skill:update"
 	APIKeyScopeWebpushSubscriptionAll              APIKeyScope = "webpush_subscription:*"
 	APIKeyScopeWebpushSubscriptionCreate           APIKeyScope = "webpush_subscription:create"
 	APIKeyScopeWebpushSubscriptionDelete           APIKeyScope = "webpush_subscription:delete"
@@ -193,6 +240,11 @@ const (
 	APIKeyScopeWorkspaceAgentResourceMonitorCreate APIKeyScope = "workspace_agent_resource_monitor:create"
 	APIKeyScopeWorkspaceAgentResourceMonitorRead   APIKeyScope = "workspace_agent_resource_monitor:read"
 	APIKeyScopeWorkspaceAgentResourceMonitorUpdate APIKeyScope = "workspace_agent_resource_monitor:update"
+	APIKeyScopeWorkspaceBuildOrchestrationAll      APIKeyScope = "workspace_build_orchestration:*"
+	APIKeyScopeWorkspaceBuildOrchestrationCreate   APIKeyScope = "workspace_build_orchestration:create"
+	APIKeyScopeWorkspaceBuildOrchestrationDelete   APIKeyScope = "workspace_build_orchestration:delete"
+	APIKeyScopeWorkspaceBuildOrchestrationRead     APIKeyScope = "workspace_build_orchestration:read"
+	APIKeyScopeWorkspaceBuildOrchestrationUpdate   APIKeyScope = "workspace_build_orchestration:update"
 	APIKeyScopeWorkspaceDormantAll                 APIKeyScope = "workspace_dormant:*"
 	APIKeyScopeWorkspaceDormantApplicationConnect  APIKeyScope = "workspace_dormant:application_connect"
 	APIKeyScopeWorkspaceDormantCreate              APIKeyScope = "workspace_dormant:create"
@@ -220,6 +272,8 @@ var PublicAPIKeyScopes = []APIKeyScope{
 	APIKeyScopeApiKeyDelete,
 	APIKeyScopeApiKeyRead,
 	APIKeyScopeApiKeyUpdate,
+	APIKeyScopeChatModelConfigRead,
+	APIKeyScopeChatModelConfigShare,
 	APIKeyScopeCoderAll,
 	APIKeyScopeCoderApikeysManageSelf,
 	APIKeyScopeCoderApplicationConnect,
@@ -232,21 +286,19 @@ var PublicAPIKeyScopes = []APIKeyScope{
 	APIKeyScopeFileAll,
 	APIKeyScopeFileCreate,
 	APIKeyScopeFileRead,
+	APIKeyScopeInboxNotificationRead,
+	APIKeyScopeInboxNotificationUpdate,
 	APIKeyScopeOrganizationAll,
 	APIKeyScopeOrganizationDelete,
 	APIKeyScopeOrganizationRead,
 	APIKeyScopeOrganizationUpdate,
-	APIKeyScopeTaskAll,
-	APIKeyScopeTaskCreate,
-	APIKeyScopeTaskDelete,
-	APIKeyScopeTaskRead,
-	APIKeyScopeTaskUpdate,
 	APIKeyScopeTemplateAll,
 	APIKeyScopeTemplateCreate,
 	APIKeyScopeTemplateDelete,
 	APIKeyScopeTemplateRead,
 	APIKeyScopeTemplateUpdate,
 	APIKeyScopeTemplateUse,
+	APIKeyScopeUserAll,
 	APIKeyScopeUserRead,
 	APIKeyScopeUserReadPersonal,
 	APIKeyScopeUserUpdatePersonal,
@@ -255,6 +307,11 @@ var PublicAPIKeyScopes = []APIKeyScope{
 	APIKeyScopeUserSecretDelete,
 	APIKeyScopeUserSecretRead,
 	APIKeyScopeUserSecretUpdate,
+	APIKeyScopeUserSkillAll,
+	APIKeyScopeUserSkillCreate,
+	APIKeyScopeUserSkillDelete,
+	APIKeyScopeUserSkillRead,
+	APIKeyScopeUserSkillUpdate,
 	APIKeyScopeWorkspaceAll,
 	APIKeyScopeWorkspaceApplicationConnect,
 	APIKeyScopeWorkspaceCreate,

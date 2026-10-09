@@ -1,9 +1,9 @@
 import { Command as CommandPrimitive } from "cmdk";
+import { cn } from "cn";
 import { SearchIcon } from "lucide-react";
-import { cn } from "#/utils/cn";
 
 export const Command: React.FC<
-	React.ComponentPropsWithRef<typeof CommandPrimitive>
+	React.ComponentProps<typeof CommandPrimitive>
 > = ({ className, ...props }) => {
 	return (
 		<CommandPrimitive
@@ -17,14 +17,14 @@ export const Command: React.FC<
 };
 
 export const CommandInput: React.FC<
-	React.ComponentPropsWithRef<typeof CommandPrimitive.Input>
+	React.ComponentProps<typeof CommandPrimitive.Input>
 > = ({ className, ...props }) => {
 	return (
 		<div className="flex items-center border-b px-3" cmdk-input-wrapper="">
-			<SearchIcon className="mr-2 h-4 w-4 shrink-0 opacity-50" />
+			<SearchIcon className="mr-2 size-4 shrink-0 opacity-50" />
 			<CommandPrimitive.Input
 				className={cn(
-					`flex h-10 w-full rounded-md bg-transparent py-3 text-sm outline-none border-none
+					`flex h-10 w-full rounded-md bg-transparent py-3 text-sm outline-hidden border-none
 				placeholder:text-content-secondary text-content-primary
 				disabled:cursor-not-allowed disabled:opacity-50`,
 					className,
@@ -36,21 +36,18 @@ export const CommandInput: React.FC<
 };
 
 export const CommandList: React.FC<
-	React.ComponentPropsWithRef<typeof CommandPrimitive.List>
+	React.ComponentProps<typeof CommandPrimitive.List>
 > = ({ className, ...props }) => {
 	return (
 		<CommandPrimitive.List
-			className={cn(
-				"max-h-96 overflow-y-auto overflow-x-hidden border-0 border-t border-solid border-border",
-				className,
-			)}
+			className={cn("max-h-96 overflow-y-auto overflow-x-hidden", className)}
 			{...props}
 		/>
 	);
 };
 
 export const CommandEmpty: React.FC<
-	React.ComponentPropsWithRef<typeof CommandPrimitive.Empty>
+	React.ComponentProps<typeof CommandPrimitive.Empty>
 > = ({ className, ...props }) => {
 	return (
 		<CommandPrimitive.Empty
@@ -61,7 +58,7 @@ export const CommandEmpty: React.FC<
 };
 
 export const CommandGroup: React.FC<
-	React.ComponentPropsWithRef<typeof CommandPrimitive.Group>
+	React.ComponentProps<typeof CommandPrimitive.Group>
 > = ({ className, ...props }) => {
 	return (
 		<CommandPrimitive.Group
@@ -77,7 +74,7 @@ export const CommandGroup: React.FC<
 };
 
 export const CommandSeparator: React.FC<
-	React.ComponentPropsWithRef<typeof CommandPrimitive.Separator>
+	React.ComponentProps<typeof CommandPrimitive.Separator>
 > = ({ className, ...props }) => {
 	return (
 		<CommandPrimitive.Separator
@@ -88,14 +85,15 @@ export const CommandSeparator: React.FC<
 };
 
 export const CommandItem: React.FC<
-	React.ComponentPropsWithRef<typeof CommandPrimitive.Item>
+	React.ComponentProps<typeof CommandPrimitive.Item>
 > = ({ className, ...props }) => {
 	return (
 		<CommandPrimitive.Item
 			className={cn(
-				`relative flex cursor-default gap-2 select-none text-content-secondary items-center rounded-sm px-2 py-2 text-sm font-medium outline-none
+				`relative flex cursor-default gap-2 select-none text-content-secondary items-center rounded-sm px-2 py-2 text-sm font-medium outline-hidden
 			data-[disabled=true]:pointer-events-none data-[disabled=true]:opacity-50
 			data-[selected=true]:bg-surface-secondary data-[selected=true]:text-content-primary
+			data-[selected=true]:ring-2 data-[selected=true]:ring-inset data-[selected=true]:ring-content-link
 			[&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0`,
 				className,
 			)}

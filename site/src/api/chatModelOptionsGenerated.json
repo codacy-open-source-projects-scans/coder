@@ -50,36 +50,44 @@
 				"input_type": "input"
 			},
 			{
-				"json_name": "cost.input_price_per_million_tokens",
-				"go_name": "Cost.InputPricePerMillionTokens",
-				"type": "number",
-				"description": "Input token price in USD per 1M tokens",
+				"json_name": "reasoning_effort.default",
+				"go_name": "ReasoningEffort.Default",
+				"type": "string",
+				"description": "Reasoning effort used when the user has not selected one",
+				"label": "Default Reasoning Effort",
 				"required": false,
-				"input_type": "input"
+				"enum": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+				"input_type": "select"
 			},
 			{
-				"json_name": "cost.output_price_per_million_tokens",
-				"go_name": "Cost.OutputPricePerMillionTokens",
-				"type": "number",
-				"description": "Output token price in USD per 1M tokens",
+				"json_name": "reasoning_effort.max",
+				"go_name": "ReasoningEffort.Max",
+				"type": "string",
+				"description": "Maximum reasoning effort the user may select",
+				"label": "Max Reasoning Effort",
 				"required": false,
-				"input_type": "input"
+				"enum": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+				"input_type": "select"
 			},
 			{
-				"json_name": "cost.cache_read_price_per_million_tokens",
-				"go_name": "Cost.CacheReadPricePerMillionTokens",
-				"type": "number",
-				"description": "Cache read token price in USD per 1M tokens",
+				"json_name": "openai_config.use_responses_api",
+				"go_name": "OpenaiConfig.UseResponsesAPI",
+				"type": "boolean",
+				"description": "Override which OpenAI API this model uses. Leave unset to decide from the provider SDK's known-model list, true to force the Responses API, false to force Chat Completions. Azure OpenAI providers ignore this and always follow the known-model list.",
+				"label": "Use Responses API",
 				"required": false,
-				"input_type": "input"
+				"input_type": "select",
+				"visible_for_providers": ["openai"]
 			},
 			{
-				"json_name": "cost.cache_write_price_per_million_tokens",
-				"go_name": "Cost.CacheWritePricePerMillionTokens",
-				"type": "number",
-				"description": "Cache write or cache creation token price in USD per 1M tokens",
+				"json_name": "openai_config.reasoning_model",
+				"go_name": "OpenaiConfig.ReasoningModel",
+				"type": "boolean",
+				"description": "Override whether this OpenAI-format model is treated as a reasoning model (reasoning effort and summary are sent, temperature and top_p are dropped). Leave unset to decide from the model name, true for models newer than the provider SDK knows, false to force plain sampling. Ignored for Anthropic models on Bedrock.",
+				"label": "Reasoning Model",
 				"required": false,
-				"input_type": "input"
+				"input_type": "select",
+				"visible_for_providers": ["openai", "bedrock"]
 			}
 		]
 	},
@@ -103,13 +111,13 @@
 					"input_type": "input"
 				},
 				{
-					"json_name": "effort",
-					"go_name": "Effort",
+					"json_name": "thinking_display",
+					"go_name": "ThinkingDisplay",
 					"type": "string",
-					"description": "Controls the level of reasoning effort",
-					"label": "Reasoning Effort",
+					"description": "Controls how Anthropic returns thinking content",
+					"label": "Thinking Display",
 					"required": false,
-					"enum": ["low", "medium", "high", "xhigh", "max"],
+					"enum": ["summarized", "omitted"],
 					"input_type": "select"
 				},
 				{
@@ -135,7 +143,9 @@
 					"description": "Restrict web search to these domains (cannot be used with blocked_domains)",
 					"label": "Web Search: Allowed Domains",
 					"required": false,
-					"input_type": "json"
+					"input_type": "json",
+					"visible_when": "web_search_enabled",
+					"conflicts_with": ["blocked_domains"]
 				},
 				{
 					"json_name": "blocked_domains",
@@ -144,7 +154,18 @@
 					"description": "Block web search on these domains (cannot be used with allowed_domains)",
 					"label": "Web Search: Blocked Domains",
 					"required": false,
-					"input_type": "json"
+					"input_type": "json",
+					"visible_when": "web_search_enabled",
+					"conflicts_with": ["allowed_domains"]
+				},
+				{
+					"json_name": "context_1m_enabled",
+					"go_name": "Context1MEnabled",
+					"type": "boolean",
+					"description": "Send the anthropic-beta context-1m-2025-08-07 header to unlock the 1M token context window on supported Claude models. Pair with a matching Context Limit. Long-context pricing and higher latency may apply above 200K tokens.",
+					"label": "1M Context Window",
+					"required": false,
+					"input_type": "select"
 				}
 			]
 		},
@@ -154,9 +175,20 @@
 					"json_name": "thinking_config.thinking_budget",
 					"go_name": "ThinkingConfig.ThinkingBudget",
 					"type": "integer",
-					"description": "Maximum number of tokens the model may use for thinking",
+					"description": "Maximum number of tokens the model may use for thinking (cannot be used with thinking_level)",
 					"required": false,
-					"input_type": "input"
+					"input_type": "input",
+					"conflicts_with": ["thinking_config.thinking_level"]
+				},
+				{
+					"json_name": "thinking_config.thinking_level",
+					"go_name": "ThinkingConfig.ThinkingLevel",
+					"type": "string",
+					"description": "Thinking level for Gemini 3+ models, used when the user has not selected a reasoning effort (cannot be used with thinking_budget)",
+					"required": false,
+					"enum": ["minimal", "low", "medium", "high"],
+					"input_type": "select",
+					"conflicts_with": ["thinking_config.thinking_budget"]
 				},
 				{
 					"json_name": "thinking_config.include_thoughts",
@@ -275,15 +307,6 @@
 					"hidden": true
 				},
 				{
-					"json_name": "reasoning_effort",
-					"go_name": "ReasoningEffort",
-					"type": "string",
-					"description": "Controls the level of reasoning effort",
-					"required": false,
-					"enum": ["none", "minimal", "low", "medium", "high", "xhigh"],
-					"input_type": "select"
-				},
-				{
 					"json_name": "reasoning_summary",
 					"go_name": "ReasoningSummary",
 					"type": "string",
@@ -353,6 +376,16 @@
 					"hidden": true
 				},
 				{
+					"json_name": "reasoning_mode",
+					"go_name": "ReasoningMode",
+					"type": "string",
+					"description": "Supported from the GPT-5.6 Sol generation of OpenAI models. Requests fail when Pro is set on a model that does not support it. Pro increases model work, latency, and token usage.",
+					"required": false,
+					"enum": ["pro"],
+					"input_type": "select",
+					"visible_for_providers": ["openai"]
+				},
+				{
 					"json_name": "service_tier",
 					"go_name": "ServiceTier",
 					"type": "string",
@@ -394,7 +427,8 @@
 					"description": "Amount of search context to use",
 					"required": false,
 					"enum": ["low", "medium", "high"],
-					"input_type": "select"
+					"input_type": "select",
+					"visible_when": "web_search_enabled"
 				},
 				{
 					"json_name": "allowed_domains",
@@ -403,7 +437,8 @@
 					"description": "Restrict web search to these domains",
 					"label": "Web Search: Allowed Domains",
 					"required": false,
-					"input_type": "json"
+					"input_type": "json",
+					"visible_when": "web_search_enabled"
 				}
 			]
 		},
@@ -417,15 +452,6 @@
 					"required": false,
 					"input_type": "input",
 					"hidden": true
-				},
-				{
-					"json_name": "reasoning_effort",
-					"go_name": "ReasoningEffort",
-					"type": "string",
-					"description": "Controls the level of reasoning effort",
-					"required": false,
-					"enum": ["none", "minimal", "low", "medium", "high", "xhigh"],
-					"input_type": "select"
 				}
 			]
 		},
@@ -454,15 +480,6 @@
 					"description": "Maximum number of tokens for reasoning output",
 					"required": false,
 					"input_type": "input"
-				},
-				{
-					"json_name": "reasoning.effort",
-					"go_name": "Reasoning.Effort",
-					"type": "string",
-					"description": "Controls the level of reasoning effort",
-					"required": false,
-					"enum": ["none", "minimal", "low", "medium", "high", "xhigh"],
-					"input_type": "select"
 				},
 				{
 					"json_name": "extra_body",
@@ -553,15 +570,6 @@
 					"description": "Maximum number of tokens for reasoning output",
 					"required": false,
 					"input_type": "input"
-				},
-				{
-					"json_name": "reasoning.effort",
-					"go_name": "Reasoning.Effort",
-					"type": "string",
-					"description": "Controls the level of reasoning effort",
-					"required": false,
-					"enum": ["none", "minimal", "low", "medium", "high", "xhigh"],
-					"input_type": "select"
 				},
 				{
 					"json_name": "providerOptions",

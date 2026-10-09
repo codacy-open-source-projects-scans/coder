@@ -1,28 +1,34 @@
+import { cn } from "cn";
 import {
 	ArrowLeftIcon,
 	ArrowUpIcon,
 	CheckIcon,
+	ChevronDownIcon,
 	ChevronRightIcon,
-	ImageIcon,
+	LockIcon,
+	type LucideIcon,
 	MicIcon,
 	MonitorIcon,
+	PaperclipIcon,
 	PencilIcon,
 	PlusIcon,
 	ServerIcon,
 	SquareIcon,
+	TriangleAlertIcon,
+	UnlinkIcon,
 	XIcon,
+	ZapIcon,
 } from "lucide-react";
 import type React from "react";
-import {
-	type FC,
-	useEffect,
-	useImperativeHandle,
-	useRef,
-	useState,
-} from "react";
+import { useEffect, useId, useImperativeHandle, useRef, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "react-query";
 import { Link } from "react-router";
+import { toast } from "sonner";
+import { getErrorMessage } from "#/api/errors";
+import { disconnectMCPServerOAuth2 } from "#/api/queries/chats";
+import { preferenceSettings } from "#/api/queries/users";
 import type * as TypesGen from "#/api/typesGenerated";
-import type { ChatMessagePart, ChatQueuedMessage } from "#/api/typesGenerated";
+import type { ChatQueuedMessage } from "#/api/typesGenerated";
 import { Alert, AlertDescription } from "#/components/Alert/Alert";
 import { Button } from "#/components/Button/Button";
 import {
@@ -33,10 +39,12 @@ import {
 	CommandItem,
 	CommandList,
 } from "#/components/Command/Command";
+import { ConfirmDialog } from "#/components/Dialog/ConfirmDialog/ConfirmDialog";
 import { ExternalImage } from "#/components/ExternalImage/ExternalImage";
 import {
 	Popover,
 	PopoverContent,
+	type PopoverContentProps,
 	PopoverTrigger,
 } from "#/components/Popover/Popover";
 import { Separator } from "#/components/Separator/Separator";
@@ -48,29 +56,56 @@ import {
 	TooltipContent,
 	TooltipTrigger,
 } from "#/components/Tooltip/Tooltip";
-import { cn } from "#/utils/cn";
+import { useMediaQuery } from "#/hooks/useMediaQuery";
+import {
+	ModelSelector,
+	type ModelSelectorOption,
+} from "#/modules/aiModels/ModelSelector";
+import { useDashboard } from "#/modules/dashboard/useDashboard";
 import { countInvisibleCharacters } from "#/utils/invisibleUnicode";
-import { isBelowMdViewport, isMobileViewport } from "#/utils/mobile";
+import {
+	isBelowMdViewport,
+	isMobileViewport,
+	mobileViewportMediaQuery,
+} from "#/utils/mobile";
 import { chatWidthClass, useChatFullWidth } from "../hooks/useChatFullWidth";
+import { useMCPOAuthFlow } from "../hooks/useMCPOAuthFlow";
 import { useOverflowCount } from "../hooks/useOverflowCount";
 import { useSpeechRecognition } from "../hooks/useSpeechRecognition";
-import { formatProviderLabel } from "../utils/modelOptions";
+import {
+	isWorkspaceUploadInProgress,
+	type WorkspaceFileUpload,
+} from "../hooks/useWorkspaceFileUploads";
+import {
+	getAgentChatSendShortcut,
+	MODIFIER_AGENT_CHAT_SEND_SHORTCUT,
+} from "../utils/agentChatSendShortcut";
+import {
+	chatAttachmentAcceptAttribute,
+	isChatAttachmentFile,
+	shouldRouteFileToWorkspace,
+} from "../utils/chatAttachments";
+import type { ChatSlashCommand } from "../utils/slashCommands";
+import { AgentSetupNotice } from "./AgentSetupNotice";
 import {
 	AttachmentPreview,
 	isUploadInProgress,
 	type UploadState,
 } from "./AttachmentPreview";
-import { ModelSelector, type ModelSelectorOption } from "./ChatElements";
+import type { ChatAutomationNames } from "./ChatConversation/AutomationLabel";
 import {
 	ChatMessageInput,
 	type ChatMessageInputRef,
 } from "./ChatMessageInput/ChatMessageInput";
+import type { SkillMetadata } from "./ChatMessageInput/SkillsTriggerMenu";
 import type { AgentContextUsage } from "./ContextUsageIndicator";
 import { ContextUsageIndicator } from "./ContextUsageIndicator";
 import { ImageLightbox } from "./ImageLightbox";
+import { MCPServerIconStack } from "./MCPServerIconStack";
 import { QueuedMessagesList } from "./QueuedMessagesList";
 import { TextPreviewDialog } from "./TextPreviewDialog";
 import { WorkspacePill } from "./WorkspacePill";
+import { WorkspaceUploadPreview } from "./WorkspaceUploadPreview";
 
 export {
 	ImageThumbnail,
@@ -80,22 +115,44 @@ export {
 export type { ChatMessageInputRef } from "./ChatMessageInput/ChatMessageInput";
 export type { AgentContextUsage } from "./ContextUsageIndicator";
 
-interface AgentChatInputProps {
+type WorkspaceUploadsProps = {
+	uploads: readonly WorkspaceFileUpload[];
+	// Present only when the chat has a bound workspace with a
+	// connected agent; its absence hides the whole affordance.
+	onAttach?: (files: File[]) => void;
+	onRemove: (id: string) => void;
+	// Toast shown when a workspace-routed file arrives while onAttach
+	// is unavailable. Overridden on the new-chat page, where the fix
+	// is selecting a workspace rather than attaching one to the chat.
+	unavailableMessage?: string;
+	// Deferred mode (new-chat page): entries upload during submit and
+	// every entry re-uploads on the next send after a failure, so
+	// error chips still count as sendable content.
+	deferred?: boolean;
+};
+
+const workspaceRequiredAttachmentMessage =
+	"This file type is uploaded into the chat's workspace. Attach a running workspace to the chat, then try again.";
+const workspaceUploadPendingSendMessage =
+	"Wait for the current message to finish sending, then add the file again.";
+
+type AgentChatInputProps = {
 	onSend: (message: string) => void;
 	placeholder?: string;
 	isDisabled: boolean;
+	isReadOnly?: boolean;
 	isLoading: boolean;
 	// Ref for the Lexical editor, exposed for imperative access.
 	inputRef?: React.Ref<ChatMessageInputRef>;
 	// Initial text to seed the editor on first mount only.
-	initialValue?: string;
+	initialValue: string;
 	// Serialized Lexical editor state for restoring drafts with
 	// file-reference chips. Takes precedence over initialValue.
 	initialEditorState?: string;
 	// Monotonic counter to force editor remount.
 	remountKey?: number;
 	// Called on every content change inside the editor.
-	onContentChange?: (
+	onContentChange: (
 		content: string,
 		serializedEditorState: string,
 		hasFileReferences: boolean,
@@ -106,9 +163,13 @@ interface AgentChatInputProps {
 	modelOptions: readonly ModelSelectorOption[];
 	modelSelectorPlaceholder: string;
 	hasModelOptions: boolean;
-	planModeEnabled?: boolean;
-	onPlanModeToggle?: (enabled: boolean) => void;
-	isModelCatalogLoading?: boolean;
+	reasoningEffort?: string;
+	onReasoningEffortChange?: (value: string) => void;
+	planModeEnabled: boolean;
+	onPlanModeToggle: (enabled: boolean) => void;
+	manageAutomationsEnabled?: boolean;
+	onManageAutomationsToggle?: (enabled: boolean) => void;
+	isModelCatalogLoading: boolean;
 	// Streaming controls (optional, for the detail page).
 	isStreaming?: boolean;
 	onInterrupt?: () => void;
@@ -118,68 +179,133 @@ interface AgentChatInputProps {
 		id: string;
 		name: string;
 		owner_name: string;
+		organization_id: string;
 	}>;
 	selectedWorkspaceId?: string | null;
 	onWorkspaceChange?: (id: string | null) => void;
+	// Organization ID of the current chat. When set, workspaces from
+	// other organizations are shown as disabled in the picker.
+	chatOrganizationId?: string;
 	isWorkspaceLoading?: boolean;
 	// Queued user messages rendered above the textarea.
 	queuedMessages?: readonly ChatQueuedMessage[];
+	// Composers without a queue have no automation inputs to label.
+	automationNames?: ChatAutomationNames;
 	onDeleteQueuedMessage?: (id: number) => Promise<void> | void;
 	onPromoteQueuedMessage?: (id: number) => Promise<void> | void;
-	// Queue editing state, owned by the parent.
-	editingQueuedMessageID?: number | null;
-	onStartQueueEdit?: (
-		id: number,
-		text: string,
-		fileBlocks: readonly ChatMessagePart[],
-	) => void;
-	onCancelQueueEdit?: () => void;
+	// Caution shown at the top of the composer, owned by the parent.
+	warning?: string;
 	// History editing state, owned by the parent.
 	isEditingHistoryMessage?: boolean;
 	onCancelHistoryEdit?: () => void;
-	onEditLastUserMessage?: () => void;
+	// Newest-first list of non-empty user prompts for local history cycling.
+	userPromptHistory?: readonly string[];
 
 	// Optional context-usage summary shown to the left of the send button.
-	// Pass `null` to render fallback values (e.g. when limit is unknown).
+	// Fields the provider has not reported render as fallback values.
 	// Omit entirely to hide the indicator.
-	contextUsage?: AgentContextUsage | null;
+	contextUsage?: AgentContextUsage;
+	// Re-pins the chat to the workspace's latest context snapshot,
+	// surfaced by the context indicator when the pinned context has
+	// drifted.
+	onRefreshContext?: () => void;
+	isRefreshingContext?: boolean;
 	attachments?: readonly File[];
 	onAttach?: (files: File[]) => void;
 	onRemoveAttachment?: (attachment: number | File) => void;
 	uploadStates?: Map<File, UploadState>;
 	previewUrls?: Map<File, string>;
 	textContents?: Map<File, string>;
-	onTextPreview?: (content: string, fileName: string) => void;
+	workspaceUploads?: WorkspaceUploadsProps;
+	onTextPreview?: (
+		content: string,
+		fileName: string,
+		mediaType: string,
+	) => void;
 	// MCP Server picker.
 	mcpServers?: readonly TypesGen.MCPServerConfig[];
 	selectedMCPServerIds?: readonly string[];
 	onMCPSelectionChange?: (ids: string[]) => void;
 	onMCPAuthComplete?: (serverId: string) => void;
+	workspaceSkills?: readonly SkillMetadata[];
 	workspace?: TypesGen.Workspace;
 	workspaceAgent?: TypesGen.WorkspaceAgent;
 	chatId?: string;
 	sshCommand?: string;
 	attachedWorkspace?: AttachedWorkspaceInfo;
 	folder?: string;
-}
+	canConfigureAgentSetup: boolean;
+	providerCount?: number;
+	modelCount?: number;
+	unsupportedProviderNames?: readonly string[];
+	// AI Gateway is disabled deployment-wide, independent of provider/model
+	// configuration. Forces the setup notice regardless of the counts above.
+	aiGatewayDisabled?: boolean;
+	// Built-in commands offered by the "/" trigger menu ahead of
+	// personal skills.
+	slashCommands?: readonly ChatSlashCommand[];
+	fillWidth?: boolean;
+};
 
-export interface AttachedWorkspaceInfo {
+export type AttachedWorkspaceInfo = {
 	id: string;
 	name: string;
 	route: string;
 	statusIcon: React.ReactNode;
 	statusLabel: string;
-}
+};
+const NO_AUTOMATION_NAMES: ChatAutomationNames = {
+	names: new Map(),
+	status: "settled",
+};
+
+// Shared pill sizing: flex-basis sets a ~8ch floor (shrink-0 enforces
+// it), grow expands into free row space, and max-w-max caps at the
+// label's natural width. Below the floor the +N overflow takes over.
+const pillSizingClasses =
+	"grow shrink-0 basis-[calc(8ch_+_3.125rem)] max-w-max";
+
+// Pills clamp to the popover width so a long name truncates instead
+// of pushing its X out of view.
+const BadgePopoverContent: React.FC<PopoverContentProps> = ({
+	className,
+	...props
+}) => (
+	<PopoverContent
+		side="top"
+		align="start"
+		className={cn(
+			"flex w-auto max-w-64 flex-wrap gap-1 p-2 *:max-w-full",
+			className,
+		)}
+		{...props}
+	/>
+);
+
 type ToolBadgeData =
 	| { kind: "workspace"; name: string }
 	| ({ kind: "attached-workspace" } & AttachedWorkspaceInfo)
-	| { kind: "mcp"; server: TypesGen.MCPServerConfig };
+	| { kind: "mcp"; server: TypesGen.MCPServerConfig }
+	| { kind: "mcp-group"; servers: readonly TypesGen.MCPServerConfig[] }
+	| { kind: "planning" };
+
+// Non-MCP badges can share a kind, so their keys are position-qualified.
+const badgeKey = (badge: ToolBadgeData, index: number) => {
+	switch (badge.kind) {
+		case "mcp":
+			return badge.server.id;
+		case "mcp-group":
+			return badge.kind;
+		default:
+			return `${badge.kind}-${index}`;
+	}
+};
 
 // Small `X` button rendered inside pill-style badges (attached
 // workspace, MCP server, planning indicator) to dismiss or disable
 // the badge without opening the `+` menu. Callers pass the action
 // handler and a descriptive aria-label.
-const BadgeDismissButton: FC<{
+const BadgeDismissButton: React.FC<{
 	onClick: () => void;
 	ariaLabel: string;
 	isDisabled?: boolean;
@@ -188,42 +314,136 @@ const BadgeDismissButton: FC<{
 		type="button"
 		onClick={onClick}
 		disabled={isDisabled}
-		className="ml-0.5 inline-flex cursor-pointer items-center justify-center rounded-full border-0 bg-transparent p-0.5 text-content-secondary transition-colors hover:bg-surface-tertiary hover:text-content-primary disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-content-secondary"
+		className="group -mx-1 -my-1 inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-full border-0 bg-transparent p-0 text-content-secondary disabled:cursor-not-allowed disabled:opacity-50"
 		aria-label={ariaLabel}
 	>
-		<XIcon className="!size-2.5" />
+		<span className="inline-flex size-3.5 items-center justify-center rounded-full transition-colors group-hover:bg-surface-tertiary group-hover:text-content-primary">
+			<XIcon className="size-2.5!" />
+		</span>
 	</button>
 );
 
-const ToolBadge: FC<{
+type MCPGroupBadgeProps = {
+	servers: readonly TypesGen.MCPServerConfig[];
+	onRemoveMcp: (serverId: string) => void;
+	isDisabled: boolean;
+	className: string;
+};
+
+const MCPGroupBadge: React.FC<MCPGroupBadgeProps> = ({
+	servers,
+	onRemoveMcp,
+	isDisabled,
+	className,
+}) => {
+	const [open, setOpen] = useState(false);
+	const label = `${servers.length} MCPs`;
+
+	return (
+		<Popover open={open} onOpenChange={setOpen}>
+			<PopoverTrigger asChild>
+				<button
+					type="button"
+					aria-label={label}
+					className={cn(
+						className,
+						"cursor-pointer border-0 transition-colors hover:bg-surface-tertiary hover:text-content-primary",
+					)}
+				>
+					<MCPServerIconStack servers={servers} />
+					{label}
+					<ChevronDownIcon
+						className={cn("size-3 transition-transform", open && "rotate-180")}
+					/>
+				</button>
+			</PopoverTrigger>
+			<BadgePopoverContent>
+				{servers.map((server) => (
+					<ToolBadge
+						key={server.id}
+						badge={{ kind: "mcp", server }}
+						onRemoveMcp={onRemoveMcp}
+						isDisabled={isDisabled}
+					/>
+				))}
+			</BadgePopoverContent>
+		</Popover>
+	);
+};
+
+const ToolBadge: React.FC<{
 	badge: ToolBadgeData;
 	onRemoveWorkspace?: () => void;
-	onRemoveMcp?: (serverId: string) => void;
+	onRemoveMcp: (serverId: string) => void;
+	onRemovePlanning?: () => void;
+	isDisabled: boolean;
 	className?: string;
-}> = ({ badge, onRemoveWorkspace, onRemoveMcp, className }) => {
+	// The overflow popover auto-focuses badges; suppress the tooltip there.
+	disableTooltip?: boolean;
+}> = ({
+	badge,
+	onRemoveWorkspace,
+	onRemoveMcp,
+	onRemovePlanning,
+	isDisabled,
+	className,
+	disableTooltip,
+}) => {
 	const badgeCls = cn(
 		"inline-flex shrink-0 items-center gap-1 rounded-full bg-surface-secondary px-2 py-0.5 text-xs font-medium text-content-secondary",
 		className,
 	);
 
+	if (badge.kind === "planning") {
+		return (
+			<span data-testid="planning-badge" className={badgeCls}>
+				<PencilIcon className="size-3" />
+				Planning
+				{onRemovePlanning && (
+					<BadgeDismissButton
+						onClick={onRemovePlanning}
+						ariaLabel="Disable plan mode"
+						isDisabled={isDisabled}
+					/>
+				)}
+			</span>
+		);
+	}
+
 	if (badge.kind === "attached-workspace") {
 		return (
 			<Tooltip>
 				<TooltipTrigger asChild>
-					<Link
-						to={badge.route}
-						target="_blank"
-						rel="noreferrer"
+					<span
 						className={cn(
 							badgeCls,
-							"no-underline transition-colors hover:bg-surface-tertiary hover:text-content-primary",
+							"transition-colors hover:bg-surface-tertiary hover:text-content-primary",
 						)}
 					>
-						{badge.statusIcon}
-						<span className="truncate">{badge.name}</span>
-					</Link>
+						<Link
+							to={badge.route}
+							target="_blank"
+							rel="noreferrer"
+							className="inline-flex min-w-0 items-center gap-1 text-inherit no-underline"
+						>
+							{badge.statusIcon}
+							<span className="truncate">{badge.name}</span>
+						</Link>
+						{onRemoveWorkspace && (
+							<BadgeDismissButton
+								onClick={onRemoveWorkspace}
+								ariaLabel={`Remove workspace ${badge.name}`}
+								isDisabled={isDisabled}
+							/>
+						)}
+					</span>
 				</TooltipTrigger>
-				<TooltipContent>{badge.statusLabel}</TooltipContent>
+				{/* Hidden below md: touch focus would stick the tooltip open. */}
+				{!disableTooltip && (
+					<TooltipContent className="hidden md:block">
+						{badge.statusLabel}
+					</TooltipContent>
+				)}
 			</Tooltip>
 		);
 	}
@@ -237,9 +457,21 @@ const ToolBadge: FC<{
 					<BadgeDismissButton
 						onClick={onRemoveWorkspace}
 						ariaLabel={`Remove workspace ${badge.name}`}
+						isDisabled={isDisabled}
 					/>
 				)}
 			</span>
+		);
+	}
+
+	if (badge.kind === "mcp-group") {
+		return (
+			<MCPGroupBadge
+				servers={badge.servers}
+				onRemoveMcp={onRemoveMcp}
+				isDisabled={isDisabled}
+				className={badgeCls}
+			/>
 		);
 	}
 
@@ -255,21 +487,74 @@ const ToolBadge: FC<{
 			) : (
 				<ServerIcon className="size-3" />
 			)}
-			{badge.server.display_name}
-			{!isForceOn && onRemoveMcp && (
+			<span className="truncate">{badge.server.display_name}</span>
+			{isForceOn ? (
+				<>
+					<LockIcon className="size-3 shrink-0" />
+					<span className="sr-only">Always on</span>
+				</>
+			) : (
 				<BadgeDismissButton
 					onClick={() => onRemoveMcp(badge.server.id)}
 					ariaLabel={`Remove ${badge.server.display_name}`}
+					isDisabled={isDisabled}
 				/>
 			)}
 		</span>
 	);
 };
 
-export const AgentChatInput: FC<AgentChatInputProps> = ({
+type PlusMenuCheckboxItemProps = {
+	icon: LucideIcon;
+	label: string;
+	description?: string;
+	checked: boolean;
+	onToggle: () => void;
+	disabled: boolean;
+};
+
+const PlusMenuCheckboxItem: React.FC<PlusMenuCheckboxItemProps> = ({
+	icon: Icon,
+	label,
+	description,
+	checked,
+	onToggle,
+	disabled,
+}) => {
+	const id = useId();
+	return (
+		<button
+			type="button"
+			role="menuitemcheckbox"
+			aria-checked={checked}
+			aria-labelledby={`${id}-label`}
+			aria-describedby={description ? `${id}-description` : undefined}
+			onClick={onToggle}
+			disabled={disabled}
+			className={cn(
+				"flex w-full cursor-pointer gap-1.5 border-none bg-transparent px-1 text-left text-xs text-content-secondary shadow-none transition-colors hover:text-content-primary disabled:cursor-not-allowed disabled:opacity-50",
+				description ? "items-start py-1.5" : "h-8 items-center",
+			)}
+		>
+			<Icon className={cn("size-3.5 shrink-0", description && "mt-px")} />
+			<span className="flex min-w-0 flex-col gap-0.5">
+				<span id={`${id}-label`}>{label}</span>
+				{description && (
+					<span id={`${id}-description`} className="max-w-48 text-2xs">
+						{description}
+					</span>
+				)}
+			</span>
+			{checked && <CheckIcon className="ml-auto size-icon-sm shrink-0" />}
+		</button>
+	);
+};
+
+export const AgentChatInput: React.FC<AgentChatInputProps> = ({
 	onSend,
 	placeholder = "Type a message...",
 	isDisabled,
+	isReadOnly = false,
 	isLoading,
 	inputRef,
 	initialValue,
@@ -281,60 +566,150 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 	modelOptions,
 	modelSelectorPlaceholder,
 	hasModelOptions,
-	planModeEnabled = false,
+	reasoningEffort,
+	onReasoningEffortChange,
+	planModeEnabled,
 	onPlanModeToggle,
-	isModelCatalogLoading = false,
+	manageAutomationsEnabled = false,
+	onManageAutomationsToggle,
+	isModelCatalogLoading,
 	isStreaming = false,
 	onInterrupt,
 	isInterruptPending = false,
 	workspaceOptions,
 	selectedWorkspaceId,
 	onWorkspaceChange,
+	chatOrganizationId,
 	isWorkspaceLoading,
 	queuedMessages = [],
+	automationNames = NO_AUTOMATION_NAMES,
 	onDeleteQueuedMessage,
 	onPromoteQueuedMessage,
-	editingQueuedMessageID = null,
-	onStartQueueEdit,
-	onCancelQueueEdit,
+	warning,
 	isEditingHistoryMessage = false,
 	onCancelHistoryEdit,
-	onEditLastUserMessage,
+	userPromptHistory = [],
 	contextUsage,
+	onRefreshContext,
+	isRefreshingContext,
 	attachments = [],
 	onAttach,
 	onRemoveAttachment,
 	uploadStates,
 	previewUrls,
 	textContents,
+	workspaceUploads,
 	onTextPreview,
 	mcpServers,
 	selectedMCPServerIds,
 	onMCPSelectionChange,
 	onMCPAuthComplete,
+	workspaceSkills,
 	workspace,
 	workspaceAgent,
 	chatId,
 	sshCommand,
 	attachedWorkspace,
 	folder,
+	canConfigureAgentSetup,
+	providerCount,
+	modelCount,
+	unsupportedProviderNames = [],
+	aiGatewayDisabled,
+	slashCommands,
+	fillWidth = false,
 }) => {
+	const warningId = useId();
+	const preferencesQuery = useQuery(preferenceSettings());
+	const sendShortcut = getAgentChatSendShortcut(
+		preferencesQuery.data?.agent_chat_send_shortcut,
+		preferencesQuery.isLoading,
+	);
 	const [chatFullWidth] = useChatFullWidth();
+	const isMobile = useMediaQuery(mobileViewportMediaQuery);
+	const { organizations } = useDashboard();
+	const chatOrganization = organizations.find(
+		(organization) => organization.id === chatOrganizationId,
+	);
+	const showAgentSetupNotice =
+		aiGatewayDisabled ||
+		(canConfigureAgentSetup
+			? providerCount !== undefined &&
+				modelCount !== undefined &&
+				(providerCount === 0 || modelCount === 0)
+			: modelCount !== undefined && modelCount === 0);
 	const internalRef = useRef<ChatMessageInputRef>(null);
 	const [previewImage, setPreviewImage] = useState<string | null>(null);
 	const [previewText, setPreviewText] = useState<string | null>(null);
 	const [previewTextFileName, setPreviewTextFileName] = useState<string | null>(
 		null,
 	);
+	const [previewTextMediaType, setPreviewTextMediaType] = useState<
+		string | null
+	>(null);
 	const [plusMenuOpen, setPlusMenuOpen] = useState(false);
 	const [plusMenuView, setPlusMenuView] = useState<"main" | "workspace">(
 		"main",
 	);
 	const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false);
-	const [mcpConnectingId, setMcpConnectingId] = useState<string | null>(null);
-	const mcpPopupRef = useRef<Window | null>(null);
+	const { connectingServerId: mcpConnectingId, connect: connectMCPServer } =
+		useMCPOAuthFlow({
+			organizationId: chatOrganizationId,
+			onAuthComplete: onMCPAuthComplete,
+			onFlowSuccess: (serverID) => {
+				if (
+					onMCPSelectionChange &&
+					selectedMCPServerIds &&
+					mcpServers?.some(
+						(server) => server.id === serverID && server.enabled,
+					) &&
+					!selectedMCPServerIds.includes(serverID)
+				) {
+					onMCPSelectionChange([...selectedMCPServerIds, serverID]);
+				}
+			},
+		});
+	const [mcpDisconnectTarget, setMcpDisconnectTarget] =
+		useState<TypesGen.MCPServerConfig | null>(null);
+	const queryClient = useQueryClient();
+	const mcpDisconnectMutation = useMutation(
+		disconnectMCPServerOAuth2(queryClient),
+	);
 
 	const [hasFileReferences, setHasFileReferences] = useState(false);
+	const [cycleIndex, setCycleIndex] = useState<number | null>(null);
+	const [cycleSavedDraft, setCycleSavedDraft] = useState<string | null>(null);
+	const cycleHistorySnapshotRef = useRef<readonly string[] | null>(null);
+	const currentCycleValueRef = useRef<string | null>(null);
+	const previousRemountKeyRef = useRef(remountKey);
+
+	const resetPromptCycle = () => {
+		setCycleIndex(null);
+		setCycleSavedDraft(null);
+		cycleHistorySnapshotRef.current = null;
+		currentCycleValueRef.current = null;
+	};
+
+	const applyCycleValue = (text: string) => {
+		const editor = internalRef.current;
+		if (!editor) return;
+		currentCycleValueRef.current = text;
+		editor.setValue(text);
+		editor.focus();
+	};
+
+	useEffect(() => {
+		if (previousRemountKeyRef.current === remountKey) return;
+		previousRemountKeyRef.current = remountKey;
+		// Inlined resetPromptCycle body. Calling resetPromptCycle directly
+		// would force it into the dep array; the React Compiler stabilises
+		// callbacks but biome's react-hooks lint does not.
+		setCycleIndex(null);
+		setCycleSavedDraft(null);
+		cycleHistorySnapshotRef.current = null;
+		currentCycleValueRef.current = null;
+		// Keep in sync with resetPromptCycle above.
+	}, [remountKey]);
 
 	const speech = useSpeechRecognition();
 	const [preRecordingValue, setPreRecordingValue] = useState<string>("");
@@ -352,44 +727,23 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 		}
 	}, [speech.transcript, speech.isRecording, preRecordingValue]);
 
-	// Forward the internal ref to the parent-supplied inputRef
-	// so both point to the same ChatMessageInputRef instance.
-	useImperativeHandle(inputRef, () => internalRef.current!, []);
-
-	// Listen for OAuth2 completion postMessage from popup.
-	useEffect(() => {
-		const handler = (event: MessageEvent) => {
-			if (event.origin !== location.origin) return;
-			if (
-				event.data?.type === "mcp-oauth2-complete" &&
-				typeof event.data.serverID === "string"
-			) {
-				setMcpConnectingId(null);
-				onMCPAuthComplete?.(event.data.serverID);
-				mcpPopupRef.current = null;
-			}
-		};
-		window.addEventListener("message", handler);
-		return () => window.removeEventListener("message", handler);
-	}, [onMCPAuthComplete]);
-
-	// Poll for popup close and clean up on unmount.
-	useEffect(() => {
-		if (!mcpConnectingId || !mcpPopupRef.current) return;
-		const interval = setInterval(() => {
-			if (mcpPopupRef.current?.closed) {
-				setMcpConnectingId(null);
-				mcpPopupRef.current = null;
-			}
-		}, 500);
-		return () => {
-			clearInterval(interval);
-			if (mcpPopupRef.current && !mcpPopupRef.current.closed) {
-				mcpPopupRef.current.close();
-				mcpPopupRef.current = null;
-			}
-		};
-	}, [mcpConnectingId]);
+	// Forward a stable delegating handle to the parent-supplied inputRef.
+	// Delegates lazily to internalRef.current so methods see the current
+	// Lexical instance after a remount, not the orphaned ref captured at
+	// factory time.
+	useImperativeHandle(
+		inputRef,
+		() => ({
+			setValue: (text) => internalRef.current?.setValue(text),
+			insertText: (text) => internalRef.current?.insertText(text),
+			clear: () => internalRef.current?.clear(),
+			focus: () => internalRef.current?.focus(),
+			getValue: () => internalRef.current?.getValue() ?? "",
+			addFileReference: (ref) => internalRef.current?.addFileReference(ref),
+			getContentParts: () => internalRef.current?.getContentParts() ?? [],
+		}),
+		[],
+	);
 
 	const handleMcpToggle = (serverId: string, checked: boolean) => {
 		if (!onMCPSelectionChange || !selectedMCPServerIds) return;
@@ -402,23 +756,43 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 		}
 	};
 
-	const handleMcpConnect = (server: TypesGen.MCPServerConfig) => {
-		setMcpConnectingId(server.id);
-		const connectUrl = `/api/experimental/mcp/servers/${encodeURIComponent(server.id)}/oauth2/connect`;
-		mcpPopupRef.current = window.open(
-			connectUrl,
-			"_blank",
-			"width=900,height=600",
-		);
+	const handleMcpDisconnectConfirm = () => {
+		if (!mcpDisconnectTarget) {
+			return;
+		}
+		const name = mcpDisconnectTarget.display_name;
+		mcpDisconnectMutation.mutate(mcpDisconnectTarget.id, {
+			onSuccess: (response) => {
+				setMcpDisconnectTarget(null);
+				if (response.token_revocation_error) {
+					toast.warning(`Disconnected ${name}.`, {
+						description: response.token_revocation_error,
+					});
+				} else {
+					toast.success(`Disconnected ${name}.`);
+				}
+			},
+			onError: (error) => {
+				toast.error(getErrorMessage(error, `Failed to disconnect ${name}.`));
+			},
+		});
 	};
+
+	// Only a chat-bound workspace counts: an unbound selection (new chat
+	// form, or a picked workspace before the first send) has no pinned
+	// context to resolve, so treating it as a workspace would leave the
+	// menu in the loading state forever.
+	const hasSkillsWorkspace = Boolean(attachedWorkspace?.id ?? workspace?.id);
 
 	const selectedWorkspace = workspaceOptions?.find(
 		(ws) => ws.id === selectedWorkspaceId,
 	);
+	const canUseWorkspacePicker =
+		Boolean(onWorkspaceChange) && !isWorkspaceLoading;
+	const linkedWorkspaceId = workspace?.id ?? attachedWorkspace?.id;
 
 	const shouldShowSelectedWorkspaceBadge = selectedWorkspace
-		? Boolean(onWorkspaceChange) &&
-			selectedWorkspace.id !== attachedWorkspace?.id
+		? selectedWorkspace.id !== linkedWorkspaceId
 		: false;
 
 	const enabledMcpServers = mcpServers?.filter((s) => s.enabled) ?? [];
@@ -431,21 +805,36 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 	const badgeContainerRef = useRef<HTMLDivElement>(null);
 
 	const [overflowPopoverOpen, setOverflowPopoverOpen] = useState(false);
+	const shouldOverflowPlanningBadge =
+		planModeEnabled && contextUsage !== undefined;
+
+	let workspacePillBadge: ToolBadgeData | undefined;
+	if (workspace && workspaceAgent && chatId) {
+		workspacePillBadge = attachedWorkspace
+			? { kind: "attached-workspace", ...attachedWorkspace }
+			: { kind: "workspace", name: workspace.name };
+	}
 
 	// Ordered list of active tool badge data so we can determine
 	// which ones ended up in the overflow popover.
 	const allBadges: ToolBadgeData[] = [];
-	// When workspace data is available, WorkspacePill handles
-	// the display (including app dropdown). Otherwise fall back
-	// to the simple attached-workspace ToolBadge.
-	if (!(workspace && workspaceAgent && chatId) && attachedWorkspace) {
+	if (shouldOverflowPlanningBadge) {
+		allBadges.push({ kind: "planning" });
+	}
+	if (workspacePillBadge) {
+		allBadges.push(workspacePillBadge);
+	} else if (attachedWorkspace) {
 		allBadges.push({ kind: "attached-workspace", ...attachedWorkspace });
 	}
 	if (shouldShowSelectedWorkspaceBadge && selectedWorkspace) {
 		allBadges.push({ kind: "workspace", name: selectedWorkspace.name });
 	}
-	for (const s of activeMcpServers) {
-		allBadges.push({ kind: "mcp", server: s });
+	if (activeMcpServers.length >= 3) {
+		allBadges.push({ kind: "mcp-group", servers: activeMcpServers });
+	} else {
+		for (const server of activeMcpServers) {
+			allBadges.push({ kind: "mcp", server });
+		}
 	}
 
 	const overflowCount = useOverflowCount(badgeContainerRef, allBadges.length);
@@ -453,15 +842,23 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 	const overflowBadges = allBadges.slice(visibleCount);
 
 	const handleRemoveWorkspace = () => onWorkspaceChange?.(null);
+	const removeWorkspaceHandler = onWorkspaceChange
+		? handleRemoveWorkspace
+		: undefined;
 	const handleRemoveMcp = (serverId: string) =>
 		handleMcpToggle(serverId, false);
 
 	const handlePlanModeToggle = () => {
-		onPlanModeToggle?.(!planModeEnabled);
+		onPlanModeToggle(!planModeEnabled);
 		setPlusMenuOpen(false);
 	};
 
-	const handleDisablePlanMode = () => onPlanModeToggle?.(false);
+	const handleDisablePlanMode = () => onPlanModeToggle(false);
+
+	const handleManageAutomationsToggle = () => {
+		onManageAutomationsToggle?.(!manageAutomationsEnabled);
+		setPlusMenuOpen(false);
+	};
 
 	const fileInputRef = useRef<HTMLInputElement>(null);
 	const [composerElement, setComposerElement] = useState<HTMLDivElement | null>(
@@ -469,61 +866,236 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 	);
 	useEffect(() => {
 		if (!composerElement) return;
+		// Radix popover wrappers are fixed-positioned, so their
+		// inset values need to be in layout-viewport coordinates.
+		// The visual viewport can be offset inside the layout
+		// viewport when the mobile keyboard is open. Treat
+		// `visualViewport.offsetTop` as a clamp only when it yields
+		// a positive height, since mobile WebKit can report mixed
+		// coordinate systems while the keyboard is settling.
+		const viewport = globalThis.visualViewport;
+		const root = document.documentElement;
+		const fixedProbe = document.createElement("div");
+		Object.assign(fixedProbe.style, {
+			position: "fixed",
+			bottom: "0",
+			left: "0",
+			width: "0",
+			height: "0",
+			pointerEvents: "none",
+			visibility: "hidden",
+		});
+		document.body.appendChild(fixedProbe);
+		const composerGap = 8;
+		const viewportPadding = 16;
+		const minimumMenuHeight = 96;
 		const update = () => {
 			const rect = composerElement.getBoundingClientRect();
-			const bottom = Math.max(0, window.innerHeight - rect.bottom);
-			document.documentElement.style.setProperty(
-				"--mobile-dropdown-bottom",
-				`${bottom}px`,
+			const fixedViewportBottom = fixedProbe.getBoundingClientRect().bottom;
+			const visibleViewportTop = viewport?.offsetTop ?? 0;
+			const bottom = Math.max(0, fixedViewportBottom - rect.bottom);
+			// Keep the dropdown's bottom edge above the software keyboard,
+			// which covers the bottom of the layout viewport without moving
+			// fixed-positioned elements.
+			const keyboardInset = viewport
+				? Math.max(
+						0,
+						fixedViewportBottom - (viewport.offsetTop + viewport.height),
+					)
+				: 0;
+			const aboveComposerBottom = Math.max(
+				0,
+				fixedViewportBottom - rect.top + composerGap,
+				keyboardInset + composerGap,
+			);
+			const dropdownBottomEdgeTop = fixedViewportBottom - aboveComposerBottom;
+			const maxHeightCandidates = [
+				dropdownBottomEdgeTop - visibleViewportTop - viewportPadding,
+				dropdownBottomEdgeTop - viewportPadding,
+			].filter((height) => height > 0);
+			const aboveComposerMaxHeight = Math.max(
+				minimumMenuHeight,
+				maxHeightCandidates.length > 0 ? Math.min(...maxHeightCandidates) : 0,
+			);
+			root.style.setProperty("--mobile-dropdown-bottom", `${bottom}px`);
+			root.style.setProperty("--mobile-dropdown-left", `${rect.left}px`);
+			root.style.setProperty("--mobile-dropdown-width", `${rect.width}px`);
+			root.style.setProperty(
+				"--mobile-dropdown-above-composer-bottom",
+				`${aboveComposerBottom}px`,
+			);
+			root.style.setProperty(
+				"--mobile-dropdown-above-composer-max-height",
+				`${aboveComposerMaxHeight}px`,
 			);
 		};
-		update();
-		const ro = new ResizeObserver(update);
+		const animationFrameIDs = new Set<number>();
+		const timeoutIDs = new Set<ReturnType<typeof setTimeout>>();
+		const cancelScheduledUpdates = () => {
+			for (const id of animationFrameIDs) {
+				cancelAnimationFrame(id);
+			}
+			animationFrameIDs.clear();
+			for (const id of timeoutIDs) {
+				clearTimeout(id);
+			}
+			timeoutIDs.clear();
+		};
+		const queueAnimationFrame = (callback: () => void) => {
+			const id = requestAnimationFrame(() => {
+				animationFrameIDs.delete(id);
+				callback();
+			});
+			animationFrameIDs.add(id);
+		};
+		const scheduleUpdate = () => {
+			cancelScheduledUpdates();
+			update();
+			// Mobile WebKit can finish keyboard panning after focus and
+			// input events. Re-read geometry after the viewport settles so
+			// the first slash-menu render is not stuck under the composer.
+			queueAnimationFrame(() => {
+				update();
+				queueAnimationFrame(update);
+			});
+			for (const delay of [50, 150, 300]) {
+				const id = setTimeout(() => {
+					timeoutIDs.delete(id);
+					update();
+				}, delay);
+				timeoutIDs.add(id);
+			}
+		};
+		scheduleUpdate();
+		const ro = new ResizeObserver(scheduleUpdate);
 		ro.observe(composerElement);
-		window.addEventListener("resize", update);
-		const viewport = window.visualViewport;
-		viewport?.addEventListener("resize", update);
-		viewport?.addEventListener("scroll", update);
+		addEventListener("resize", scheduleUpdate);
+		addEventListener("scroll", scheduleUpdate, { passive: true });
+		addEventListener("focusin", scheduleUpdate);
+		addEventListener("focusout", scheduleUpdate);
+		composerElement.addEventListener("input", scheduleUpdate);
+		composerElement.addEventListener("keyup", scheduleUpdate);
+		document.addEventListener("selectionchange", scheduleUpdate);
+		viewport?.addEventListener("resize", scheduleUpdate);
+		viewport?.addEventListener("scroll", scheduleUpdate);
+		viewport?.addEventListener("scrollend", scheduleUpdate);
 		return () => {
 			ro.disconnect();
-			window.removeEventListener("resize", update);
-			viewport?.removeEventListener("resize", update);
-			viewport?.removeEventListener("scroll", update);
-			document.documentElement.style.removeProperty("--mobile-dropdown-bottom");
+			cancelScheduledUpdates();
+			removeEventListener("resize", scheduleUpdate);
+			removeEventListener("scroll", scheduleUpdate);
+			removeEventListener("focusin", scheduleUpdate);
+			removeEventListener("focusout", scheduleUpdate);
+			composerElement.removeEventListener("input", scheduleUpdate);
+			composerElement.removeEventListener("keyup", scheduleUpdate);
+			document.removeEventListener("selectionchange", scheduleUpdate);
+			viewport?.removeEventListener("resize", scheduleUpdate);
+			viewport?.removeEventListener("scroll", scheduleUpdate);
+			viewport?.removeEventListener("scrollend", scheduleUpdate);
+			fixedProbe.remove();
+			root.style.removeProperty("--mobile-dropdown-bottom");
+			root.style.removeProperty("--mobile-dropdown-left");
+			root.style.removeProperty("--mobile-dropdown-width");
+			root.style.removeProperty("--mobile-dropdown-above-composer-bottom");
+			root.style.removeProperty("--mobile-dropdown-above-composer-max-height");
 		};
 	}, [composerElement]);
 
+	// Workspace uploads eagerly write bytes into the workspace, so a
+	// disabled (read-only) composer must not route files to them. The
+	// same holds while a send is pending: the post-send reset would drop
+	// the chip after the bytes already landed in the workspace.
+	const workspaceAttachBlockedBySend =
+		isLoading && workspaceUploads?.onAttach !== undefined;
+	const onWorkspaceAttach =
+		isDisabled || isLoading ? undefined : workspaceUploads?.onAttach;
+
+	// Splits files between the attachment pipeline and the workspace
+	// upload path by declared MIME type. Unknown or octet-stream files
+	// stay on the attachment path where the server classifies bytes.
+	// Returns whether any file was routed.
+	const routeFiles = (files: File[]): boolean => {
+		const attachable: File[] = [];
+		const forWorkspace: File[] = [];
+		const rejected: File[] = [];
+		// Workspace-routable files that arrived while the workspace
+		// upload feature is wired but currently unavailable (no
+		// connected agent, read-only composer, pending send). They need
+		// a workspace, not a different file type, so they get their own
+		// toast.
+		const workspaceRequired: File[] = [];
+		for (const file of files) {
+			if (onWorkspaceAttach && shouldRouteFileToWorkspace(file)) {
+				forWorkspace.push(file);
+			} else if (isChatAttachmentFile(file)) {
+				attachable.push(file);
+			} else if (workspaceUploads && shouldRouteFileToWorkspace(file)) {
+				workspaceRequired.push(file);
+			} else {
+				rejected.push(file);
+			}
+		}
+		if (workspaceRequired.length > 0) {
+			toast.error(
+				workspaceAttachBlockedBySend
+					? workspaceUploadPendingSendMessage
+					: (workspaceUploads?.unavailableMessage ??
+							workspaceRequiredAttachmentMessage),
+			);
+		}
+		if (rejected.length > 0) {
+			toast.error(
+				`Unsupported file type: ${rejected.map((file) => file.name).join(", ")}`,
+			);
+		}
+		if (attachable.length === 0 && forWorkspace.length === 0) {
+			return false;
+		}
+		resetPromptCycle();
+		if (attachable.length > 0) {
+			onAttach?.(attachable);
+		}
+		if (forWorkspace.length > 0) {
+			onWorkspaceAttach?.(forWorkspace);
+		}
+		return true;
+	};
+
 	const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-		if (e.target.files && onAttach) {
-			onAttach(Array.from(e.target.files));
+		if (e.target.files?.length) {
+			routeFiles(Array.from(e.target.files));
 		}
 		// Reset so the same file can be selected again.
 		e.target.value = "";
 	};
 
-	const handleFilePaste = (file: File) => {
-		onAttach?.([file]);
-	};
+	const handleFilePaste = (file: File) => routeFiles([file]);
 
 	const handleInlineText = (file: File, nextContent?: string) => {
 		const content = nextContent ?? textContents?.get(file);
 		if (content === undefined) return;
 		const editor = internalRef.current;
 		if (!editor) return;
+		resetPromptCycle();
 		editor.insertText(content);
 		onRemoveAttachment?.(file);
 	};
 
-	const handleTextPreview = (content: string, fileName: string) => {
+	const handleTextPreview = (
+		content: string,
+		fileName: string,
+		mediaType: string,
+	) => {
 		if (onTextPreview) {
-			onTextPreview(content, fileName);
+			onTextPreview(content, fileName, mediaType);
 		} else {
 			setPreviewText(content);
 			setPreviewTextFileName(fileName);
+			setPreviewTextMediaType(mediaType);
 		}
 	};
 
-	// Drag-and-drop support for image files.
+	// Drag-and-drop support for any chat-supported file type.
 	const [isDragging, setIsDragging] = useState(false);
 
 	const handleDragOver = (e: React.DragEvent) => {
@@ -542,23 +1114,18 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 	const handleDrop = (e: React.DragEvent) => {
 		e.preventDefault();
 		setIsDragging(false);
-		if (!onAttach || !e.dataTransfer.files.length) return;
-		const images = Array.from(e.dataTransfer.files).filter((f) =>
-			f.type.startsWith("image/"),
-		);
-		if (images.length > 0) {
-			onAttach(images);
-		}
+		if (!e.dataTransfer.files.length) return;
+		routeFiles(Array.from(e.dataTransfer.files));
 	};
 
 	// Track whether the editor has content so we can gate the
 	// send button without a controlled value prop.
 	const [hasContent, setHasContent] = useState(() =>
-		Boolean(initialValue?.trim()),
+		Boolean(initialValue.trim()),
 	);
 
 	const [invisibleCharCount, setInvisibleCharCount] = useState(() =>
-		countInvisibleCharacters(initialValue ?? ""),
+		countInvisibleCharacters(initialValue),
 	);
 
 	const handleContentChange = (
@@ -566,10 +1133,20 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 		serializedEditorState: string,
 		hasRefs: boolean,
 	) => {
+		// Lexical fires onChange synchronously from editor.setValue().
+		// While cycling, compare incoming content to currentCycleValueRef,
+		// the last value we applied. Different content means user input,
+		// so reset; matching content is our own setValue echo, so keep cycling.
+		// This works because React batches state updates within event handlers
+		// and commits them after the handler returns, so the synchronous onChange
+		// callback sees the pre-batch cycleIndex value, not the queued update.
+		if (cycleIndex !== null && content !== currentCycleValueRef.current) {
+			resetPromptCycle();
+		}
 		setHasContent(Boolean(content.trim()));
 		setHasFileReferences(hasRefs);
 		setInvisibleCharCount(countInvisibleCharacters(content));
-		onContentChange?.(content, serializedEditorState, hasRefs);
+		onContentChange(content, serializedEditorState, hasRefs);
 	};
 
 	// Re-focus the editor after a send completes (isLoading goes
@@ -582,19 +1159,33 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 			internalRef.current?.focus();
 		}
 	}, [isLoading]);
-	const hasActiveUploads = attachments.some((file) =>
-		isUploadInProgress(uploadStates?.get(file)),
-	);
-	const hasUploadedAttachments = attachments.some(
-		(f) => uploadStates?.get(f)?.status === "uploaded",
-	);
+	const workspaceUploadEntries = workspaceUploads?.uploads ?? [];
+	const hasActiveUploads =
+		attachments.some((file) => isUploadInProgress(uploadStates?.get(file))) ||
+		workspaceUploadEntries.some(isWorkspaceUploadInProgress);
+	// Deferred workspace entries upload during submit, so they count as
+	// sendable content just like finished uploads. In deferred mode
+	// failed entries stay sendable too: the next send re-uploads them
+	// against the fresh chat.
+	const hasUploadedAttachments =
+		attachments.some((f) => uploadStates?.get(f)?.status === "uploaded") ||
+		workspaceUploadEntries.some(
+			(upload) =>
+				upload.status === "uploaded" ||
+				upload.status === "deferred" ||
+				(workspaceUploads?.deferred === true && upload.status === "error"),
+		);
 	const hasDraftContext =
-		hasContent || attachments.length > 0 || hasFileReferences;
+		hasContent ||
+		attachments.length > 0 ||
+		workspaceUploadEntries.length > 0 ||
+		hasFileReferences;
 	const isComposerEffectivelyEmpty = !hasDraftContext;
 	const hasSendableContent =
 		hasContent || hasUploadedAttachments || hasFileReferences;
 	const canSend =
 		!isDisabled &&
+		!isReadOnly &&
 		!isLoading &&
 		hasModelOptions &&
 		hasSendableContent &&
@@ -609,6 +1200,7 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 			!hasUploadedAttachments &&
 			!hasFileReferences &&
 			!isDisabled &&
+			!isReadOnly &&
 			!isLoading &&
 			!hasActiveUploads &&
 			queuedMessages.length > 0 &&
@@ -621,6 +1213,7 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 		if (
 			(!text && !hasUploadedAttachments && !hasFileReferences) ||
 			isDisabled ||
+			isReadOnly ||
 			isLoading ||
 			hasActiveUploads ||
 			!hasModelOptions
@@ -629,17 +1222,22 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 		}
 
 		onSend(text);
+		resetPromptCycle();
 		if (!isMobileViewport()) {
 			internalRef.current?.focus();
 		}
 	};
 	const handleStartRecording = () => {
+		resetPromptCycle();
 		setPreRecordingValue(internalRef.current?.getValue()?.trim() ?? "");
 		speech.start();
 	};
 
 	const handleAcceptRecording = () => {
 		speech.stop();
+		if (!isMobileViewport()) {
+			internalRef.current?.focus();
+		}
 	};
 
 	const handleCancelRecording = () => {
@@ -651,16 +1249,16 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 			if (original) {
 				editor.insertText(original);
 			}
+			if (!isMobileViewport()) {
+				editor.focus();
+			}
 		}
 		setPreRecordingValue("");
 	};
 
 	const handleComposerKeyDown = (e: React.KeyboardEvent) => {
 		if (e.key === "Escape") {
-			if (editingQueuedMessageID !== null) {
-				e.preventDefault();
-				onCancelQueueEdit?.();
-			} else if (isEditingHistoryMessage) {
+			if (isEditingHistoryMessage) {
 				e.preventDefault();
 				onCancelHistoryEdit?.();
 			} else if (isStreaming && onInterrupt && !isInterruptPending) {
@@ -669,61 +1267,169 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 			}
 		}
 	};
-	const handleEditorKeyDown = (e: React.KeyboardEvent) => {
-		if (
-			e.key !== "ArrowUp" ||
-			editingQueuedMessageID !== null ||
-			isEditingHistoryMessage ||
-			!onEditLastUserMessage ||
-			!isComposerEffectivelyEmpty
-		) {
-			return;
-		}
-		e.preventDefault();
-		onEditLastUserMessage();
+	const restoreCycleDraft = () => {
+		const savedDraft = cycleSavedDraft ?? "";
+		setCycleIndex(null);
+		setCycleSavedDraft(null);
+		cycleHistorySnapshotRef.current = null;
+		applyCycleValue(savedDraft);
 	};
 
-	const sendButtonLabel =
-		editingQueuedMessageID !== null
-			? "Save"
-			: isEditingHistoryMessage
-				? "Save Edit"
-				: "Send";
+	const handleEditorKeyDown = (e: React.KeyboardEvent) => {
+		if (e.key === "Escape" && cycleIndex !== null) {
+			e.preventDefault();
+			e.stopPropagation();
+			restoreCycleDraft();
+			return;
+		}
+
+		// isStreaming is intentionally excluded. Cycling is allowed while
+		// streaming so the user can prepare the next prompt. Escape is
+		// cycle-aware so it does not accidentally interrupt streaming.
+		const isPromptCyclingSuppressed =
+			isEditingHistoryMessage || isReadOnly || isLoading;
+		if (isPromptCyclingSuppressed) {
+			return;
+		}
+
+		if (e.key !== "ArrowUp" && e.key !== "ArrowDown") {
+			return;
+		}
+
+		if (cycleIndex === null) {
+			if (e.key !== "ArrowUp" || !isComposerEffectivelyEmpty) {
+				return;
+			}
+			const cycleHistory = [...userPromptHistory];
+			const latestPrompt = cycleHistory[0];
+			if (latestPrompt === undefined) {
+				return;
+			}
+			e.preventDefault();
+			cycleHistorySnapshotRef.current = cycleHistory;
+			setCycleIndex(0);
+			setCycleSavedDraft(internalRef.current?.getValue() ?? "");
+			applyCycleValue(latestPrompt);
+			return;
+		}
+
+		e.preventDefault();
+		const cycleHistory = cycleHistorySnapshotRef.current ?? userPromptHistory;
+		if (e.key === "ArrowDown") {
+			if (cycleIndex === 0) {
+				restoreCycleDraft();
+				return;
+			}
+			const nextIndex = cycleIndex - 1;
+			const nextPrompt = cycleHistory[nextIndex];
+			if (nextPrompt === undefined) {
+				restoreCycleDraft();
+				return;
+			}
+			setCycleIndex(nextIndex);
+			applyCycleValue(nextPrompt);
+			return;
+		}
+
+		// ArrowUp: load an older prompt.
+		const lastIndex = cycleHistory.length - 1;
+		if (lastIndex < 0) {
+			restoreCycleDraft();
+			return;
+		}
+		const nextIndex = Math.min(cycleIndex + 1, lastIndex);
+		if (nextIndex === cycleIndex) {
+			return;
+		}
+		const nextPrompt = cycleHistory[nextIndex];
+		if (nextPrompt === undefined) {
+			restoreCycleDraft();
+			return;
+		}
+		setCycleIndex(nextIndex);
+		applyCycleValue(nextPrompt);
+	};
+
+	const sendButtonLabel = isEditingHistoryMessage
+		? "Save Edit"
+		: isStreaming
+			? "Queue"
+			: "Send";
+	// Stop and the send button are mutually exclusive while streaming; a
+	// non-empty draft or a live recording selects the send button. A live
+	// recording also takes precedence over history editing.
+	const draftOccupiesSlot =
+		hasSendableContent || hasActiveUploads || speech.isRecording;
+	const editingHoldsStop = isEditingHistoryMessage && !speech.isRecording;
+	const showStopButton =
+		isStreaming &&
+		onInterrupt !== undefined &&
+		(!draftOccupiesSlot || editingHoldsStop);
+	const showSendButton =
+		!isStreaming || (draftOccupiesSlot && !editingHoldsStop);
+	// Mobile viewports advertise no send shortcut.
+	const sendShortcutLabel = isMobile
+		? undefined
+		: sendShortcut === MODIFIER_AGENT_CHAT_SEND_SHORTCUT
+			? "Cmd/Ctrl+Enter"
+			: "Enter";
+	const sendButtonKeyShortcuts = isMobile
+		? undefined
+		: sendShortcut === MODIFIER_AGENT_CHAT_SEND_SHORTCUT
+			? "Control+Enter Meta+Enter"
+			: "Enter";
+	const sendButtonTooltip = sendShortcutLabel
+		? `${sendButtonLabel}: ${sendShortcutLabel}`
+		: sendButtonLabel;
 
 	const content = (
 		<div
 			className={cn(
 				"mx-auto w-full pb-0 sm:pb-4",
-				chatWidthClass(chatFullWidth),
+				fillWidth ? "max-w-full" : chatWidthClass(chatFullWidth),
 				isEditingHistoryMessage && "pt-1",
 			)}
 		>
 			{queuedMessages.length > 0 && (
 				<QueuedMessagesList
 					messages={queuedMessages}
-					onDelete={(id) => {
-						if (id === editingQueuedMessageID) {
-							onCancelQueueEdit?.();
-						}
-						void onDeleteQueuedMessage?.(id);
-					}}
-					onPromote={(id) => {
-						if (id === editingQueuedMessageID) {
-							onCancelQueueEdit?.();
-						}
-						void onPromoteQueuedMessage?.(id);
-					}}
-					onEdit={onStartQueueEdit}
-					editingMessageID={editingQueuedMessageID}
+					automationNames={automationNames}
+					onDelete={(id) => onDeleteQueuedMessage?.(id)}
+					onPromote={(id) => onPromoteQueuedMessage?.(id)}
 					className="mb-2"
 				/>
 			)}
+			{showAgentSetupNotice && (
+				<div className="relative z-0 -mb-10">
+					{canConfigureAgentSetup ? (
+						<AgentSetupNotice
+							isAdmin
+							providerCount={providerCount ?? 0}
+							modelCount={modelCount ?? 0}
+							organization={chatOrganization}
+							unsupportedProviderNames={unsupportedProviderNames}
+							aiGatewayDisabled={aiGatewayDisabled}
+						/>
+					) : (
+						<AgentSetupNotice
+							isAdmin={false}
+							providerCount={0}
+							modelCount={0}
+							organization={chatOrganization}
+							unsupportedProviderNames={unsupportedProviderNames}
+							aiGatewayDisabled={aiGatewayDisabled}
+						/>
+					)}
+				</div>
+			)}
 			<div
 				ref={setComposerElement}
+				data-testid="chat-composer"
 				className={cn(
-					"rounded-2xl border border-border-default/80 bg-surface-secondary md:bg-surface-secondary/45 p-1 shadow-sm has-[textarea:focus]:ring-2 has-[textarea:focus]:ring-content-link/40",
+					"relative z-10 rounded-2xl bg-surface-secondary sm:bg-surface-secondary/45 p-1 shadow-xs has-[textarea:focus]:ring-2 has-[textarea:focus]:ring-content-link/40",
+					showAgentSetupNotice && "sm:bg-surface-secondary",
 					isDragging && "ring-2 ring-content-link/40",
-					isEditingHistoryMessage &&
+					(isEditingHistoryMessage || warning) &&
 						"shadow-[0_0_0_2px_hsla(var(--border-warning),0.6)]",
 				)}
 				onKeyDown={handleComposerKeyDown}
@@ -731,26 +1437,19 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 				onDragLeave={onAttach ? handleDragLeave : undefined}
 				onDrop={onAttach ? handleDrop : undefined}
 			>
-				{editingQueuedMessageID !== null && (
-					<div className="flex items-center justify-between border-b border-border-default/70 bg-surface-primary/25 px-3 py-1.5">
-						<span className="text-sm text-content-secondary">
-							Editing queued message
-						</span>
-						<Button
-							type="button"
-							variant="subtle"
-							size="sm"
-							onClick={onCancelQueueEdit}
-							className="h-7 px-2 text-content-secondary hover:text-content-primary"
-						>
-							Cancel
-						</Button>
+				{warning && (
+					<div
+						id={warningId}
+						className="flex items-start gap-1.5 border-b border-border/70 px-3 py-1.5 text-xs font-medium text-content-warning"
+					>
+						<TriangleAlertIcon className="mt-px size-3.5 shrink-0" />
+						{warning}
 					</div>
 				)}
-				{isEditingHistoryMessage && editingQueuedMessageID === null && (
-					<div className="flex items-center justify-between border-b border-border-warning/50 px-3 py-1.5">
+				{isEditingHistoryMessage && (
+					<div className="flex items-center justify-between border-b border-border/70 px-3 py-1.5">
 						<span className="flex items-center gap-1.5 text-xs font-medium text-content-warning">
-							<PencilIcon className="h-3.5 w-3.5" />
+							<PencilIcon className="size-3.5" />
 							Editing will delete all subsequent messages and restart the
 							conversation here.
 						</span>
@@ -763,7 +1462,7 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 							disabled={isLoading}
 							className="size-6 rounded text-content-warning hover:text-content-primary"
 						>
-							<XIcon className="h-3.5 w-3.5" />
+							<XIcon className="size-3.5" />
 						</Button>
 					</div>
 				)}
@@ -779,11 +1478,20 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 						onInlineText={handleInlineText}
 					/>
 				)}
+				{workspaceUploads && (
+					<WorkspaceUploadPreview
+						uploads={workspaceUploads.uploads}
+						onRemove={workspaceUploads.onRemove}
+					/>
+				)}
 				<ChatMessageInput
 					ref={internalRef}
 					onFilePaste={onAttach ? handleFilePaste : undefined}
+					acceptFilePasteWhileDisabled={isLoading && !isReadOnly}
+					onPaste={resetPromptCycle}
 					aria-label="Chat message"
-					className="min-h-[60px] sm:min-h-24 w-full resize-none bg-transparent px-3 py-2 font-sans text-[15px] leading-6 text-content-primary placeholder:text-content-secondary disabled:cursor-not-allowed disabled:opacity-70"
+					aria-describedby={warning ? warningId : undefined}
+					className="min-h-[60px] sm:min-h-24 w-full resize-none bg-transparent px-3 py-2 font-sans text-[13px] leading-relaxed text-content-primary placeholder:text-content-secondary disabled:cursor-not-allowed disabled:opacity-70"
 					placeholder={placeholder}
 					initialValue={initialValue}
 					initialEditorState={initialEditorState}
@@ -791,13 +1499,17 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 					onChange={handleContentChange}
 					onKeyDown={handleEditorKeyDown}
 					onEnter={handleSubmit}
-					disabled={isDisabled || isLoading}
-					autoFocus
+					sendShortcut={sendShortcut}
+					disabled={isReadOnly || isLoading}
+					hasWorkspace={hasSkillsWorkspace}
+					workspaceSkills={workspaceSkills}
+					slashCommands={slashCommands}
+					skillsMenuAnchor={composerElement}
 				/>
 				{/* Warn about invisible Unicode in the message text.
 				 * Unlike the admin/user prompt textareas (which strip
 				 * invisible chars server-side on save), the chat input
-				 * is the user's free-form message — we don't silently
+				 * is the user's free-form message; we don't silently
 				 * mutate it. Instead we surface a warning so the user
 				 * can make an informed decision. This guards against
 				 * social engineering attacks where a user is tricked
@@ -814,19 +1526,26 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 						</Alert>
 					</div>
 				)}
-				{/* Hidden file input for image attachment */}
+				{/* Hidden file input for attaching files. When workspace
+				uploads are wired, every file type stays selectable even
+				while no workspace is ready: iOS silently greys out
+				filtered types, so routeFiles explains the refusal. */}
 				{onAttach && (
 					<input
 						ref={fileInputRef}
 						type="file"
+						data-testid="chat-attachment-file-input"
 						multiple
-						accept="image/*"
+						accept={
+							workspaceUploads ? undefined : chatAttachmentAcceptAttribute
+						}
 						onChange={handleFileSelect}
 						className="hidden"
 					/>
 				)}
 				<div className="flex items-center justify-between gap-2 px-2.5 pb-1.5">
-					<div className="flex min-w-0 items-center gap-1">
+					{/* flex-1 routes free row space to the growing pills. */}
+					<div className="flex min-w-0 flex-1 items-center gap-1">
 						{/* Plus menu */}
 						<Popover
 							modal={false}
@@ -842,8 +1561,12 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 									type="button"
 									variant="subtle"
 									size="icon"
-									className="size-7 shrink-0 rounded-full [&>svg]:!size-icon-sm [&>svg]:p-0"
-									disabled={isDisabled}
+									className="size-7 shrink-0 rounded-full [&>svg]:size-icon-sm! [&>svg]:p-0"
+									disabled={
+										isDisabled &&
+										!showAgentSetupNotice &&
+										!canUseWorkspacePicker
+									}
 									aria-label="More options"
 								>
 									<PlusIcon />
@@ -865,35 +1588,15 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 											<span>Back</span>
 										</button>
 										<Separator className="my-1" />
-										<Command loop>
-											<CommandInput
-												placeholder="Search workspaces..."
-												className="text-xs"
-											/>
-											<CommandList>
-												<CommandEmpty className="text-xs">
-													No workspaces found
-												</CommandEmpty>
-												<CommandGroup>
-													{workspaceOptions?.map((workspace) => (
-														<CommandItem
-															className="text-xs font-normal"
-															key={workspace.id}
-															value={workspace.name}
-															onSelect={() => {
-																onWorkspaceChange?.(workspace.id);
-																setPlusMenuOpen(false);
-															}}
-														>
-															{workspace.name}
-															{selectedWorkspaceId === workspace.id && (
-																<CheckIcon className="ml-auto size-icon-sm shrink-0" />
-															)}
-														</CommandItem>
-													))}
-												</CommandGroup>
-											</CommandList>
-										</Command>
+										<WorkspacePickerList
+											workspaceOptions={workspaceOptions}
+											selectedWorkspaceId={selectedWorkspaceId}
+											chatOrganizationId={chatOrganizationId}
+											onSelect={(id) => {
+												onWorkspaceChange?.(id);
+												setPlusMenuOpen(false);
+											}}
+										/>
 									</div>
 								) : (
 									<>
@@ -901,37 +1604,39 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 											<button
 												type="button"
 												onClick={() => {
+													resetPromptCycle();
 													setPlusMenuOpen(false);
 													fileInputRef.current?.click();
 												}}
 												className="group flex h-8 w-full cursor-pointer items-center gap-1.5 border-none bg-transparent px-1 text-xs text-content-secondary shadow-none transition-colors hover:text-content-primary"
 											>
-												<ImageIcon className="size-3.5 shrink-0" />
-												Attach image
+												<PaperclipIcon className="size-3.5 shrink-0" />
+												Attach file
 											</button>
 										)}
-										{onPlanModeToggle && (
-											<button
-												type="button"
-												role="menuitemcheckbox"
-												aria-checked={planModeEnabled}
-												onClick={handlePlanModeToggle}
+										<PlusMenuCheckboxItem
+											icon={PencilIcon}
+											label="Plan first"
+											checked={planModeEnabled}
+											onToggle={handlePlanModeToggle}
+											disabled={isDisabled}
+										/>
+										{onManageAutomationsToggle && (
+											<PlusMenuCheckboxItem
+												icon={ZapIcon}
+												label="Manage automations"
+												description="Let the agent create and manage automations for you."
+												checked={manageAutomationsEnabled}
+												onToggle={handleManageAutomationsToggle}
 												disabled={isDisabled}
-												className="group flex h-8 w-full cursor-pointer items-center gap-1.5 border-none bg-transparent px-1 text-xs text-content-secondary shadow-none transition-colors hover:text-content-primary disabled:cursor-not-allowed disabled:opacity-50"
-											>
-												<PencilIcon className="size-3.5 shrink-0" />
-												<span>Plan first</span>
-												{planModeEnabled && (
-													<CheckIcon className="ml-auto size-icon-sm shrink-0" />
-												)}
-											</button>
+											/>
 										)}
 										{workspaceOptions &&
 											onWorkspaceChange &&
 											(isBelowMdViewport() ? (
 												<button
 													type="button"
-													disabled={isDisabled || isWorkspaceLoading}
+													disabled={!canUseWorkspacePicker}
 													onClick={() => setPlusMenuView("workspace")}
 													className="group flex h-8 w-full cursor-pointer items-center gap-1.5 border-none bg-transparent px-1 text-xs text-content-secondary shadow-none transition-colors hover:text-content-primary disabled:cursor-not-allowed disabled:opacity-50"
 												>
@@ -947,7 +1652,7 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 													<PopoverTrigger asChild>
 														<button
 															type="button"
-															disabled={isDisabled || isWorkspaceLoading}
+															disabled={!canUseWorkspacePicker}
 															className="group flex h-8 w-full cursor-pointer items-center gap-1.5 border-none bg-transparent px-1 text-xs text-content-secondary shadow-none transition-colors hover:text-content-primary disabled:cursor-not-allowed disabled:opacity-50"
 														>
 															<MonitorIcon className="size-3.5 shrink-0" />
@@ -966,36 +1671,16 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 														sideOffset={8}
 														className="w-64 p-0"
 													>
-														<Command loop>
-															<CommandInput
-																placeholder="Search workspaces..."
-																className="text-xs"
-															/>
-															<CommandList>
-																<CommandEmpty className="text-xs">
-																	No workspaces found
-																</CommandEmpty>
-																<CommandGroup>
-																	{workspaceOptions.map((workspace) => (
-																		<CommandItem
-																			className="text-xs font-normal"
-																			key={workspace.id}
-																			value={workspace.name}
-																			onSelect={() => {
-																				onWorkspaceChange(workspace.id);
-																				setWorkspacePickerOpen(false);
-																				setPlusMenuOpen(false);
-																			}}
-																		>
-																			{workspace.name}
-																			{selectedWorkspaceId === workspace.id && (
-																				<CheckIcon className="ml-auto size-icon-sm shrink-0" />
-																			)}
-																		</CommandItem>
-																	))}
-																</CommandGroup>
-															</CommandList>
-														</Command>
+														<WorkspacePickerList
+															workspaceOptions={workspaceOptions}
+															selectedWorkspaceId={selectedWorkspaceId}
+															chatOrganizationId={chatOrganizationId}
+															onSelect={(id) => {
+																onWorkspaceChange(id);
+																setWorkspacePickerOpen(false);
+																setPlusMenuOpen(false);
+															}}
+														/>
 													</PopoverContent>
 												</Popover>
 											))}
@@ -1029,31 +1714,63 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 															<span className="min-w-0 flex-1 truncate text-xs text-content-secondary">
 																{server.display_name}
 															</span>
+															{isForceOn && (
+																<LockIcon className="size-3 shrink-0 text-content-secondary" />
+															)}
 															{needsAuth ? (
-																<Button
-																	variant="outline"
-																	size="sm"
-																	className="h-6 shrink-0 px-2 text-[10px] leading-none"
-																	onClick={() => handleMcpConnect(server)}
-																	disabled={
-																		isDisabled || mcpConnectingId !== null
-																	}
-																>
-																	{isConnecting ? (
-																		<Spinner loading className="size-2.5" />
-																	) : null}
-																	Auth
-																</Button>
+																<>
+																	{isForceOn && (
+																		<span className="sr-only">Always on</span>
+																	)}
+																	<Button
+																		variant="outline"
+																		size="sm"
+																		className="h-6 shrink-0 px-2 text-[10px] leading-none"
+																		onClick={() => connectMCPServer(server.id)}
+																		disabled={
+																			isDisabled || mcpConnectingId !== null
+																		}
+																	>
+																		{isConnecting ? (
+																			<Spinner
+																				loading
+																				className="h-2.5 w-2.5"
+																			/>
+																		) : null}
+																		Auth
+																	</Button>
+																</>
 															) : (
-																<Switch
-																	size="sm"
-																	checked={isSelected}
-																	onCheckedChange={(checked) =>
-																		handleMcpToggle(server.id, checked)
-																	}
-																	disabled={isDisabled || isForceOn}
-																	aria-label={`${isSelected ? "Disable" : "Enable"} ${server.display_name}`}
-																/>
+																<>
+																	{server.auth_type === "oauth2" && (
+																		<Button
+																			variant="subtle"
+																			size="icon"
+																			className="size-6 shrink-0 text-content-secondary [&>svg]:size-3"
+																			onClick={() => {
+																				setPlusMenuOpen(false);
+																				setMcpDisconnectTarget(server);
+																			}}
+																			disabled={isDisabled}
+																			aria-label={`Disconnect ${server.display_name}`}
+																		>
+																			<UnlinkIcon />
+																		</Button>
+																	)}
+																	<Switch
+																		size="sm"
+																		checked={isSelected}
+																		onCheckedChange={(checked) =>
+																			handleMcpToggle(server.id, checked)
+																		}
+																		disabled={isDisabled || isForceOn}
+																		aria-label={
+																			isForceOn
+																				? `${server.display_name} always on`
+																				: `${isSelected ? "Disable" : "Enable"} ${server.display_name}`
+																		}
+																	/>
+																</>
 															)}
 														</div>
 													);
@@ -1073,62 +1790,75 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 								options={modelOptions}
 								disabled={isDisabled}
 								placeholder={modelSelectorPlaceholder}
-								formatProviderLabel={formatProviderLabel}
+								className={cn(pillSizingClasses, "md:h-auto")}
 								dropdownSide="top"
-								dropdownAlign="center"
+								dropdownAlign="start"
 								enableMobileFullWidthDropdown
+								reasoningEffort={reasoningEffort}
+								onReasoningEffortChange={onReasoningEffortChange}
 							/>
 						)}
-						{planModeEnabled && (
-							<span className="hidden shrink-0 items-center gap-1 rounded-full bg-surface-secondary px-2 py-0.5 text-xs font-medium text-content-secondary md:inline-flex">
+						{planModeEnabled && !shouldOverflowPlanningBadge && (
+							<span
+								data-testid="planning-badge"
+								className="hidden shrink-0 items-center gap-1 rounded-full bg-surface-secondary px-2 py-0.5 text-xs font-medium text-content-secondary sm:inline-flex"
+							>
 								<PencilIcon className="size-3" />
 								Planning
-								{onPlanModeToggle && (
-									<BadgeDismissButton
-										onClick={handleDisablePlanMode}
-										ariaLabel="Disable plan mode"
-										isDisabled={isDisabled}
-									/>
-								)}
-							</span>
-						)}{" "}
-						{/* Badge row — all badges and the pill always
-						 * render so the DOM structure never changes.
-						 * Overflow badges use invisible + order-1 to
-						 * hide and reorder via CSS. The pill is invisible
-						 * when there's no overflow but still occupies
-						 * layout space, preventing measurement flicker. */}
-						{workspace && workspaceAgent && chatId && (
-							<span className="ml-1 md:ml-0">
-								<WorkspacePill
-									workspace={workspace}
-									agent={workspaceAgent}
-									chatId={chatId}
-									sshCommand={sshCommand}
-									folder={folder}
+								<BadgeDismissButton
+									onClick={handleDisablePlanMode}
+									ariaLabel="Disable plan mode"
+									isDisabled={isDisabled}
 								/>
 							</span>
 						)}
+						{/* Badges and the +N pill stay mounted for measurement:
+						 * overflowed badges are display:none, the pill merely
+						 * invisible so its width stays readable. */}
 						<div
 							ref={badgeContainerRef}
 							className="flex min-w-0 items-center gap-1 overflow-hidden"
 						>
 							{allBadges.map((badge, i) => {
 								const isOverflow = overflowCount > 0 && i >= visibleCount;
+								if (
+									badge === workspacePillBadge &&
+									workspace &&
+									workspaceAgent &&
+									chatId
+								) {
+									return (
+										<span
+											key="workspace-pill"
+											className={cn(
+												"flex min-w-0 text-xs",
+												pillSizingClasses,
+												isOverflow && "hidden",
+											)}
+										>
+											<WorkspacePill
+												workspace={workspace}
+												agent={workspaceAgent}
+												chatId={chatId}
+												sshCommand={sshCommand}
+												folder={folder}
+												onRemoveWorkspace={removeWorkspaceHandler}
+											/>
+										</span>
+									);
+								}
 								return (
 									<ToolBadge
-										key={badge.kind === "mcp" ? badge.server.id : badge.kind}
+										key={badgeKey(badge, i)}
 										badge={badge}
-										onRemoveWorkspace={handleRemoveWorkspace}
+										onRemoveWorkspace={removeWorkspaceHandler}
 										onRemoveMcp={handleRemoveMcp}
-										className={isOverflow ? "invisible order-1" : undefined}
+										onRemovePlanning={handleDisablePlanMode}
+										isDisabled={isDisabled}
+										className={isOverflow ? "hidden" : undefined}
 									/>
 								);
 							})}
-							{/* Pill — always in the DOM so it permanently
-							 * reserves layout space. Invisible when nothing
-							 * overflows. CSS order keeps it before order-1
-							 * (overflow) badges. */}
 							<Popover
 								open={overflowPopoverOpen && overflowCount > 0}
 								onOpenChange={setOverflowPopoverOpen}
@@ -1146,35 +1876,72 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 										+{overflowCount}
 									</button>
 								</PopoverTrigger>
-								<PopoverContent
-									side="top"
-									align="start"
-									className="mobile-full-width-dropdown mobile-full-width-dropdown-bottom flex w-auto max-w-64 flex-wrap gap-1 p-2"
+								<BadgePopoverContent
+									onInteractOutside={(event) => {
+										// The workspace pill portals its menu outside
+										// this popover; dismissing would unmount the
+										// open menu. Ignore focus shifts and pointer
+										// presses inside the menu.
+										if (event.detail.originalEvent.type !== "pointerdown") {
+											event.preventDefault();
+											return;
+										}
+										if (
+											event.target instanceof Element &&
+											event.target.closest('[role="menu"]')
+										) {
+											event.preventDefault();
+										}
+									}}
 								>
-									{overflowBadges.map((badge) => (
-										<ToolBadge
-											key={
-												badge.kind === "mcp"
-													? badge.server.id
-													: `${badge.kind}-overflow`
-											}
-											badge={badge}
-											onRemoveWorkspace={handleRemoveWorkspace}
-											onRemoveMcp={handleRemoveMcp}
-										/>
-									))}
-								</PopoverContent>
+									{overflowBadges.map((badge, i) => {
+										if (
+											badge === workspacePillBadge &&
+											workspace &&
+											workspaceAgent &&
+											chatId
+										) {
+											return (
+												<span
+													key="workspace-pill-overflow"
+													className="flex min-w-0 text-xs"
+												>
+													<WorkspacePill
+														workspace={workspace}
+														agent={workspaceAgent}
+														chatId={chatId}
+														sshCommand={sshCommand}
+														folder={folder}
+														onRemoveWorkspace={removeWorkspaceHandler}
+														inOverflowPopover
+													/>
+												</span>
+											);
+										}
+										return (
+											<ToolBadge
+												key={badgeKey(badge, visibleCount + i)}
+												badge={badge}
+												onRemoveWorkspace={removeWorkspaceHandler}
+												onRemoveMcp={handleRemoveMcp}
+												onRemovePlanning={handleDisablePlanMode}
+												isDisabled={isDisabled}
+												disableTooltip
+											/>
+										);
+									})}
+								</BadgePopoverContent>
 							</Popover>
 						</div>
 					</div>
-					<div className="flex items-center gap-2">
-						{speech.isSupported && !isStreaming && (
+					<div className="flex shrink-0 items-center gap-2">
+						{speech.isSupported && (
 							<>
 								<Button
 									type="button"
 									variant="subtle"
 									size="icon"
-									className="size-7 shrink-0 rounded-full [&>svg]:!size-icon-sm [&>svg]:p-0"
+									className="size-7 shrink-0 rounded-full [&>svg]:size-icon-sm! [&>svg]:p-0"
 									onClick={
 										speech.isRecording
 											? handleCancelRecording
@@ -1185,7 +1952,11 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 										speech.isRecording ? "Cancel voice input" : "Voice input"
 									}
 								>
-									{speech.isRecording ? <XIcon /> : <MicIcon />}
+									{speech.isRecording ? (
+										<XIcon />
+									) : (
+										<MicIcon strokeWidth={1.5} />
+									)}
 								</Button>
 								{speech.error && !speech.isRecording && (
 									<span
@@ -1200,41 +1971,77 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 							</>
 						)}
 						{contextUsage !== undefined && (
-							<ContextUsageIndicator usage={contextUsage} />
-						)}
-						{isStreaming && onInterrupt && (
-							<Button
-								size="icon"
-								variant="default"
-								className="size-7 rounded-full transition-colors [&>svg]:!size-3 [&>svg]:p-0"
-								onClick={onInterrupt}
-								disabled={isInterruptPending}
-							>
-								<SquareIcon className="fill-current" />
-								<span className="sr-only">Stop</span>
-							</Button>
-						)}
-						{!(isStreaming && editingQueuedMessageID === null) && (
-							<Button
-								size="icon"
-								variant="default"
-								className="size-7 rounded-full transition-colors [&>svg]:!size-5 [&>svg]:p-0"
-								onClick={
-									speech.isRecording ? handleAcceptRecording : handleSubmit
-								}
-								disabled={speech.isRecording ? false : !canSend}
-							>
-								{isLoading ? (
-									<Spinner size="sm" loading aria-hidden="true" />
-								) : speech.isRecording ? (
-									<CheckIcon />
-								) : (
-									<ArrowUpIcon />
+							<div
+								className={cn(
+									"flex",
+									speech.isSupported && !speech.error && "-ml-2",
 								)}
-								<span className="sr-only">
-									{speech.isRecording ? "Accept voice input" : sendButtonLabel}
-								</span>
-							</Button>
+							>
+								<ContextUsageIndicator
+									usage={contextUsage}
+									onRefreshContext={onRefreshContext}
+									isRefreshingContext={isRefreshingContext}
+								/>
+							</div>
+						)}
+						{showSendButton && (
+							<Tooltip>
+								<TooltipTrigger asChild>
+									<Button
+										size="icon"
+										variant="default"
+										className="size-7 rounded-full transition-colors [&>svg]:size-5! [&>svg]:p-0"
+										onClick={
+											speech.isRecording ? handleAcceptRecording : handleSubmit
+										}
+										disabled={speech.isRecording ? false : !canSend}
+										aria-keyshortcuts={sendButtonKeyShortcuts}
+									>
+										{isLoading && !isInterruptPending ? (
+											<Spinner size="sm" loading aria-hidden="true" />
+										) : speech.isRecording ? (
+											<CheckIcon />
+										) : (
+											<ArrowUpIcon />
+										)}
+										<span className="sr-only">
+											{speech.isRecording
+												? "Accept voice input"
+												: sendButtonLabel}
+										</span>
+									</Button>
+								</TooltipTrigger>
+								<TooltipContent side="top">
+									{speech.isRecording
+										? "Accept voice input"
+										: sendButtonTooltip}
+								</TooltipContent>
+							</Tooltip>
+						)}
+						{showStopButton && (
+							<Tooltip>
+								<TooltipTrigger asChild>
+									<Button
+										size="icon"
+										variant="default"
+										className="size-7 rounded-full transition-colors [&>svg]:size-3! [&>svg]:p-0"
+										onClick={onInterrupt}
+										disabled={isInterruptPending}
+									>
+										<SquareIcon className="fill-current" />
+										<span className="sr-only">Stop</span>
+									</Button>
+								</TooltipTrigger>
+								<TooltipContent side="top">
+									{isInterruptPending ? "Interrupting…" : "Stop"}
+								</TooltipContent>
+							</Tooltip>
+						)}
+						{isInterruptPending && isStreaming && (
+							// Live region announcing the pending interruption.
+							<span role="status" className="sr-only">
+								Interrupting. Waiting for the agent to stop.
+							</span>
 						)}
 					</div>
 				</div>
@@ -1255,12 +2062,106 @@ export const AgentChatInput: FC<AgentChatInputProps> = ({
 				<TextPreviewDialog
 					content={previewText}
 					fileName={previewTextFileName ?? undefined}
+					mediaType={previewTextMediaType ?? undefined}
 					onClose={() => {
 						setPreviewText(null);
 						setPreviewTextFileName(null);
+						setPreviewTextMediaType(null);
 					}}
 				/>
 			)}
+			<ConfirmDialog
+				open={mcpDisconnectTarget !== null}
+				title={`Disconnect ${mcpDisconnectTarget?.display_name ?? "MCP server"}?`}
+				description="This removes your credentials for this MCP server from Coder. You can authenticate again later."
+				type="delete"
+				confirmText="Disconnect"
+				confirmLoading={mcpDisconnectMutation.isPending}
+				onConfirm={handleMcpDisconnectConfirm}
+				onClose={() => setMcpDisconnectTarget(null)}
+			/>
 		</>
+	);
+};
+
+/**
+ * Shared workspace picker used by both the mobile and desktop
+ * "Attach workspace" menus. Workspaces from a different organization
+ * than the chat are disabled unless already selected, so stale bindings
+ * can still be cleared.
+ */
+type WorkspacePickerListProps = {
+	workspaceOptions:
+		| ReadonlyArray<{
+				id: string;
+				name: string;
+				organization_id: string;
+		  }>
+		| undefined;
+	selectedWorkspaceId?: string | null;
+	chatOrganizationId?: string;
+	onSelect: (id: string | null) => void;
+};
+
+const WorkspacePickerList: React.FC<WorkspacePickerListProps> = ({
+	workspaceOptions,
+	selectedWorkspaceId,
+	chatOrganizationId,
+	onSelect,
+}) => {
+	return (
+		<Command loop>
+			<CommandInput placeholder="Search workspaces..." className="text-xs" />
+			<CommandList>
+				<CommandEmpty className="text-xs">No workspaces found</CommandEmpty>
+				<CommandGroup>
+					{workspaceOptions?.map((workspace) => {
+						const isCrossOrg =
+							!!chatOrganizationId &&
+							workspace.organization_id !== chatOrganizationId;
+						const isSelected = selectedWorkspaceId === workspace.id;
+						const isUnavailable = isCrossOrg && !isSelected;
+
+						const item = (
+							<CommandItem
+								className={cn(
+									"text-xs font-normal",
+									isUnavailable &&
+										"cursor-not-allowed opacity-50 data-[disabled=true]:pointer-events-auto",
+								)}
+								key={workspace.id}
+								value={workspace.name}
+								disabled={isUnavailable}
+								onSelect={() => {
+									if (!isUnavailable) {
+										onSelect(isSelected ? null : workspace.id);
+									}
+								}}
+							>
+								{workspace.name}
+								{isSelected && (
+									<CheckIcon className="ml-auto size-icon-sm shrink-0" />
+								)}
+							</CommandItem>
+						);
+
+						if (isUnavailable) {
+							return (
+								<Tooltip key={workspace.id}>
+									<TooltipTrigger asChild>
+										<div>{item}</div>
+									</TooltipTrigger>
+									<TooltipContent side="top">
+										Chat and workspace must be in the same organization
+									</TooltipContent>
+								</Tooltip>
+							);
+						}
+
+						return item;
+					})}
+				</CommandGroup>
+			</CommandList>
+		</Command>
 	);
 };

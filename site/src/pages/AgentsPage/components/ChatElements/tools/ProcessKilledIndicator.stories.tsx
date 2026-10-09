@@ -1,5 +1,4 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, within } from "storybook/test";
 import { Tool } from "./Tool";
 
 const PROCESS_ID = "376b2458-e318-4442-8b87-51a0f9727f0e";
@@ -7,19 +6,21 @@ const PROCESS_ID = "376b2458-e318-4442-8b87-51a0f9727f0e";
 const meta: Meta<typeof Tool> = {
 	title: "components/ai-elements/tool/ProcessKilledIndicator",
 	component: Tool,
-	decorators: [
-		(Story) => (
-			<div className="max-w-3xl rounded-lg border border-solid border-border-default bg-surface-primary p-4">
-				<Story />
-			</div>
-		),
-	],
+	args: {
+		organizationId: "organization-id",
+		mcpServers: [],
+		isError: false,
+		subagentTitles: new Map(),
+		subagentVariants: new Map(),
+		shellToolDisplayMode: "auto",
+		codeDiffDisplayMode: "auto",
+	},
 };
 export default meta;
 type Story = StoryObj<typeof Tool>;
 
 // ---------------------------------------------------------------------------
-// Execute tool — killed indicator via killedBySignal prop
+// Execute tool, killed indicator via killedBySignal prop.
 // ---------------------------------------------------------------------------
 
 export const ExecuteKilled: Story = {
@@ -34,11 +35,8 @@ export const ExecuteKilled: Story = {
 			exit_code: -1,
 			wall_duration_ms: 45000,
 			background_process_id: PROCESS_ID,
+			backgrounded: true,
 		},
-	},
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		expect(canvas.getByText("make pre-push 2>&1")).toBeInTheDocument();
 	},
 };
 
@@ -54,15 +52,12 @@ export const ExecuteTerminated: Story = {
 			exit_code: 0,
 			wall_duration_ms: 2000,
 			background_process_id: PROCESS_ID,
+			backgrounded: true,
 		},
-	},
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		expect(canvas.getByText("npm start")).toBeInTheDocument();
 	},
 };
 
-/** Execute NOT signaled — no indicator. */
+/** Execute not signaled, no indicator. */
 export const ExecuteNotSignaled: Story = {
 	args: {
 		name: "execute",
@@ -75,13 +70,9 @@ export const ExecuteNotSignaled: Story = {
 			wall_duration_ms: 100,
 		},
 	},
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		expect(canvas.getByText("echo hello")).toBeInTheDocument();
-	},
 };
 
-/** Running execute — killed indicator should NOT appear yet. */
+/** Running execute, killed indicator should not appear yet. */
 export const ExecuteRunningNotYetKilled: Story = {
 	args: {
 		name: "execute",
@@ -89,14 +80,10 @@ export const ExecuteRunningNotYetKilled: Story = {
 		killedBySignal: "kill",
 		args: { command: "make pre-push 2>&1" },
 	},
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		expect(canvas.getByText("make pre-push 2>&1")).toBeInTheDocument();
-	},
 };
 
 // ---------------------------------------------------------------------------
-// ProcessOutput tool — killed indicator
+// ProcessOutput tool, killed indicator.
 // ---------------------------------------------------------------------------
 
 export const ProcessOutputKilled: Story = {
@@ -109,10 +96,6 @@ export const ProcessOutputKilled: Story = {
 			output: "pre-push (/tmp/coder-pre-push.CZ6K9A)\ntest + build site:",
 			exit_code: null,
 		},
-	},
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		expect(canvas.getByText(/pre-push/)).toBeInTheDocument();
 	},
 };
 
@@ -127,13 +110,9 @@ export const ProcessOutputTerminated: Story = {
 			exit_code: null,
 		},
 	},
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		expect(canvas.getByText("server output")).toBeInTheDocument();
-	},
 };
 
-/** ProcessOutput with no output and killed — indicator in empty state. */
+/** ProcessOutput with no output and killed, indicator in empty state. */
 export const ProcessOutputKilledNoOutput: Story = {
 	args: {
 		name: "process_output",
@@ -157,9 +136,5 @@ export const ProcessOutputNotSignaled: Story = {
 			output: "some output",
 			exit_code: 0,
 		},
-	},
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		expect(canvas.getByText("some output")).toBeInTheDocument();
 	},
 };

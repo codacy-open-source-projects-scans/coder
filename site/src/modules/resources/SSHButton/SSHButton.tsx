@@ -1,4 +1,3 @@
-import type { FC } from "react";
 import { useQuery } from "react-query";
 import { deploymentSSHConfig } from "#/api/queries/deployment";
 import { ChevronDownIcon } from "#/components/AnimatedIcons/ChevronDown";
@@ -16,13 +15,13 @@ import {
 } from "#/components/Popover/Popover";
 import { docs } from "#/utils/docs";
 
-interface AgentSSHButtonProps {
+type AgentSSHButtonProps = {
 	workspaceName: string;
 	agentName: string;
 	workspaceOwnerUsername: string;
-}
+};
 
-export const AgentSSHButton: FC<AgentSSHButtonProps> = ({
+export const AgentSSHButton: React.FC<AgentSSHButtonProps> = ({
 	workspaceName,
 	agentName,
 	workspaceOwnerUsername,
@@ -32,7 +31,7 @@ export const AgentSSHButton: FC<AgentSSHButtonProps> = ({
 
 	return (
 		<Popover>
-			<PopoverTrigger asChild={true}>
+			<PopoverTrigger asChild>
 				<Button size="sm" variant="subtle">
 					Connect via SSH
 					<ChevronDownIcon />
@@ -40,6 +39,7 @@ export const AgentSSHButton: FC<AgentSSHButtonProps> = ({
 			</PopoverTrigger>
 
 			<PopoverContent
+				onOpenAutoFocus={(event) => event.preventDefault()}
 				align="end"
 				className="py-4 px-6 w-80 text-content-secondary mt-[2px] bg-surface-secondary"
 			>
@@ -61,9 +61,7 @@ export const AgentSSHButton: FC<AgentSSHButtonProps> = ({
 				</ol>
 
 				<HelpPopoverLinksGroup>
-					<HelpPopoverLink href={docs("/install")}>
-						Install Coder CLI
-					</HelpPopoverLink>
+					<HelpPopoverLink href="/install">Install Coder CLI</HelpPopoverLink>
 					<HelpPopoverLink href={docs("/user-guides/workspace-access/vscode")}>
 						Connect via VS Code Remote SSH
 					</HelpPopoverLink>
@@ -84,12 +82,12 @@ export const AgentSSHButton: FC<AgentSSHButtonProps> = ({
 	);
 };
 
-interface SSHStepProps {
+type SSHStepProps = {
 	helpText: string;
 	codeExample: string;
-}
+};
 
-const SSHStep: FC<SSHStepProps> = ({ helpText, codeExample }) => (
+const SSHStep: React.FC<SSHStepProps> = ({ helpText, codeExample }) => (
 	<li style={{ listStylePosition: "inside" }}>
 		<HelpPopoverText style={{ display: "inline" }}>
 			<strong className="text-xs">{helpText}</strong>

@@ -3,12 +3,9 @@
  * @see {@link https://shadcnui-expansions.typeart.cc/docs/multiple-selector}
  */
 import { Command as CommandPrimitive, useCommandState } from "cmdk";
+import { cn } from "cn";
 import { InfoIcon, XIcon } from "lucide-react";
 import {
-	type ComponentPropsWithoutRef,
-	type KeyboardEvent,
-	type ReactNode,
-	type Ref,
 	useCallback,
 	useEffect,
 	useImperativeHandle,
@@ -31,9 +28,8 @@ import {
 	TooltipTrigger,
 } from "#/components/Tooltip/Tooltip";
 import { useDebouncedValue } from "#/hooks/debounce";
-import { cn } from "#/utils/cn";
 
-export interface Option {
+export type Option = {
 	value: string;
 	label: string;
 	icon?: string;
@@ -43,21 +39,21 @@ export interface Option {
 	fixed?: boolean;
 	/** Group the options by providing key. */
 	[key: string]: string | boolean | undefined;
-}
-interface GroupOption {
+};
+type GroupOption = {
 	[key: string]: Option[];
-}
+};
 
-interface MultiSelectComboboxProps {
+type MultiSelectComboboxProps = {
 	value?: Option[];
 	defaultOptions?: Option[];
 	/** manually controlled options */
 	options?: Option[];
 	placeholder?: string;
 	/** Loading component. */
-	loadingIndicator?: ReactNode;
+	loadingIndicator?: React.ReactNode;
 	/** Empty component. */
-	emptyIndicator?: ReactNode;
+	emptyIndicator?: React.ReactNode;
 	/** Debounce time for async search. Only work with `onSearch`. */
 	delay?: number;
 	/**
@@ -95,25 +91,25 @@ interface MultiSelectComboboxProps {
 	/** Allow user to create option when there is no option matched. */
 	creatable?: boolean;
 	/** Props of `Command` */
-	commandProps?: ComponentPropsWithoutRef<typeof Command>;
+	commandProps?: Omit<React.ComponentProps<typeof Command>, "ref">;
 	/** Props of `CommandInput` */
 	inputProps?: Omit<
-		ComponentPropsWithoutRef<typeof CommandPrimitive.Input>,
-		"value" | "placeholder" | "disabled"
+		React.ComponentProps<typeof CommandPrimitive.Input>,
+		"ref" | "value" | "placeholder" | "disabled"
 	>;
 	/** hide or show the button that clears all the selected options. */
 	hideClearAllButton?: boolean;
 	/** Test ID for testing purposes */
 	"data-testid"?: string;
-	ref?: Ref<MultiSelectComboboxRef>;
-}
+	ref?: React.Ref<MultiSelectComboboxRef>;
+};
 
-interface MultiSelectComboboxRef {
+type MultiSelectComboboxRef = {
 	selectedValue: Option[];
 	input: HTMLInputElement;
 	focus: () => void;
 	reset: () => void;
-}
+};
 
 function transitionToGroupOption(options: Option[], groupBy?: string) {
 	if (options.length === 0) {
@@ -160,7 +156,7 @@ function isOptionsExist(groupOption: GroupOption, targetOption: Option[]) {
  * @reference: https://github.com/hsuanyi-chou/shadcn-ui-expansions/issues/34#issuecomment-1949561607
  **/
 const CommandEmpty: React.FC<
-	React.ComponentPropsWithRef<typeof CommandPrimitive.Empty>
+	React.ComponentProps<typeof CommandPrimitive.Empty>
 > = ({ className, ...props }) => {
 	const render = useCommandState((state) => state.filtered.count === 0);
 
@@ -243,7 +239,7 @@ export const MultiSelectCombobox: React.FC<MultiSelectComboboxProps> = ({
 		[onChange, selected],
 	);
 
-	const handleKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+	const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
 		const input = inputRef.current;
 		if (input) {
 			if (e.key === "Delete" || e.key === "Backspace") {
@@ -355,7 +351,7 @@ export const MultiSelectCombobox: React.FC<MultiSelectComboboxProps> = ({
 			return;
 		}
 
-		listRef.current.scrollIntoView({ behavior: "smooth" });
+		listRef.current.scrollIntoView({ block: "nearest", behavior: "smooth" });
 	}, [open]);
 
 	const CreatableItem = () => {
@@ -440,10 +436,6 @@ export const MultiSelectCombobox: React.FC<MultiSelectComboboxProps> = ({
 		return undefined;
 	};
 
-	if (inputRef.current && inputProps?.id) {
-		inputRef.current.id = inputProps?.id;
-	}
-
 	const fixedOptions = selected.filter((s) => s.fixed);
 	const showIcons = arrayOptions?.some((it) => it.icon);
 
@@ -467,10 +459,10 @@ export const MultiSelectCombobox: React.FC<MultiSelectComboboxProps> = ({
 			} // When onSearch is provided, we don't want to filter the options. You can still override it.
 			filter={commandFilter()}
 		>
-			{/* biome-ignore lint/a11y/useKeyWithClickEvents: onKeyDown is not needed here */}
+			{/* oxlint-disable-next-line jsx-a11y/click-events-have-key-events -- Click focuses the keyboard-accessible input. */}
 			<div
 				className={cn(
-					`min-h-10 rounded-md border border-solid border-border text-sm pr-3
+					`flex min-h-10 flex-col justify-center rounded-md border border-solid border-border text-sm pr-3
 						focus-within:ring-2 focus-within:ring-content-link [&>svg]:p-0.5`,
 					{
 						"pl-3 py-1": selected.length !== 0,
@@ -490,8 +482,8 @@ export const MultiSelectCombobox: React.FC<MultiSelectComboboxProps> = ({
 								<Badge
 									key={option.value}
 									className={cn(
-										"data-[disabled]:bg-content-disabled data-[disabled]:text-surface-tertiary data-[disabled]:hover:bg-content-disabled",
-										"data-[fixed]:bg-content-disabled data-[fixed]:text-surface-tertiary data-[fixed]:hover:bg-surface-secondary",
+										"data-disabled:bg-content-disabled data-disabled:text-surface-tertiary data-disabled:hover:bg-content-disabled",
+										"data-fixed:bg-content-disabled data-fixed:text-surface-tertiary data-fixed:hover:bg-surface-secondary",
 										badgeClassName,
 									)}
 									data-fixed={option.fixed}
@@ -511,7 +503,7 @@ export const MultiSelectCombobox: React.FC<MultiSelectComboboxProps> = ({
 										type="button"
 										data-testid="clear-option-button"
 										className={cn(
-											`ml-1 pr-0 rounded-sm bg-transparent border-none outline-none
+											`ml-1 pr-0 rounded-sm bg-transparent border-none outline-hidden
 												focus-visible:ring-2 focus-visible:ring-content-link focus-visible:ml-2.5 focus-visible:pl-0 cursor-pointer`,
 											(disabled || option.fixed) && "hidden",
 										)}
@@ -526,7 +518,7 @@ export const MultiSelectCombobox: React.FC<MultiSelectComboboxProps> = ({
 										}}
 										onClick={() => handleUnselect(option)}
 									>
-										<XIcon className="h-4 w-4 text-content-secondary hover:text-content-primary align-text-bottom" />
+										<XIcon className="size-4 text-content-secondary hover:text-content-primary align-text-bottom" />
 									</button>
 								</Badge>
 							);
@@ -558,10 +550,10 @@ export const MultiSelectCombobox: React.FC<MultiSelectComboboxProps> = ({
 									: placeholder
 							}
 							className={cn(
-								"flex-1 border-none outline-none bg-transparent placeholder:text-content-secondary",
+								"flex-1 border-none outline-hidden bg-transparent leading-5 placeholder:text-content-secondary",
 								{
 									"w-full": hidePlaceholderWhenSelected,
-									"px-3 py-2.5": selected.length === 0,
+									"px-3 py-2": selected.length === 0,
 									"ml-1": selected.length !== 0,
 								},
 								inputProps?.className,
@@ -585,7 +577,7 @@ export const MultiSelectCombobox: React.FC<MultiSelectComboboxProps> = ({
 							className={cn(
 								"bg-transparent mt-1 border-none rounded-sm",
 								"cursor-pointer text-content-secondary hover:text-content-primary",
-								"outline-none focus-visible:ring-2 focus-visible:ring-content-link [&>svg]:p-0.5",
+								"outline-hidden focus-visible:ring-2 focus-visible:ring-content-link [&>svg]:p-0.5",
 								(hideClearAllButton ||
 									disabled ||
 									selected.length < 1 ||
@@ -593,7 +585,7 @@ export const MultiSelectCombobox: React.FC<MultiSelectComboboxProps> = ({
 									"hidden",
 							)}
 						>
-							<XIcon className="h-5 w-5" />
+							<XIcon className="size-5" />
 						</button>
 						<ChevronDownIcon
 							open={open}
@@ -602,13 +594,14 @@ export const MultiSelectCombobox: React.FC<MultiSelectComboboxProps> = ({
 					</div>
 				</div>
 			</div>
-			<div className="relative" ref={listRef}>
+			<div className="relative">
 				{open && (
 					<CommandList
+						ref={listRef}
 						className={`absolute top-1 z-10 w-full rounded-md
 								border border-solid border-border
-								bg-surface-primary text-content-primary shadow-md outline-none
-								animate-in`}
+								bg-surface-primary text-content-primary shadow-md outline-hidden
+								animate-in origin-top scroll-mt-44 scroll-mb-10`}
 						onPointerLeave={() => {
 							setOnScrollbar(false);
 						}}
@@ -677,7 +670,7 @@ export const MultiSelectCombobox: React.FC<MultiSelectComboboxProps> = ({
 																<Tooltip>
 																	<TooltipTrigger asChild>
 																		<span className="flex items-center pointer-events-auto">
-																			<InfoIcon className="!w-3.5 !h-3.5 text-content-secondary" />
+																			<InfoIcon className="size-3.5! text-content-secondary" />
 																		</span>
 																	</TooltipTrigger>
 																	<TooltipContent side="right" sideOffset={10}>

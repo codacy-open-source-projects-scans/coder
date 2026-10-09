@@ -1,11 +1,14 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import { fn } from "storybook/test";
 import type { WorkspaceAgentLifecycle } from "#/api/typesGenerated";
 import {
 	MockDeploymentConfig,
 	MockUserAppearanceSettings,
+	MockWorkspace,
 	MockWorkspaceAgent,
 } from "#/testHelpers/entities";
 import { withProxyProvider, withWebSocket } from "#/testHelpers/storybook";
+import { TerminalClientSessionContext } from "../context/TerminalClientSessionContext";
 import { TerminalPanel } from "./TerminalPanel";
 
 const terminalQueries = [
@@ -32,19 +35,25 @@ const meta = {
 	component: TerminalPanel,
 	args: {
 		chatId: "b5a8832c-72db-4679-8393-9a48dff20a20",
+		isHot: true,
+		autoFocus: true,
+		onReady: fn(),
+		workspace: MockWorkspace,
 		workspaceAgent: createAgent("ready"),
 	},
 	parameters: {
 		layout: "centered",
-		chromatic: { disableSnapshot: true },
+		pixel: { exclude: true },
 		queries: terminalQueries,
 	},
 	decorators: [
 		withProxyProvider(),
 		(Story) => (
-			<div style={{ width: 480, height: 600 }}>
-				<Story />
-			</div>
+			<TerminalClientSessionContext value="0123456789abcdef0123456789abcdef">
+				<div style={{ width: 480, height: 600 }}>
+					<Story />
+				</div>
+			</TerminalClientSessionContext>
 		),
 	],
 } satisfies Meta<typeof TerminalPanel>;
@@ -59,12 +68,6 @@ export const Connected: Story = {
 	decorators: [withWebSocket],
 	parameters: {
 		webSocket: [{ event: "message", data: promptMessage }],
-	},
-};
-
-export const AgentUnavailable: Story = {
-	args: {
-		workspaceAgent: undefined,
 	},
 };
 

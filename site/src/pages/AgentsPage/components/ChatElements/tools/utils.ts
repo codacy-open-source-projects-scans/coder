@@ -1,23 +1,41 @@
 import type { FileDiffMetadata } from "@pierre/diffs";
-import { parsePatchFiles } from "@pierre/diffs";
 import * as Diff from "diff";
-import type React from "react";
 import * as Yup from "yup";
+import { parseDiffString, stampCacheKey } from "../../DiffViewer/parseDiff";
 import { asRecord, asString, isValid } from "../runtimeTypeUtils";
 
 export type ToolStatus = "completed" | "error" | "running";
 
-export interface EditFilesFileEntry {
+export type EditFilesFileEntry = {
 	path: string;
 	edits: Array<{ search: string; replace: string }>;
-}
+};
 
-const searchReplaceSchema = Yup.object({
-	search: Yup.string().required(),
-	replace: Yup.string().defined(),
-}).required();
-
-type SearchReplace = Yup.InferType<typeof searchReplaceSchema>;
+// Validates that the edit has at least the shape of an object with
+// string-typed text fields. Accepts both current field names
+// (old_text/new_text) and old names (search/replace): tool-call args
+// persisted from older chats use the old names and are immutable, so
+// this branch must stay to keep their diffs rendering.
+const normalizeEdit = (
+	e: unknown,
+): { search: string; replace: string } | null => {
+	if (typeof e !== "object" || e === null) return null;
+	const raw = e as Record<string, unknown>;
+	const search =
+		typeof raw.old_text === "string"
+			? raw.old_text
+			: typeof raw.search === "string"
+				? raw.search
+				: null;
+	const replace =
+		typeof raw.new_text === "string"
+			? raw.new_text
+			: typeof raw.replace === "string"
+				? raw.replace
+				: null;
+	if (!search || replace === null) return null;
+	return { search, replace };
+};
 
 const fileEntrySchema = Yup.object({
 	path: Yup.string().required(),
@@ -26,40 +44,40 @@ const fileEntrySchema = Yup.object({
 
 type FileEntry = Yup.InferType<typeof fileEntrySchema>;
 
-export const toProviderLabel = (
-	providerDisplayName: string,
-	providerID: string,
-	providerType: string,
+export const formatModelIntentLabel = (
+	modelIntent: string | undefined,
 ): string => {
-	if (providerDisplayName) {
-		return providerDisplayName;
-	}
-	if (providerID) {
-		return providerID;
-	}
-	if (providerType) {
-		return providerType;
-	}
-	return "Git provider";
-};
-
-/**
- * Formats a duration in milliseconds into a compact label using
- * the same style as {@link shortRelativeTime} in utils/time.
- */
-export const shortDurationMs = (durationMs: number | undefined): string => {
-	if (durationMs === undefined || durationMs < 0) {
+	const trimmed = modelIntent?.trim() ?? "";
+	if (!trimmed) {
 		return "";
 	}
-	const seconds = Math.round(durationMs / 1000);
+	return trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
+};
+
+const roundToTenths = (value: number): number => Number(value.toFixed(1));
+
+export const formatShellDurationMs = (
+	durationMs: number | undefined,
+): string => {
+	if (
+		durationMs === undefined ||
+		durationMs < 0 ||
+		!Number.isFinite(durationMs)
+	) {
+		return "";
+	}
+	if (durationMs < 1000) {
+		return `${Math.round(durationMs)}ms`;
+	}
+	const seconds = roundToTenths(durationMs / 1000);
 	if (seconds < 60) {
 		return `${seconds}s`;
 	}
-	const minutes = Math.round(seconds / 60);
+	const minutes = roundToTenths(durationMs / 60_000);
 	if (minutes < 60) {
 		return `${minutes}m`;
 	}
-	const hours = Math.round(minutes / 60);
+	const hours = roundToTenths(durationMs / 3_600_000);
 	return `${hours}h`;
 };
 
@@ -131,6 +149,79 @@ export const parseArgs = (args: unknown): Record<string, unknown> | null => {
 	return asRecord(args);
 };
 
+const getToolInputPayload = (args: unknown): unknown => {
+	const rec = asRecord(args);
+	if (!rec || typeof rec.model_intent !== "string") {
+		return args;
+	}
+	if ("properties" in rec) {
+		return rec.properties;
+	}
+	return Object.fromEntries(
+		Object.entries(rec).filter(([key]) => key !== "model_intent"),
+	);
+};
+
+const isEmptyObjectOrArray = (value: unknown): boolean => {
+	if (Array.isArray(value)) {
+		return value.length === 0;
+	}
+	const rec = asRecord(value);
+	return rec ? Object.keys(rec).length === 0 : false;
+};
+
+const formatValue = (value: unknown): string => {
+	if (typeof value === "object") {
+		try {
+			return JSON.stringify(value, null, 2) ?? String(value);
+		} catch {
+			return String(value);
+		}
+	}
+	return String(value);
+};
+
+export const formatToolInput = (args: unknown): string | null => {
+	const input = getToolInputPayload(args);
+	if (input === undefined || input === null) {
+		return null;
+	}
+	if (typeof input === "string") {
+		const trimmed = input.trim();
+		if (!trimmed) {
+			return null;
+		}
+		try {
+			return formatToolInput(JSON.parse(trimmed));
+		} catch {
+			return trimmed;
+		}
+	}
+	return isEmptyObjectOrArray(input) ? null : formatValue(input);
+};
+
+export type MediaToolResult = {
+	data: string;
+	mimeType: string;
+	text: string;
+};
+
+/** Parses a tool result the server flagged with is_media. */
+export const parseMediaToolResult = (
+	result: unknown,
+): MediaToolResult | null => {
+	const rec = asRecord(result);
+	if (
+		!rec ||
+		typeof rec.data !== "string" ||
+		typeof rec.mime_type !== "string"
+	) {
+		return null;
+	}
+	const mimeType = rec.mime_type.split(";")[0].trim().toLowerCase();
+	return { data: rec.data, mimeType, text: asString(rec.text) };
+};
+
 export const formatResultOutput = (result: unknown): string | null => {
 	if (result === undefined || result === null) {
 		return null;
@@ -152,62 +243,16 @@ export const formatResultOutput = (result: unknown): string | null => {
 			return content;
 		}
 	}
-	if (typeof result === "object") {
-		try {
-			return JSON.stringify(result, null, 2);
-		} catch {
-			return String(result);
-		}
-	}
-	return String(result);
+	return formatValue(result);
 };
 
-export const fileViewerCSS =
-	"pre, [data-line], [data-diffs-header] { background-color: transparent !important; }";
-
-// Selection override CSS maps the library's gold/yellow selection
-// palette to the Coder blue accent (`--content-link`) so line
-// highlighting feels native to the rest of the page.
-//
-// The library has two selection code paths: context lines use
-// `--diffs-bg-selection`, but change-addition/deletion lines
-// use a separate `color-mix()` against `--diffs-line-bg`. To
-// guarantee a uniform highlight across all line types we set
-// the CSS variables for annotations AND apply direct rules
-// with `!important` for line and gutter elements.
-const SELECTION_OVERRIDE_CSS = [
-	// Variable overrides for annotation areas and library internals.
-	":host {",
-	"  --diffs-bg-selection-override: hsl(var(--content-link) / 0.08);",
-	"  --diffs-bg-selection-number-override: hsl(var(--content-link) / 0.13);",
-	"  --diffs-selection-number-fg: hsl(var(--content-link));",
-	"  --diffs-gap-style: 1px solid hsl(var(--border-default));",
-	"}",
-	// Direct rules that override both context and change-line
-	// selection backgrounds so every selected line looks the same.
-	"[data-selected-line][data-line] {",
-	"  background-color: hsl(var(--content-link) / 0.08) !important;",
-	"}",
-	"[data-selected-line][data-column-number] {",
-	"  background-color: hsl(var(--content-link) / 0.13) !important;",
-	"  color: hsl(var(--content-link)) !important;",
-	"}",
-	// Clear the selection tint from annotation rows so the inline
-	// prompt input stands out clearly against the selected lines.
-	"[data-line-annotation][data-selected-line] [data-annotation-content] {",
-	"  background-color: transparent !important;",
-	"}",
-	"[data-line-annotation][data-selected-line]::before {",
-	"  background-color: transparent !important;",
-	"}",
-	"[data-selected-line][data-gutter-buffer='annotation'] {",
-	"  background-color: transparent !important;",
-	"}",
+export const fileViewerCSS = [
+	"pre, [data-line], [data-diffs-header] { background-color: transparent !important; }",
 ].join(" ");
 
 // Restyled separators: quiet, full-width dividers that fade
 // into the background instead of drawing attention.
-const SEPARATOR_CSS = [
+export const SEPARATOR_CSS = [
 	// Transparent backgrounds so separators blend with the
 	// code area rather than forming a distinct band.
 	":host {",
@@ -250,102 +295,8 @@ const SEPARATOR_CSS = [
 	"}",
 ].join(" ");
 
-// Shared header styling applied to all diff viewers (both the
-// conversation-inline diffs and the right-tab panel). This gives
-// every diff header the same font sizing, change-type badges,
-// and stat-count pills regardless of where it appears.
-const DIFF_HEADER_CSS = [
-	// Header layout: consistent sizing and padding across contexts.
-	"[data-diffs-header] {",
-	"  font-size: 13px;",
-	"  min-height: 32px !important;",
-	"  padding-block: 8px !important;",
-	"  padding-inline: 10px 6px !important;",
-	"  border-bottom: 1px solid hsl(var(--border-default));",
-	"}",
-
-	// Title text: sans-serif, slightly smaller than header chrome.
-	"[data-diffs-header] [data-title] {",
-	"  font-size: 12px;",
-	"  color: hsl(var(--content-primary));",
-	"}",
-
-	// Replace the library's built-in SVG change-type icons with
-	// single-letter badges (A/D/M/R) via CSS-generated content.
-	"[data-change-icon] { display: none !important; }",
-	// Baseline-align the badge letter with the filename so their
-	// text baselines match despite different font sizes (11px vs
-	// 12px). Without this the box-centering default shifts the
-	// badge a fraction of a pixel above the title.
-	"[data-diffs-header] [data-header-content] { align-items: baseline; overflow: hidden; }",
-	"[data-diffs-header] [data-rename-icon] { align-self: center; }",
-	"[data-diffs-header] [data-header-content]::before {",
-	"  font-size: 11px;",
-	"  font-weight: 600;",
-	"  flex-shrink: 0;",
-	"}",
-	"[data-diffs-header][data-change-type='new'] [data-header-content]::before {",
-	"  content: 'A';",
-	"  color: hsl(var(--git-added));",
-	"}",
-	"[data-diffs-header][data-change-type='change'] [data-header-content]::before {",
-	"  content: 'M';",
-	"  color: hsl(var(--git-modified));",
-	"}",
-	"[data-diffs-header][data-change-type='deleted'] [data-header-content]::before {",
-	"  content: 'D';",
-	"  color: hsl(var(--git-deleted));",
-	"}",
-	"[data-diffs-header][data-change-type='rename-pure'] [data-header-content]::before,",
-	"[data-diffs-header][data-change-type='rename-changed'] [data-header-content]::before {",
-	"  content: 'R';",
-	"  color: hsl(var(--git-modified));",
-	"}",
-
-	// Stat counts styled as compact pill badges.
-	"[data-diffs-header] [data-metadata] {",
-	"  flex-shrink: 0;",
-	"  flex-direction: row-reverse;",
-	"  align-items: stretch;",
-	"  gap: 0 !important;",
-	"  padding: 0;",
-	"  border: 1px solid hsl(var(--border-default));",
-	"  border-radius: 3px;",
-	"  overflow: hidden;",
-	"}",
-	"[data-diffs-header] [data-additions-count],",
-	"[data-diffs-header] [data-deletions-count] {",
-	"  font-family: var(--diffs-font-family, var(--diffs-font-fallback));",
-	"  font-size: 12px;",
-	"  font-weight: 500;",
-	"  line-height: 20px;",
-	"  padding-inline: 4px;",
-	"  border-radius: 0;",
-	"}",
-	"[data-diffs-header] [data-additions-count] {",
-	"  color: hsl(var(--git-added-bright)) !important;",
-	"  background-color: hsl(var(--surface-git-added));",
-	"}",
-	"[data-diffs-header] [data-deletions-count] {",
-	"  color: hsl(var(--git-deleted-bright)) !important;",
-	"  background-color: hsl(var(--surface-git-deleted));",
-	"}",
-].join(" ");
-
 export const diffViewerCSS = [
-	// Make context lines transparent so they blend with the page,
-	// but preserve the library's colored backgrounds on changed
-	// lines (change-addition / change-deletion) so the line-level
-	// tint and word-level emphasis highlights remain visible.
-	"pre, [data-line]:not([data-selected-line]):not([data-line-type='change-addition']):not([data-line-type='change-deletion']), [data-diffs-header] { background-color: transparent !important; }",
-	"[data-diffs-header] { border-left: 1px solid var(--border); }",
-	// The library reserves a 6 px horizontal scrollbar track on
-	// [data-code] via overflow: scroll clip. In wrap mode lines
-	// never overflow, so hide the track to remove the phantom gap.
-	"[data-code] { scrollbar-width: none !important; }",
-	"[data-code]::-webkit-scrollbar { height: 0 !important; }",
-	DIFF_HEADER_CSS,
-	SELECTION_OVERRIDE_CSS,
+	"pre, [data-line]:not([data-line-type='change-addition']):not([data-line-type='change-deletion']) { background-color: transparent !important; }",
 	SEPARATOR_CSS,
 ].join(" ");
 
@@ -372,7 +323,7 @@ export function stripNoNewline(fileDiff: FileDiffMetadata): FileDiffMetadata {
 		(h) => h.noEOFCRDeletions || h.noEOFCRAdditions,
 	);
 	if (!needsStrip) return fileDiff;
-	return {
+	const stripped = {
 		...fileDiff,
 		hunks: fileDiff.hunks.map((h) => ({
 			...h,
@@ -380,6 +331,8 @@ export function stripNoNewline(fileDiff: FileDiffMetadata): FileDiffMetadata {
 			noEOFCRAdditions: false,
 		})),
 	};
+	stampCacheKey(stripped);
+	return stripped;
 }
 
 export function getFileViewerOptions(isDark: boolean) {
@@ -420,10 +373,16 @@ export const DIFFS_FONT_STYLE = {
 	"--diffs-header-font-family": '"Geist Variable", system-ui, sans-serif',
 	"--diffs-font-size": "11px",
 	"--diffs-line-height": "1.5",
-} as React.CSSProperties;
-
-export const BORDER_BG_STYLE = {
-	background: "hsl(var(--border-default))",
+	"--diffs-addition-color-override": "hsl(var(--git-added))",
+	"--diffs-deletion-color-override": "hsl(var(--git-deleted))",
+	"--diffs-bg-addition-override": "hsl(var(--surface-git-added))",
+	"--diffs-bg-deletion-override": "hsl(var(--surface-git-deleted))",
+	"--diffs-bg-addition-number-override": "hsl(var(--surface-git-added))",
+	"--diffs-bg-deletion-number-override": "hsl(var(--surface-git-deleted))",
+	"--diffs-bg-selection-override": "hsl(var(--content-link) / 0.08)",
+	"--diffs-bg-selection-number-override": "hsl(var(--content-link) / 0.13)",
+	"--diffs-selection-number-fg": "hsl(var(--content-link))",
+	"--diffs-gap-style": "1px solid hsl(var(--border-default))",
 };
 
 /**
@@ -485,9 +444,7 @@ export const getFileContentForViewer = (
  */
 const parseSingleFileDiff = (raw: string): FileDiffMetadata | null => {
 	if (!raw) return null;
-	const parsed = parsePatchFiles(stripSvnIndexHeaders(raw));
-	if (!parsed.length || !parsed[0].files.length) return null;
-	return parsed[0].files[0];
+	return parseDiffString(stripSvnIndexHeaders(raw))[0] ?? null;
 };
 
 /**
@@ -526,9 +483,6 @@ export const getWriteFileDiff = (
 	return buildWriteFileDiff(path, content);
 };
 
-/** Height that fits roughly 3 lines of monospace text-xs output. */
-export const COLLAPSED_OUTPUT_HEIGHT = 54;
-
 /** Height for the collapsed report preview (~3 lines of rendered markdown). */
 export const COLLAPSED_REPORT_HEIGHT = 72;
 
@@ -545,52 +499,83 @@ export const parseEditFilesArgs = (args: unknown): EditFilesFileEntry[] => {
 		.filter((f): f is FileEntry => isValid(fileEntrySchema, f))
 		.map((f) => ({
 			path: f.path,
-			edits: f.edits.filter((e): e is SearchReplace =>
-				isValid(searchReplaceSchema, e),
-			),
+			edits: f.edits
+				.map(normalizeEdit)
+				.filter((e): e is { search: string; replace: string } => e !== null),
 		}));
 };
 
 /**
- * Builds a synthetic unified diff from search/replace edit pairs
- * for a single file. Each edit becomes a separate
- * `Diff.createPatch` call; the patches are concatenated and
- * parsed into a single FileDiffMetadata.
+ * Builds a synthetic unified diff from edit pairs for a single file.
+ * Each edit is diffed against only its own snippet, so lines can never
+ * correlate across edits.
  */
 export const buildEditDiff = (
 	path: string,
 	edits: Array<{ search: string; replace: string }>,
 ): FileDiffMetadata | null => {
 	if (!edits.length) return null;
+	const kept = edits.filter((edit) => edit.search);
 
 	// Strip leading slash so the a/ and b/ prefixes don't
 	// produce a double-slash that confuses the diff parser.
 	const diffPath = path.startsWith("/") ? path.slice(1) : path;
 
-	const patches: string[] = [];
-	for (const edit of edits) {
-		if (!edit.search) continue;
-		patches.push(Diff.createPatch(diffPath, edit.search, edit.replace, "", ""));
-	}
-	if (!patches.length) {
-		// All edits were skipped (empty search). Produce a
-		// header-only patch so the parser still returns a file
-		// entry with zero hunks.
-		patches.push(`--- ${diffPath}\n+++ ${diffPath}\n`);
+	if (!kept.length) {
+		// An empty patch still parses to a file entry with zero hunks.
+		return parseSingleFileDiff(Diff.createPatch(diffPath, "", "", "", ""));
 	}
 
-	return parseSingleFileDiff(patches.join(""));
+	let oldOffset = 0;
+	let newOffset = 0;
+	const hunks: Array<Diff.StructuredPatchHunk> = [];
+	for (const edit of kept) {
+		const structured = Diff.structuredPatch(
+			diffPath,
+			diffPath,
+			edit.search,
+			edit.replace,
+			"",
+			"",
+		);
+		for (const hunk of structured.hunks) {
+			hunks.push({
+				...hunk,
+				oldStart: hunk.oldStart + oldOffset,
+				newStart: hunk.newStart + newOffset,
+			});
+		}
+		oldOffset += snippetLineCount(edit.search);
+		newOffset += snippetLineCount(edit.replace);
+	}
+
+	const lines = [`--- ${diffPath}`, `+++ ${diffPath}`];
+	for (const hunk of hunks) {
+		lines.push(
+			`@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@`,
+		);
+		lines.push(...hunk.lines);
+	}
+	return parseSingleFileDiff(`${lines.join("\n")}\n`);
 };
+
+// Lines a snippet contributes to the synthetic file: trailing newlines
+// terminate the last line rather than starting another, and an empty
+// snippet contributes none.
+const snippetLineCount = (snippet: string): number =>
+	snippet === ""
+		? 0
+		: snippet.split("\n").length - (snippet.endsWith("\n") ? 1 : 0);
 
 /**
  * Per-file result from the agent's FileEditResponse. `path` matches
  * the caller-supplied path (pre-symlink resolution). `diff` is a
  * unified-diff string, possibly empty for no-op edits.
  */
-interface ServerEditResult {
+type ServerEditResult = {
 	path: string;
 	diff: string;
-}
+};
 
 /**
  * Parses the structured `files` array from an edit_files tool
@@ -656,3 +641,43 @@ export { asNumber, asRecord, asString } from "../runtimeTypeUtils";
  */
 export const signalTooltipLabel = (signal: "kill" | "terminate"): string =>
 	signal === "kill" ? "Killed (SIGKILL)" : "Terminated (SIGTERM)";
+
+// Programs whose first positional argument is conventionally a subcommand verb.
+const multiVerbTools = new Set([
+	"git",
+	"gh",
+	"kubectl",
+	"docker",
+	"podman",
+	"npm",
+	"pnpm",
+	"yarn",
+	"go",
+	"cargo",
+	"make",
+	"helm",
+	"terraform",
+	"systemctl",
+	"brew",
+]);
+
+/**
+ * Collapses parsed_commands into a comma-joined summary. Multi-verb
+ * tools render as "<prog> <verb>"; others render as just "<prog>".
+ * Consecutive duplicates are deduped.
+ */
+export const summarizeParsedCommands = (
+	parsed: readonly string[][],
+): string => {
+	const labels: string[] = [];
+	for (const entry of parsed) {
+		const prog = entry[0];
+		if (!prog) continue;
+		const label =
+			multiVerbTools.has(prog) && entry[1] ? `${prog} ${entry[1]}` : prog;
+		if (labels[labels.length - 1] !== label) {
+			labels.push(label);
+		}
+	}
+	return labels.join(", ");
+};

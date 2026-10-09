@@ -1,5 +1,4 @@
-import type { Interpolation, Theme } from "@emotion/react";
-import type { FC } from "react";
+import { cn } from "cn";
 import { Link, useSearchParams } from "react-router";
 import type { TemplateExample } from "#/api/typesGenerated";
 import { TemplateExampleCard } from "#/modules/templates/TemplateExampleCard/TemplateExampleCard";
@@ -22,9 +21,9 @@ const selectTags = (starterTemplatesByTag: StarterTemplatesByTag) => {
 };
 
 const sortVisibleTemplates = (templates: TemplateExample[]) => {
-	// The tasks-docker template should be first, as it's the easiest way to
-	// get started with Coder. The docker template should be second.
-	const featuredTemplateIds = ["tasks-docker", "docker"];
+	// The quickstart template should be first, as it's the easiest
+	// way to get started with Coder.
+	const featuredTemplateIds = ["quickstart", "docker"];
 
 	const featuredTemplates: TemplateExample[] = [];
 	for (const id of featuredTemplateIds) {
@@ -46,12 +45,14 @@ const sortVisibleTemplates = (templates: TemplateExample[]) => {
 	return [...featuredTemplates, ...nonFeaturedTemplates];
 };
 
-interface StarterTemplatesProps {
+type StarterTemplatesProps = {
 	starterTemplatesByTag?: StarterTemplatesByTag;
-}
+	templateBuilderEnabled: boolean;
+};
 
-export const StarterTemplates: FC<StarterTemplatesProps> = ({
+export const StarterTemplates: React.FC<StarterTemplatesProps> = ({
 	starterTemplatesByTag,
+	templateBuilderEnabled,
 }) => {
 	const [urlParams] = useSearchParams();
 	const tags = starterTemplatesByTag
@@ -63,16 +64,25 @@ export const StarterTemplates: FC<StarterTemplatesProps> = ({
 		: undefined;
 
 	return (
-		<div className="flex flex-row gap-8 items-start">
+		<div className="flex flex-row items-start gap-8">
 			{starterTemplatesByTag && tags && (
-				<div className="flex flex-col gap-4 w-[202px] shrink-0 sticky">
-					<h2 css={styles.sectionTitle}>Choose a starter template</h2>
-					<span css={styles.filterCaption}>Filter</span>
+				<div className="sticky top-[88px] flex w-[202px] shrink-0 flex-col gap-4">
+					<h2 className="m-0 text-base font-normal text-content-primary">
+						Choose a starter template
+					</h2>
+					<span className="text-xs font-semibold uppercase tracking-widest text-content-secondary">
+						Filter
+					</span>
 					{tags.map((tag) => (
 						<Link
 							key={tag}
 							to={`?tag=${tag}`}
-							css={[styles.tagLink, tag === activeTag && styles.tagLinkActive]}
+							className={cn(
+								"text-sm capitalize no-underline hover:text-content-primary",
+								tag === activeTag
+									? "font-semibold text-content-primary"
+									: "text-content-secondary",
+							)}
 						>
 							{getTagLabel(tag)} ({starterTemplatesByTag[tag].length})
 						</Link>
@@ -80,51 +90,17 @@ export const StarterTemplates: FC<StarterTemplatesProps> = ({
 				</div>
 			)}
 
-			<div className="flex flex-wrap gap-8 h-max">
+			<div className="flex h-max flex-wrap gap-8">
 				{visibleTemplates?.map((example) => (
 					<TemplateExampleCard
-						css={(theme) => ({
-							backgroundColor: theme.palette.background.paper,
-						})}
 						example={example}
 						key={example.id}
 						activeTag={activeTag}
+						templateBuilderEnabled={templateBuilderEnabled}
+						className="bg-surface-primary"
 					/>
 				))}
 			</div>
 		</div>
 	);
 };
-
-const styles = {
-	filterCaption: (theme) => ({
-		textTransform: "uppercase",
-		fontWeight: 600,
-		fontSize: 12,
-		color: theme.palette.text.secondary,
-		letterSpacing: "0.1em",
-	}),
-
-	tagLink: (theme) => ({
-		color: theme.palette.text.secondary,
-		textDecoration: "none",
-		fontSize: 14,
-		textTransform: "capitalize",
-
-		"&:hover": {
-			color: theme.palette.text.primary,
-		},
-	}),
-
-	tagLinkActive: (theme) => ({
-		color: theme.palette.text.primary,
-		fontWeight: 600,
-	}),
-
-	sectionTitle: (theme) => ({
-		color: theme.palette.text.primary,
-		fontSize: 16,
-		fontWeight: 400,
-		margin: 0,
-	}),
-} satisfies Record<string, Interpolation<Theme>>;

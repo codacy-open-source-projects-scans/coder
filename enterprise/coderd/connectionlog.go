@@ -28,7 +28,7 @@ const connectionLogCountCap = 2000
 // @Param limit query int true "Page limit"
 // @Param offset query int false "Page offset"
 // @Success 200 {object} codersdk.ConnectionLogResponse
-// @Router /connectionlog [get]
+// @Router /api/v2/connectionlog [get]
 func (api *API) connectionLogs(rw http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	apiKey := httpmw.APIKey(r)
@@ -134,7 +134,8 @@ func convertConnectionLog(dblog database.GetConnectionLogsOffsetRow) codersdk.Co
 
 	switch dblog.ConnectionLog.Type {
 	case database.ConnectionTypeWorkspaceApp,
-		database.ConnectionTypePortForwarding:
+		database.ConnectionTypePortForwarding,
+		database.ConnectionTypeTunnel:
 		webInfo = &codersdk.ConnectionLogWebInfo{
 			UserAgent:  dblog.ConnectionLog.UserAgent.String,
 			User:       user,

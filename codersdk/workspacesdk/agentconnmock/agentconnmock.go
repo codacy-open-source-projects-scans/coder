@@ -56,6 +56,20 @@ func (m *MockAgentConn) EXPECT() *MockAgentConnMockRecorder {
 	return m.recorder
 }
 
+// AppHTTPClient mocks base method.
+func (m *MockAgentConn) AppHTTPClient() *http.Client {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "AppHTTPClient")
+	ret0, _ := ret[0].(*http.Client)
+	return ret0
+}
+
+// AppHTTPClient indicates an expected call of AppHTTPClient.
+func (mr *MockAgentConnMockRecorder) AppHTTPClient() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AppHTTPClient", reflect.TypeOf((*MockAgentConn)(nil).AppHTTPClient))
+}
+
 // AwaitReachable mocks base method.
 func (m *MockAgentConn) AwaitReachable(ctx context.Context) bool {
 	m.ctrl.T.Helper()
@@ -68,6 +82,21 @@ func (m *MockAgentConn) AwaitReachable(ctx context.Context) bool {
 func (mr *MockAgentConnMockRecorder) AwaitReachable(ctx any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AwaitReachable", reflect.TypeOf((*MockAgentConn)(nil).AwaitReachable), ctx)
+}
+
+// BundleFiles mocks base method.
+func (m *MockAgentConn) BundleFiles(ctx context.Context, req workspacesdk.BundleFilesRequest) ([]byte, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "BundleFiles", ctx, req)
+	ret0, _ := ret[0].([]byte)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// BundleFiles indicates an expected call of BundleFiles.
+func (mr *MockAgentConnMockRecorder) BundleFiles(ctx, req any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "BundleFiles", reflect.TypeOf((*MockAgentConn)(nil).BundleFiles), ctx, req)
 }
 
 // CallMCPTool mocks base method.
@@ -83,6 +112,21 @@ func (m *MockAgentConn) CallMCPTool(ctx context.Context, req workspacesdk.CallMC
 func (mr *MockAgentConnMockRecorder) CallMCPTool(ctx, req any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CallMCPTool", reflect.TypeOf((*MockAgentConn)(nil).CallMCPTool), ctx, req)
+}
+
+// CancelToolCall mocks base method.
+func (m *MockAgentConn) CancelToolCall(ctx context.Context, id uuid.UUID) (workspacesdk.CancelToolCallResponse, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "CancelToolCall", ctx, id)
+	ret0, _ := ret[0].(workspacesdk.CancelToolCallResponse)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// CancelToolCall indicates an expected call of CancelToolCall.
+func (mr *MockAgentConnMockRecorder) CancelToolCall(ctx, id any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CancelToolCall", reflect.TypeOf((*MockAgentConn)(nil).CancelToolCall), ctx, id)
 }
 
 // Close mocks base method.
@@ -130,18 +174,23 @@ func (mr *MockAgentConnMockRecorder) ContextConfig(ctx any) *gomock.Call {
 }
 
 // DebugLogs mocks base method.
-func (m *MockAgentConn) DebugLogs(ctx context.Context) ([]byte, error) {
+func (m *MockAgentConn) DebugLogs(ctx context.Context, opts ...workspacesdk.DebugLogsOption) ([]byte, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "DebugLogs", ctx)
+	varargs := []any{ctx}
+	for _, a := range opts {
+		varargs = append(varargs, a)
+	}
+	ret := m.ctrl.Call(m, "DebugLogs", varargs...)
 	ret0, _ := ret[0].([]byte)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // DebugLogs indicates an expected call of DebugLogs.
-func (mr *MockAgentConnMockRecorder) DebugLogs(ctx any) *gomock.Call {
+func (mr *MockAgentConnMockRecorder) DebugLogs(ctx any, opts ...any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DebugLogs", reflect.TypeOf((*MockAgentConn)(nil).DebugLogs), ctx)
+	varargs := append([]any{ctx}, opts...)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DebugLogs", reflect.TypeOf((*MockAgentConn)(nil).DebugLogs), varargs...)
 }
 
 // DebugMagicsock mocks base method.
@@ -275,21 +324,6 @@ func (m *MockAgentConn) ListContainers(ctx context.Context) (codersdk.WorkspaceA
 func (mr *MockAgentConnMockRecorder) ListContainers(ctx any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListContainers", reflect.TypeOf((*MockAgentConn)(nil).ListContainers), ctx)
-}
-
-// ListMCPTools mocks base method.
-func (m *MockAgentConn) ListMCPTools(ctx context.Context) (workspacesdk.ListMCPToolsResponse, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "ListMCPTools", ctx)
-	ret0, _ := ret[0].(workspacesdk.ListMCPToolsResponse)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// ListMCPTools indicates an expected call of ListMCPTools.
-func (mr *MockAgentConnMockRecorder) ListMCPTools(ctx any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListMCPTools", reflect.TypeOf((*MockAgentConn)(nil).ListMCPTools), ctx)
 }
 
 // ListProcesses mocks base method.
@@ -525,6 +559,21 @@ func (mr *MockAgentConnMockRecorder) SSHOnPort(ctx, port any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SSHOnPort", reflect.TypeOf((*MockAgentConn)(nil).SSHOnPort), ctx, port)
 }
 
+// SSHTCPConn mocks base method.
+func (m *MockAgentConn) SSHTCPConn(ctx context.Context) (workspacesdk.TCPConn, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "SSHTCPConn", ctx)
+	ret0, _ := ret[0].(workspacesdk.TCPConn)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// SSHTCPConn indicates an expected call of SSHTCPConn.
+func (mr *MockAgentConnMockRecorder) SSHTCPConn(ctx any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SSHTCPConn", reflect.TypeOf((*MockAgentConn)(nil).SSHTCPConn), ctx)
+}
+
 // SetExtraHeaders mocks base method.
 func (m *MockAgentConn) SetExtraHeaders(h http.Header) {
 	m.ctrl.T.Helper()
@@ -622,6 +671,21 @@ func (m *MockAgentConn) TailnetConn() *tailnet.Conn {
 func (mr *MockAgentConnMockRecorder) TailnetConn() *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "TailnetConn", reflect.TypeOf((*MockAgentConn)(nil).TailnetConn))
+}
+
+// UploadChatFile mocks base method.
+func (m *MockAgentConn) UploadChatFile(ctx context.Context, req workspacesdk.UploadChatFileRequest) (workspacesdk.AgentUploadChatFileResponse, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "UploadChatFile", ctx, req)
+	ret0, _ := ret[0].(workspacesdk.AgentUploadChatFileResponse)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// UploadChatFile indicates an expected call of UploadChatFile.
+func (mr *MockAgentConnMockRecorder) UploadChatFile(ctx, req any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UploadChatFile", reflect.TypeOf((*MockAgentConn)(nil).UploadChatFile), ctx, req)
 }
 
 // WatchContainers mocks base method.

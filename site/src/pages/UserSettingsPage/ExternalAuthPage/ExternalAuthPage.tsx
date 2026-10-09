@@ -1,4 +1,4 @@
-import { type FC, useState } from "react";
+import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "react-query";
 import { toast } from "sonner";
 import { getErrorDetail, getErrorMessage } from "#/api/errors";
@@ -8,11 +8,14 @@ import {
 	validateExternalAuth,
 } from "#/api/queries/externalAuth";
 import type { ExternalAuthLinkProvider } from "#/api/typesGenerated";
-import { DeleteDialog } from "#/components/Dialogs/DeleteDialog/DeleteDialog";
-import { Section } from "../Section";
+import { DeleteDialog } from "#/components/Dialog/DeleteDialog/DeleteDialog";
+import {
+	SettingsHeader,
+	SettingsHeaderTitle,
+} from "#/components/SettingsHeader/SettingsHeader";
 import { ExternalAuthPageView } from "./ExternalAuthPageView";
 
-const ExternalAuthPage: FC = () => {
+const ExternalAuthPage: React.FC = () => {
 	const queryClient = useQueryClient();
 	// This is used to tell the child components something was unlinked and things
 	// need to be refetched
@@ -24,7 +27,10 @@ const ExternalAuthPage: FC = () => {
 	const validateAppMutation = useMutation(validateExternalAuth(queryClient));
 
 	return (
-		<Section title="External Authentication" layout="fluid">
+		<>
+			<SettingsHeader>
+				<SettingsHeaderTitle>External Authentication</SettingsHeaderTitle>
+			</SettingsHeader>
 			<ExternalAuthPageView
 				isLoading={externalAuthsQuery.isLoading}
 				getAuthsError={externalAuthsQuery.error}
@@ -96,7 +102,7 @@ const ExternalAuthPage: FC = () => {
 					}
 				}}
 			/>
-		</Section>
+		</>
 	);
 };
 

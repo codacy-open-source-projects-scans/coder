@@ -1,4 +1,4 @@
-import type { FC } from "react";
+import { cn } from "cn";
 import { Badge } from "#/components/Badge/Badge";
 import {
 	Tooltip,
@@ -6,21 +6,20 @@ import {
 	TooltipProvider,
 	TooltipTrigger,
 } from "#/components/Tooltip/Tooltip";
-import { AIBridgeModelIcon } from "#/pages/AIBridgePage/RequestLogsPage/icons/AIBridgeModelIcon";
-import { cn } from "#/utils/cn";
+import { AIBridgeModelIcon } from "#/pages/AIBridgePage/icons/AIBridgeModelIcon";
 import { formatDate } from "#/utils/time";
 import { TokenBadges } from "../../TokenBadges";
 
-interface PromptTableProps {
+type PromptTableProps = {
 	timestamp: Date;
 	model: string;
 	inputTokens: number;
 	outputTokens: number;
 	tokenUsageMetadata?: Record<string, unknown>;
 	className?: string;
-}
+};
 
-export const PromptTable: FC<PromptTableProps> = ({
+export const PromptTable: React.FC<PromptTableProps> = ({
 	timestamp,
 	model,
 	inputTokens,

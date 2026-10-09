@@ -1,5 +1,4 @@
 import { type FormikContextType, useFormik } from "formik";
-import type { FC } from "react";
 import * as Yup from "yup";
 import { Alert } from "#/components/Alert/Alert";
 import { ErrorAlert } from "#/components/Alert/ErrorAlert";
@@ -7,14 +6,19 @@ import { Button } from "#/components/Button/Button";
 import { Form, FormFields } from "#/components/Form/Form";
 import { FormField } from "#/components/FormField/FormField";
 import { PasswordField } from "#/components/PasswordField/PasswordField";
+import {
+	SettingsHeader,
+	SettingsHeaderDescription,
+	SettingsHeaderTitle,
+} from "#/components/SettingsHeader/SettingsHeader";
 import { Spinner } from "#/components/Spinner/Spinner";
 import { getFormHelpers } from "#/utils/formUtils";
 
-interface SecurityFormValues {
+type SecurityFormValues = {
 	old_password: string;
 	password: string;
 	confirm_password: string;
-}
+};
 
 const validationSchema = Yup.object({
 	old_password: Yup.string().trim().required("Old password is required"),
@@ -30,14 +34,14 @@ const validationSchema = Yup.object({
 		),
 });
 
-interface SecurityFormProps {
+type SecurityFormProps = {
 	disabled: boolean;
 	isLoading: boolean;
 	onSubmit: (values: SecurityFormValues) => void;
 	error?: unknown;
-}
+};
 
-export const SecurityForm: FC<SecurityFormProps> = ({
+export const SecurityForm: React.FC<SecurityFormProps> = ({
 	disabled,
 	isLoading,
 	onSubmit,
@@ -64,34 +68,44 @@ export const SecurityForm: FC<SecurityFormProps> = ({
 	}
 
 	return (
-		<Form onSubmit={form.handleSubmit}>
-			<FormFields>
-				{Boolean(error) && <ErrorAlert error={error} />}
-				<FormField
-					field={getFieldHelpers("old_password")}
-					label="Old Password"
-					type="password"
-					autoComplete="current-password"
-				/>
-				<PasswordField
-					field={getFieldHelpers("password")}
-					label="New Password"
-					autoComplete="new-password"
-				/>
-				<FormField
-					field={getFieldHelpers("confirm_password")}
-					label="Confirm Password"
-					type="password"
-					autoComplete="new-password"
-				/>
+		<>
+			<SettingsHeader>
+				<SettingsHeaderTitle hierarchy="secondary">
+					Password
+				</SettingsHeaderTitle>
+				<SettingsHeaderDescription>
+					Update your account password.
+				</SettingsHeaderDescription>
+			</SettingsHeader>
+			<Form onSubmit={form.handleSubmit}>
+				<FormFields>
+					{Boolean(error) && <ErrorAlert error={error} />}
+					<FormField
+						field={getFieldHelpers("old_password")}
+						label="Old Password"
+						type="password"
+						autoComplete="current-password"
+					/>
+					<PasswordField
+						field={getFieldHelpers("password")}
+						label="New Password"
+						autoComplete="new-password"
+					/>
+					<FormField
+						field={getFieldHelpers("confirm_password")}
+						label="Confirm Password"
+						type="password"
+						autoComplete="new-password"
+					/>
 
-				<div>
-					<Button disabled={isLoading} type="submit">
-						<Spinner loading={isLoading} />
-						Update password
-					</Button>
-				</div>
-			</FormFields>
-		</Form>
+					<div>
+						<Button disabled={isLoading} type="submit">
+							<Spinner loading={isLoading} />
+							Update password
+						</Button>
+					</div>
+				</FormFields>
+			</Form>
+		</>
 	);
 };

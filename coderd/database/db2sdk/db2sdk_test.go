@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"reflect"
 	"testing"
 	"time"
@@ -22,6 +23,116 @@ import (
 	"github.com/coder/coder/v2/codersdk"
 	"github.com/coder/coder/v2/provisionersdk/proto"
 )
+
+func TestGroupMemberAISpend(t *testing.T) {
+	t.Parallel()
+
+	userID := uuid.New()
+	effectiveGroupID := uuid.New()
+	everyoneGroupID := uuid.New()
+	tests := []struct {
+		name           string
+		row            database.GetGroupMembersAISpendRow
+		queriedGroupID uuid.UUID
+		want           codersdk.GroupMemberAISpend
+	}{
+		{
+			name: "EffectiveGroupIsQueriedGroup",
+			row: database.GetGroupMembersAISpendRow{
+				UserID:                    userID,
+				EffectiveGroupID:          uuid.NullUUID{UUID: effectiveGroupID, Valid: true},
+				EffectiveSpendLimitMicros: sql.NullInt64{Int64: 2_000_000, Valid: true},
+				EffectiveLimitSource:      sql.NullString{String: "user_override", Valid: true},
+				GroupSpendMicros:          500_000,
+			},
+			queriedGroupID: effectiveGroupID,
+			want: codersdk.GroupMemberAISpend{
+				UserID:           userID,
+				EffectiveGroupID: &effectiveGroupID,
+				EffectiveBudget: &codersdk.AIBudgetLimit{
+					SpendLimitMicros: 2_000_000,
+					LimitSource:      codersdk.AIBudgetLimitSourceUserOverride,
+				},
+				GroupBudget: &codersdk.AIBudgetLimit{
+					SpendLimitMicros: 2_000_000,
+					LimitSource:      codersdk.AIBudgetLimitSourceUserOverride,
+				},
+				GroupSpendMicros: 500_000,
+			},
+		},
+		{
+			name: "EffectiveGroupDiffersFromQueriedGroup",
+			row: database.GetGroupMembersAISpendRow{
+				UserID:                    userID,
+				EffectiveGroupID:          uuid.NullUUID{UUID: effectiveGroupID, Valid: true},
+				EffectiveSpendLimitMicros: sql.NullInt64{Int64: 1_000_000, Valid: true},
+				EffectiveLimitSource:      sql.NullString{String: "group", Valid: true},
+				GroupSpendMicros:          250_000,
+			},
+			queriedGroupID: uuid.New(),
+			want: codersdk.GroupMemberAISpend{
+				UserID:           userID,
+				EffectiveGroupID: &effectiveGroupID,
+				EffectiveBudget: &codersdk.AIBudgetLimit{
+					SpendLimitMicros: 1_000_000,
+					LimitSource:      codersdk.AIBudgetLimitSourceGroup,
+				},
+				GroupBudget:      nil,
+				GroupSpendMicros: 250_000,
+			},
+		},
+		{
+			name: "BudgetedEveryoneGroupDiffersFromQueriedGroup",
+			row: database.GetGroupMembersAISpendRow{
+				UserID:                    userID,
+				EffectiveGroupID:          uuid.NullUUID{UUID: everyoneGroupID, Valid: true},
+				EffectiveSpendLimitMicros: sql.NullInt64{Int64: 1_000_000, Valid: true},
+				EffectiveLimitSource:      sql.NullString{String: "group", Valid: true},
+			},
+			queriedGroupID: uuid.New(),
+			want: codersdk.GroupMemberAISpend{
+				UserID:           userID,
+				EffectiveGroupID: &everyoneGroupID,
+				EffectiveBudget: &codersdk.AIBudgetLimit{
+					SpendLimitMicros: 1_000_000,
+					LimitSource:      codersdk.AIBudgetLimitSourceGroup,
+				},
+				GroupBudget: nil,
+			},
+		},
+		{
+			name: "UnlimitedEveryoneFallback",
+			row: database.GetGroupMembersAISpendRow{
+				UserID:           userID,
+				EffectiveGroupID: uuid.NullUUID{UUID: everyoneGroupID, Valid: true},
+			},
+			queriedGroupID: uuid.New(),
+			want: codersdk.GroupMemberAISpend{
+				UserID:           userID,
+				EffectiveGroupID: &everyoneGroupID,
+				EffectiveBudget:  nil,
+				GroupBudget:      nil,
+			},
+		},
+		{
+			name: "NullFields",
+			row:  database.GetGroupMembersAISpendRow{UserID: userID},
+			want: codersdk.GroupMemberAISpend{
+				UserID:           userID,
+				EffectiveGroupID: nil,
+				EffectiveBudget:  nil,
+				GroupBudget:      nil,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, tt.want, db2sdk.GroupMemberAISpend(tt.row, tt.queriedGroupID))
+		})
+	}
+}
 
 func TestProvisionerJobStatus(t *testing.T) {
 	t.Parallel()
@@ -208,6 +319,45 @@ func TestTemplateVersionParameter_BadDescription(t *testing.T) {
 	// if we feed it garbage data.
 	req.NoError(err)
 	req.NotEmpty(sdk.DescriptionPlaintext, "broke the markdown parser with %v", desc)
+}
+
+func TestOAuth2ProviderApp_ClientType(t *testing.T) {
+	t.Parallel()
+
+	accessURL := &url.URL{Scheme: "https", Host: "coder.example.com"}
+
+	tests := []struct {
+		name           string
+		dbClientType   string
+		wantClientType codersdk.OAuth2ClientType
+	}{
+		{
+			name:           "Confidential",
+			dbClientType:   "confidential",
+			wantClientType: codersdk.OAuth2ClientTypeConfidential,
+		},
+		{
+			name:           "Public",
+			dbClientType:   "public",
+			wantClientType: codersdk.OAuth2ClientTypePublic,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			dbApp := database.OAuth2ProviderApp{
+				ID:          uuid.New(),
+				Name:        "test-app-" + tt.name,
+				CallbackURL: "https://example.com/callback",
+				ClientType:  tt.dbClientType,
+			}
+
+			sdkApp := db2sdk.OAuth2ProviderApp(accessURL, dbApp)
+
+			require.Equal(t, tt.wantClientType, sdkApp.ClientType)
+		})
+	}
 }
 
 func TestChatDebugRunSummary(t *testing.T) {
@@ -599,234 +749,105 @@ func TestChatDebugRunDetail_NullableFieldsNil(t *testing.T) {
 	require.Empty(t, sdk.Steps)
 }
 
-func TestAIBridgeInterception(t *testing.T) {
+func TestChatMessage_QueuedMessageID(t *testing.T) {
 	t.Parallel()
 
-	now := dbtime.Now()
-	interceptionID := uuid.New()
-	initiatorID := uuid.New()
+	t.Run("Promoted", func(t *testing.T) {
+		t.Parallel()
+		result := db2sdk.ChatMessage(database.ChatMessage{
+			ID:              2,
+			ChatID:          uuid.New(),
+			Role:            database.ChatMessageRoleUser,
+			QueuedMessageID: sql.NullInt64{Int64: 7, Valid: true},
+		})
+		require.NotNil(t, result.QueuedMessageID)
+		require.Equal(t, int64(7), *result.QueuedMessageID)
+
+		raw, err := json.Marshal(result)
+		require.NoError(t, err)
+		var fields map[string]json.RawMessage
+		require.NoError(t, json.Unmarshal(raw, &fields))
+		require.JSONEq(t, "7", string(fields["queued_message_id"]))
+	})
+
+	t.Run("NotPromoted", func(t *testing.T) {
+		t.Parallel()
+		result := db2sdk.ChatMessage(database.ChatMessage{
+			ID:     1,
+			ChatID: uuid.New(),
+			Role:   database.ChatMessageRoleUser,
+		})
+		require.Nil(t, result.QueuedMessageID)
+
+		raw, err := json.Marshal(result)
+		require.NoError(t, err)
+		var fields map[string]json.RawMessage
+		require.NoError(t, json.Unmarshal(raw, &fields))
+		require.NotContains(t, fields, "queued_message_id")
+	})
+}
+
+// TestChatMessageAutomationProvenance guards the API contract that
+// automation input carries automation_id and input_id while ordinary
+// input omits both keys, for history and queued messages alike.
+func TestChatMessageAutomationProvenance(t *testing.T) {
+	t.Parallel()
+
+	automationID := uuid.New()
+	inputID := uuid.New()
+	set := func(id uuid.UUID) uuid.NullUUID { return uuid.NullUUID{UUID: id, Valid: true} }
 
 	cases := []struct {
-		name         string
-		interception database.AIBridgeInterception
-		initiator    database.VisibleUser
-		tokenUsages  []database.AIBridgeTokenUsage
-		userPrompts  []database.AIBridgeUserPrompt
-		toolUsages   []database.AIBridgeToolUsage
-		expected     codersdk.AIBridgeInterception
+		name      string
+		automated any
+		ordinary  any
 	}{
 		{
-			name: "all_optional_values_set",
-			interception: database.AIBridgeInterception{
-				ID:          interceptionID,
-				InitiatorID: initiatorID,
-				Provider:    "anthropic",
-				Model:       "claude-3-opus",
-				StartedAt:   now,
-				Metadata: pqtype.NullRawMessage{
-					RawMessage: json.RawMessage(`{"key":"value"}`),
-					Valid:      true,
-				},
-				EndedAt: sql.NullTime{
-					Time:  now.Add(time.Minute),
-					Valid: true,
-				},
-				APIKeyID: sql.NullString{
-					String: "api-key-123",
-					Valid:  true,
-				},
-				Client: sql.NullString{
-					String: "claude-code/1.0.0",
-					Valid:  true,
-				},
-			},
-			initiator: database.VisibleUser{
-				ID:        initiatorID,
-				Username:  "testuser",
-				Name:      "Test User",
-				AvatarURL: "https://example.com/avatar.png",
-			},
-			tokenUsages: []database.AIBridgeTokenUsage{
-				{
-					ID:                    uuid.New(),
-					InterceptionID:        interceptionID,
-					ProviderResponseID:    "resp-123",
-					InputTokens:           100,
-					OutputTokens:          200,
-					CacheReadInputTokens:  50,
-					CacheWriteInputTokens: 10,
-					Metadata: pqtype.NullRawMessage{
-						RawMessage: json.RawMessage(`{"cache":"hit"}`),
-						Valid:      true,
-					},
-					CreatedAt: now.Add(10 * time.Second),
-				},
-			},
-			userPrompts: []database.AIBridgeUserPrompt{
-				{
-					ID:                 uuid.New(),
-					InterceptionID:     interceptionID,
-					ProviderResponseID: "resp-123",
-					Prompt:             "Hello, world!",
-					Metadata: pqtype.NullRawMessage{
-						RawMessage: json.RawMessage(`{"role":"user"}`),
-						Valid:      true,
-					},
-					CreatedAt: now.Add(5 * time.Second),
-				},
-			},
-			toolUsages: []database.AIBridgeToolUsage{
-				{
-					ID:                 uuid.New(),
-					InterceptionID:     interceptionID,
-					ProviderResponseID: "resp-123",
-					ServerUrl: sql.NullString{
-						String: "https://mcp.example.com",
-						Valid:  true,
-					},
-					Tool:     "read_file",
-					Input:    `{"path":"/tmp/test.txt"}`,
-					Injected: true,
-					InvocationError: sql.NullString{
-						String: "file not found",
-						Valid:  true,
-					},
-					Metadata: pqtype.NullRawMessage{
-						RawMessage: json.RawMessage(`{"duration_ms":50}`),
-						Valid:      true,
-					},
-					CreatedAt: now.Add(15 * time.Second),
-				},
-			},
-			expected: codersdk.AIBridgeInterception{
-				ID: interceptionID,
-				Initiator: codersdk.MinimalUser{
-					ID:        initiatorID,
-					Username:  "testuser",
-					Name:      "Test User",
-					AvatarURL: "https://example.com/avatar.png",
-				},
-				Provider:  "anthropic",
-				Model:     "claude-3-opus",
-				Metadata:  map[string]any{"key": "value"},
-				StartedAt: now,
-			},
+			name: "ChatMessage",
+			automated: db2sdk.ChatMessage(database.ChatMessage{
+				ChatID:       uuid.New(),
+				Role:         database.ChatMessageRoleUser,
+				AutomationID: set(automationID),
+				InputID:      set(inputID),
+			}),
+			ordinary: db2sdk.ChatMessage(database.ChatMessage{
+				ChatID: uuid.New(),
+				Role:   database.ChatMessageRoleUser,
+			}),
 		},
 		{
-			name: "no_optional_values_set",
-			interception: database.AIBridgeInterception{
-				ID:          interceptionID,
-				InitiatorID: initiatorID,
-				Provider:    "openai",
-				Model:       "gpt-4",
-				StartedAt:   now,
-				Metadata:    pqtype.NullRawMessage{Valid: false},
-				EndedAt:     sql.NullTime{Valid: false},
-				APIKeyID:    sql.NullString{Valid: false},
-				Client:      sql.NullString{Valid: false},
-			},
-			initiator: database.VisibleUser{
-				ID:        initiatorID,
-				Username:  "minimaluser",
-				Name:      "",
-				AvatarURL: "",
-			},
-			tokenUsages: nil,
-			userPrompts: nil,
-			toolUsages:  nil,
-			expected: codersdk.AIBridgeInterception{
-				ID: interceptionID,
-				Initiator: codersdk.MinimalUser{
-					ID:        initiatorID,
-					Username:  "minimaluser",
-					Name:      "",
-					AvatarURL: "",
-				},
-				Provider:  "openai",
-				Model:     "gpt-4",
-				Metadata:  nil,
-				StartedAt: now,
-			},
+			name: "ChatQueuedMessage",
+			automated: db2sdk.ChatQueuedMessage(database.ChatQueuedMessage{
+				ChatID:       uuid.New(),
+				AutomationID: set(automationID),
+				InputID:      set(inputID),
+			}),
+			ordinary: db2sdk.ChatQueuedMessage(database.ChatQueuedMessage{
+				ChatID: uuid.New(),
+			}),
 		},
+	}
+
+	fieldsOf := func(t *testing.T, v any) map[string]json.RawMessage {
+		t.Helper()
+		raw, err := json.Marshal(v)
+		require.NoError(t, err)
+		var fields map[string]json.RawMessage
+		require.NoError(t, json.Unmarshal(raw, &fields))
+		return fields
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			result := db2sdk.AIBridgeInterception(
-				tc.interception,
-				tc.initiator,
-				tc.tokenUsages,
-				tc.userPrompts,
-				tc.toolUsages,
-			)
+			automated := fieldsOf(t, tc.automated)
+			require.JSONEq(t, `"`+automationID.String()+`"`, string(automated["automation_id"]))
+			require.JSONEq(t, `"`+inputID.String()+`"`, string(automated["input_id"]))
 
-			// Check basic fields.
-			require.Equal(t, tc.expected.ID, result.ID)
-			require.Equal(t, tc.expected.Initiator, result.Initiator)
-			require.Equal(t, tc.expected.Provider, result.Provider)
-			require.Equal(t, tc.expected.Model, result.Model)
-			require.Equal(t, tc.expected.StartedAt.UTC(), result.StartedAt.UTC())
-			require.Equal(t, tc.expected.Metadata, result.Metadata)
-
-			// Check optional pointer fields.
-			if tc.interception.APIKeyID.Valid {
-				require.NotNil(t, result.APIKeyID)
-				require.Equal(t, tc.interception.APIKeyID.String, *result.APIKeyID)
-			} else {
-				require.Nil(t, result.APIKeyID)
-			}
-
-			if tc.interception.EndedAt.Valid {
-				require.NotNil(t, result.EndedAt)
-				require.Equal(t, tc.interception.EndedAt.Time.UTC(), result.EndedAt.UTC())
-			} else {
-				require.Nil(t, result.EndedAt)
-			}
-
-			if tc.interception.Client.Valid {
-				require.NotNil(t, result.Client)
-				require.Equal(t, tc.interception.Client.String, *result.Client)
-			} else {
-				require.Nil(t, result.Client)
-			}
-
-			// Check slices.
-			require.Len(t, result.TokenUsages, len(tc.tokenUsages))
-			require.Len(t, result.UserPrompts, len(tc.userPrompts))
-			require.Len(t, result.ToolUsages, len(tc.toolUsages))
-
-			// Verify token usages are converted correctly.
-			for i, tu := range tc.tokenUsages {
-				require.Equal(t, tu.ID, result.TokenUsages[i].ID)
-				require.Equal(t, tu.InterceptionID, result.TokenUsages[i].InterceptionID)
-				require.Equal(t, tu.ProviderResponseID, result.TokenUsages[i].ProviderResponseID)
-				require.Equal(t, tu.InputTokens, result.TokenUsages[i].InputTokens)
-				require.Equal(t, tu.OutputTokens, result.TokenUsages[i].OutputTokens)
-				require.Equal(t, tu.CacheReadInputTokens, result.TokenUsages[i].CacheReadInputTokens)
-				require.Equal(t, tu.CacheWriteInputTokens, result.TokenUsages[i].CacheWriteInputTokens)
-			}
-
-			// Verify user prompts are converted correctly.
-			for i, up := range tc.userPrompts {
-				require.Equal(t, up.ID, result.UserPrompts[i].ID)
-				require.Equal(t, up.InterceptionID, result.UserPrompts[i].InterceptionID)
-				require.Equal(t, up.ProviderResponseID, result.UserPrompts[i].ProviderResponseID)
-				require.Equal(t, up.Prompt, result.UserPrompts[i].Prompt)
-			}
-
-			// Verify tool usages are converted correctly.
-			for i, toolUsage := range tc.toolUsages {
-				require.Equal(t, toolUsage.ID, result.ToolUsages[i].ID)
-				require.Equal(t, toolUsage.InterceptionID, result.ToolUsages[i].InterceptionID)
-				require.Equal(t, toolUsage.ProviderResponseID, result.ToolUsages[i].ProviderResponseID)
-				require.Equal(t, toolUsage.ServerUrl.String, result.ToolUsages[i].ServerURL)
-				require.Equal(t, toolUsage.Tool, result.ToolUsages[i].Tool)
-				require.Equal(t, toolUsage.Input, result.ToolUsages[i].Input)
-				require.Equal(t, toolUsage.Injected, result.ToolUsages[i].Injected)
-				require.Equal(t, toolUsage.InvocationError.String, result.ToolUsages[i].InvocationError)
-			}
+			ordinary := fieldsOf(t, tc.ordinary)
+			require.NotContains(t, ordinary, "automation_id")
+			require.NotContains(t, ordinary, "input_id")
 		})
 	}
 }
@@ -916,38 +937,58 @@ func TestChat_AllFieldsPopulated(t *testing.T) {
 	// field to codersdk.Chat, this test will fail until the
 	// converter is updated.
 	now := dbtime.Now()
+	lastErrorPayload := codersdk.ChatError{
+		Message:    "boom",
+		Detail:     "provider detail",
+		Kind:       codersdk.ChatErrorKindGeneric,
+		Provider:   "openai",
+		Retryable:  true,
+		StatusCode: 503,
+	}
+	lastErrorRaw, err := json.Marshal(lastErrorPayload)
+	require.NoError(t, err)
+
 	input := database.Chat{
-		ID:                uuid.New(),
-		OwnerID:           uuid.New(),
-		OrganizationID:    uuid.New(),
-		WorkspaceID:       uuid.NullUUID{UUID: uuid.New(), Valid: true},
-		BuildID:           uuid.NullUUID{UUID: uuid.New(), Valid: true},
-		AgentID:           uuid.NullUUID{UUID: uuid.New(), Valid: true},
-		ParentChatID:      uuid.NullUUID{UUID: uuid.New(), Valid: true},
-		RootChatID:        uuid.NullUUID{UUID: uuid.New(), Valid: true},
-		LastModelConfigID: uuid.New(),
-		Title:             "all-fields-test",
-		Status:            database.ChatStatusRunning,
-		ClientType:        database.ChatClientTypeUi,
-		LastError:         sql.NullString{String: "boom", Valid: true},
-		CreatedAt:         now,
-		UpdatedAt:         now,
-		Archived:          true,
-		PinOrder:          1,
-		PlanMode:          database.NullChatPlanMode{ChatPlanMode: database.ChatPlanModePlan, Valid: true},
-		MCPServerIDs:      []uuid.UUID{uuid.New()},
-		Labels:            database.StringMap{"env": "prod"},
-		LastInjectedContext: pqtype.NullRawMessage{
-			// Use a context-file part to verify internal
-			// fields are not present (they are stripped at
-			// write time by chatd, not at read time).
-			RawMessage: json.RawMessage(`[{"type":"context-file","context_file_path":"/AGENTS.md"}]`),
-			Valid:      true,
-		},
+		ID:                  uuid.New(),
+		OwnerID:             uuid.New(),
+		OwnerUsername:       "owner-username",
+		OwnerName:           "Owner Name",
+		OrganizationID:      uuid.New(),
+		WorkspaceID:         uuid.NullUUID{UUID: uuid.New(), Valid: true},
+		BuildID:             uuid.NullUUID{UUID: uuid.New(), Valid: true},
+		AgentID:             uuid.NullUUID{UUID: uuid.New(), Valid: true},
+		ParentChatID:        uuid.NullUUID{UUID: uuid.New(), Valid: true},
+		RootChatID:          uuid.NullUUID{UUID: uuid.New(), Valid: true},
+		LastModelConfigID:   uuid.New(),
+		LastReasoningEffort: database.NullChatReasoningEffort{ChatReasoningEffort: database.ChatReasoningEffortHigh, Valid: true},
+		Title:               "all-fields-test",
+		TitleSource:         database.ChatTitleSourceUser,
+		TitleUpdatedAt:      now,
+		Status:              database.ChatStatusRunning,
+		ClientType:          database.ChatClientTypeUi,
+		LastError:           pqtype.NullRawMessage{RawMessage: lastErrorRaw, Valid: true},
+		LastTurnSummary:     sql.NullString{String: "turn completed", Valid: true},
+		Summary:             sql.NullString{String: "summarized the whole chat", Valid: true},
+		CreatedAt:           now,
+		UpdatedAt:           now,
+		Archived:            true,
+		UserACL:             database.ChatACL{uuid.NewString(): database.ChatACLEntry{}},
+		PinOrder:            1,
+		PlanMode:            database.NullChatPlanMode{ChatPlanMode: database.ChatPlanModePlan, Valid: true},
+		MCPServerIDs:        []uuid.UUID{uuid.New()},
+		Labels:              database.StringMap{"env": "prod"},
 		DynamicTools: pqtype.NullRawMessage{
 			RawMessage: json.RawMessage(`[{"name":"tool1","description":"test tool","inputSchema":{"type":"object"}}]`),
 			Valid:      true,
 		},
+		// Pinned-context columns drive codersdk.Chat.Context. Set all of
+		// them so the converted sub-struct's fields are non-zero too.
+		ProjectID:            uuid.NullUUID{UUID: uuid.New(), Valid: true},
+		ContextAggregateHash: []byte{0x01, 0x02, 0x03},
+		ContextDirtySince:    sql.NullTime{Time: now, Valid: true},
+		ContextError:         "context boom",
+
+		ManageAutomationsEnabled: true,
 	}
 	// Only ChatID is needed here. This test checks that
 	// Chat.DiffStatus is non-nil, not that every DiffStatus
@@ -956,6 +997,7 @@ func TestChat_AllFieldsPopulated(t *testing.T) {
 	diffStatus := &database.ChatDiffStatus{
 		ChatID: input.ID,
 	}
+	diffStatuses := []database.ChatDiffStatus{*diffStatus}
 
 	fileRows := []database.GetChatFileMetadataByChatIDRow{
 		{
@@ -968,15 +1010,14 @@ func TestChat_AllFieldsPopulated(t *testing.T) {
 		},
 	}
 
-	got := db2sdk.Chat(input, diffStatus, fileRows)
+	got := db2sdk.ChatWithDiffStatuses(input, diffStatus, diffStatuses, fileRows)
+
+	require.Equal(t, &lastErrorPayload, got.LastError)
 
 	v := reflect.ValueOf(got)
 	typ := v.Type()
-	// HasUnread is populated by ChatRowsWithChildren (which joins the
-	// read-cursor query), not by Chat. Warnings is a transient
-	// field populated by handlers, not the converter. Both are
-	// expected to remain zero here.
-	skip := map[string]bool{"HasUnread": true, "Warnings": true}
+	// These fields are set outside db2sdk.Chat and intentionally remain zero.
+	skip := map[string]bool{"HasUnread": true, "Warnings": true, "QueuedForCapacity": true, "InlineMCPServers": true}
 	for i := range typ.NumField() {
 		field := typ.Field(i)
 		if skip[field.Name] {
@@ -986,6 +1027,58 @@ func TestChat_AllFieldsPopulated(t *testing.T) {
 			"codersdk.Chat field %q is zero-valued — db2sdk.Chat may not be populating it",
 			field.Name,
 		)
+	}
+}
+
+func TestChat_Shared(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name     string
+		userACL  database.ChatACL
+		groupACL database.ChatACL
+		expected bool
+	}{
+		{
+			name: "not shared",
+		},
+		{
+			name:     "user ACL",
+			userACL:  database.ChatACL{uuid.NewString(): database.ChatACLEntry{}},
+			expected: true,
+		},
+		{
+			name:     "group ACL",
+			groupACL: database.ChatACL{uuid.NewString(): database.ChatACLEntry{}},
+			expected: true,
+		},
+		{
+			name:     "user and group ACLs",
+			userACL:  database.ChatACL{uuid.NewString(): database.ChatACLEntry{}},
+			groupACL: database.ChatACL{uuid.NewString(): database.ChatACLEntry{}},
+			expected: true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			chat := database.Chat{
+				ID:                uuid.New(),
+				OwnerID:           uuid.New(),
+				LastModelConfigID: uuid.New(),
+				Title:             tc.name,
+				Status:            database.ChatStatusWaiting,
+				CreatedAt:         dbtime.Now(),
+				UpdatedAt:         dbtime.Now(),
+				UserACL:           tc.userACL,
+				GroupACL:          tc.groupACL,
+			}
+
+			got := db2sdk.Chat(chat, nil, nil)
+			require.Equal(t, tc.expected, got.Shared)
+		})
 	}
 }
 
@@ -1014,6 +1107,7 @@ func TestChat_FileMetadataConversion(t *testing.T) {
 			OrganizationID: orgID,
 			Name:           "screenshot.png",
 			Mimetype:       "image/png",
+			SizeBytes:      1234,
 			CreatedAt:      now,
 		},
 	}
@@ -1027,6 +1121,7 @@ func TestChat_FileMetadataConversion(t *testing.T) {
 	require.Equal(t, orgID, f.OrganizationID, "OrganizationID must be mapped from DB row")
 	require.Equal(t, "screenshot.png", f.Name)
 	require.Equal(t, "image/png", f.MimeType)
+	require.Equal(t, int64(1234), f.SizeBytes)
 	require.Equal(t, now, f.CreatedAt)
 
 	// Verify JSON serialization uses snake_case for mime_type.
@@ -1051,6 +1146,114 @@ func TestChat_NilFilesOmitted(t *testing.T) {
 
 	result := db2sdk.Chat(chat, nil, nil)
 	require.Empty(t, result.Files)
+}
+
+func TestPrimaryChatDiffStatus(t *testing.T) {
+	t.Parallel()
+
+	require.Nil(t, db2sdk.PrimaryChatDiffStatus(nil))
+
+	older := dbtime.Now()
+	newer := older.Add(time.Minute)
+	// The primary is not first in the list. Equal report times go to
+	// the lowest origin, then the lowest branch.
+	statuses := []database.ChatDiffStatus{
+		{GitRemoteOrigin: "https://github.com/a/r", GitBranch: "first", UpdatedAt: older},
+		{GitRemoteOrigin: "https://github.com/b/r", GitBranch: "main", UpdatedAt: newer},
+		{GitRemoteOrigin: "https://github.com/a/r", GitBranch: "z", UpdatedAt: newer},
+		{GitRemoteOrigin: "https://github.com/a/r", GitBranch: "y", UpdatedAt: newer},
+	}
+
+	primary := db2sdk.PrimaryChatDiffStatus(statuses)
+	require.NotNil(t, primary)
+	require.Equal(t, "https://github.com/a/r", primary.GitRemoteOrigin)
+	require.Equal(t, "y", primary.GitBranch)
+}
+
+func TestChat_LastErrorFallback(t *testing.T) {
+	t.Parallel()
+
+	const fallbackMessage = "The chat request failed unexpectedly."
+
+	tests := []struct {
+		name          string
+		raw           json.RawMessage
+		expectPayload *codersdk.ChatError
+	}{
+		{
+			name: "MalformedJSON",
+			raw:  json.RawMessage(`{`),
+			expectPayload: &codersdk.ChatError{
+				Message:   fallbackMessage,
+				Kind:      codersdk.ChatErrorKindGeneric,
+				Retryable: false,
+			},
+		},
+		{
+			name: "MessageMissingPreservesMetadata",
+			raw:  json.RawMessage(`{"kind":"timeout","provider":"openai","status_code":504}`),
+			expectPayload: &codersdk.ChatError{
+				Message:    fallbackMessage,
+				Kind:       codersdk.ChatErrorKindTimeout,
+				Provider:   "openai",
+				Retryable:  false,
+				StatusCode: 504,
+			},
+		},
+		{
+			name: "WhitespaceMessageDefaultsKind",
+			raw:  json.RawMessage(`{"message":"  ","provider":"openai"}`),
+			expectPayload: &codersdk.ChatError{
+				Message:   fallbackMessage,
+				Kind:      codersdk.ChatErrorKindGeneric,
+				Provider:  "openai",
+				Retryable: false,
+			},
+		},
+		{
+			name: "KindMissingDefaultsGeneric",
+			raw:  json.RawMessage(`{"message":"OpenAI returned an unexpected error.","provider":"openai","status_code":502}`),
+			expectPayload: &codersdk.ChatError{
+				Message:    "OpenAI returned an unexpected error.",
+				Kind:       codersdk.ChatErrorKindGeneric,
+				Provider:   "openai",
+				Retryable:  false,
+				StatusCode: 502,
+			},
+		},
+		{
+			name: "UsageLimitKindRoundTrips",
+			raw:  json.RawMessage(`{"message":"Usage limit reached.","kind":"usage_limit"}`),
+			expectPayload: &codersdk.ChatError{
+				Message:   "Usage limit reached.",
+				Kind:      codersdk.ChatErrorKindUsageLimit,
+				Retryable: false,
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			chat := database.Chat{
+				ID:                uuid.New(),
+				OwnerID:           uuid.New(),
+				LastModelConfigID: uuid.New(),
+				Title:             "fallback payload",
+				Status:            database.ChatStatusError,
+				CreatedAt:         dbtime.Now(),
+				UpdatedAt:         dbtime.Now(),
+				LastError: pqtype.NullRawMessage{
+					RawMessage: tc.raw,
+					Valid:      true,
+				},
+			}
+
+			result := db2sdk.Chat(chat, nil, nil)
+			require.Equal(t, tc.expectPayload, result.LastError)
+		})
+	}
 }
 
 func TestChat_MultipleFiles(t *testing.T) {

@@ -24,6 +24,7 @@ import (
 
 	"cdr.dev/slog/v3"
 	"cdr.dev/slog/v3/sloggers/slogtest"
+	"github.com/coder/coder/v2/agent/agentchat"
 	"github.com/coder/coder/v2/agent/agentfiles"
 	"github.com/coder/coder/v2/agent/agentgit"
 	"github.com/coder/coder/v2/codersdk"
@@ -57,7 +58,7 @@ func (fs *testFs) Create(name string) (afero.File, error) {
 	}
 	// Unlike os, afero lets you create files where directories already exist and
 	// lets you nest them underneath files, somehow.
-	stat, err := fs.Fs.Stat(name)
+	stat, err := fs.Stat(name)
 	if err == nil && stat.IsDir() {
 		return nil, &os.PathError{
 			Op:   "open",
@@ -65,7 +66,7 @@ func (fs *testFs) Create(name string) (afero.File, error) {
 			Err:  syscall.EISDIR,
 		}
 	}
-	stat, err = fs.Fs.Stat(filepath.Dir(name))
+	stat, err = fs.Stat(filepath.Dir(name))
 	if err == nil && !stat.IsDir() {
 		return nil, &os.PathError{
 			Op:   "open",
@@ -82,7 +83,7 @@ func (fs *testFs) MkdirAll(name string, mode os.FileMode) error {
 	}
 	// Unlike os, afero lets you create directories where files already exist and
 	// lets you nest them underneath files somehow.
-	stat, err := fs.Fs.Stat(filepath.Dir(name))
+	stat, err := fs.Stat(filepath.Dir(name))
 	if err == nil && !stat.IsDir() {
 		return &os.PathError{
 			Op:   "mkdir",
@@ -90,7 +91,7 @@ func (fs *testFs) MkdirAll(name string, mode os.FileMode) error {
 			Err:  syscall.ENOTDIR,
 		}
 	}
-	stat, err = fs.Fs.Stat(name)
+	stat, err = fs.Stat(name)
 	if err == nil && !stat.IsDir() {
 		return &os.PathError{
 			Op:   "mkdir",
@@ -522,8 +523,8 @@ func TestEditFiles(t *testing.T) {
 				{
 					Edits: []workspacesdk.FileEdit{
 						{
-							Search:  "foo",
-							Replace: "bar",
+							OldText: "foo",
+							NewText: "bar",
 						},
 					},
 				},
@@ -537,8 +538,8 @@ func TestEditFiles(t *testing.T) {
 					Path: "./relative",
 					Edits: []workspacesdk.FileEdit{
 						{
-							Search:  "foo",
-							Replace: "bar",
+							OldText: "foo",
+							NewText: "bar",
 						},
 					},
 				},
@@ -553,8 +554,8 @@ func TestEditFiles(t *testing.T) {
 					Path: "also-relative",
 					Edits: []workspacesdk.FileEdit{
 						{
-							Search:  "foo",
-							Replace: "bar",
+							OldText: "foo",
+							NewText: "bar",
 						},
 					},
 				},
@@ -579,8 +580,8 @@ func TestEditFiles(t *testing.T) {
 					Path: filepath.Join(tmpdir, "does-not-exist"),
 					Edits: []workspacesdk.FileEdit{
 						{
-							Search:  "foo",
-							Replace: "bar",
+							OldText: "foo",
+							NewText: "bar",
 						},
 					},
 				},
@@ -595,8 +596,8 @@ func TestEditFiles(t *testing.T) {
 					Path: dirPath,
 					Edits: []workspacesdk.FileEdit{
 						{
-							Search:  "foo",
-							Replace: "bar",
+							OldText: "foo",
+							NewText: "bar",
 						},
 					},
 				},
@@ -611,8 +612,8 @@ func TestEditFiles(t *testing.T) {
 					Path: noPermsFilePath,
 					Edits: []workspacesdk.FileEdit{
 						{
-							Search:  "foo",
-							Replace: "bar",
+							OldText: "foo",
+							NewText: "bar",
 						},
 					},
 				},
@@ -628,8 +629,8 @@ func TestEditFiles(t *testing.T) {
 					Path: failRenameFilePath,
 					Edits: []workspacesdk.FileEdit{
 						{
-							Search:  "foo",
-							Replace: "bar",
+							OldText: "foo",
+							NewText: "bar",
 						},
 					},
 				},
@@ -647,8 +648,8 @@ func TestEditFiles(t *testing.T) {
 					Path: filepath.Join(tmpdir, "edit1"),
 					Edits: []workspacesdk.FileEdit{
 						{
-							Search:  "foo",
-							Replace: "bar",
+							OldText: "foo",
+							NewText: "bar",
 						},
 					},
 				},
@@ -665,12 +666,12 @@ func TestEditFiles(t *testing.T) {
 					Path: filepath.Join(tmpdir, "edit-edit"),
 					Edits: []workspacesdk.FileEdit{
 						{
-							Search:  "foo",
-							Replace: "bar",
+							OldText: "foo",
+							NewText: "bar",
 						},
 						{
-							Search:  "bar",
-							Replace: "qux",
+							OldText: "bar",
+							NewText: "qux",
 						},
 					},
 				},
@@ -690,12 +691,12 @@ func TestEditFiles(t *testing.T) {
 					Path: filepath.Join(tmpdir, "edit-edit-ra"),
 					Edits: []workspacesdk.FileEdit{
 						{
-							Search:  "foo",
-							Replace: "bar",
+							OldText: "foo",
+							NewText: "bar",
 						},
 						{
-							Search:     "bar",
-							Replace:    "qux",
+							OldText:    "bar",
+							NewText:    "qux",
 							ReplaceAll: true,
 						},
 					},
@@ -711,8 +712,8 @@ func TestEditFiles(t *testing.T) {
 					Path: filepath.Join(tmpdir, "multiline"),
 					Edits: []workspacesdk.FileEdit{
 						{
-							Search:  "bar\nbaz",
-							Replace: "frob",
+							OldText: "bar\nbaz",
+							NewText: "frob",
 						},
 					},
 				},
@@ -731,8 +732,8 @@ func TestEditFiles(t *testing.T) {
 					Path: filepath.Join(tmpdir, "file1"),
 					Edits: []workspacesdk.FileEdit{
 						{
-							Search:  "file",
-							Replace: "edited1",
+							OldText: "file",
+							NewText: "edited1",
 						},
 					},
 				},
@@ -740,8 +741,8 @@ func TestEditFiles(t *testing.T) {
 					Path: filepath.Join(tmpdir, "file2"),
 					Edits: []workspacesdk.FileEdit{
 						{
-							Search:  "file",
-							Replace: "edited2",
+							OldText: "file",
+							NewText: "edited2",
 						},
 					},
 				},
@@ -749,8 +750,8 @@ func TestEditFiles(t *testing.T) {
 					Path: filepath.Join(tmpdir, "file3"),
 					Edits: []workspacesdk.FileEdit{
 						{
-							Search:  "file",
-							Replace: "edited3",
+							OldText: "file",
+							NewText: "edited3",
 						},
 					},
 				},
@@ -769,8 +770,8 @@ func TestEditFiles(t *testing.T) {
 					Path: filepath.Join(tmpdir, "trailing-ws"),
 					Edits: []workspacesdk.FileEdit{
 						{
-							Search:  "foo\nbar\nbaz",
-							Replace: "replaced",
+							OldText: "foo\nbar\nbaz",
+							NewText: "replaced",
 						},
 					},
 				},
@@ -794,8 +795,8 @@ func TestEditFiles(t *testing.T) {
 					Edits: []workspacesdk.FileEdit{
 						{
 							// Search uses spaces but file uses tabs.
-							Search:  "    if true {\n        foo()\n    }",
-							Replace: "\tif true {\n\t\tbar()\n\t}",
+							OldText: "    if true {\n        foo()\n    }",
+							NewText: "\tif true {\n\t\tbar()\n\t}",
 						},
 					},
 				},
@@ -811,8 +812,8 @@ func TestEditFiles(t *testing.T) {
 					Edits: []workspacesdk.FileEdit{
 						{
 							// Search has wrong indent depth (1 tab instead of 3).
-							Search:  "\tdeep()\n\tnested()",
-							Replace: "\t\t\tdeep()\n\t\t\tchanged()",
+							OldText: "\tdeep()\n\tnested()",
+							NewText: "\t\t\tdeep()\n\t\t\tchanged()",
 						},
 					},
 				},
@@ -827,8 +828,8 @@ func TestEditFiles(t *testing.T) {
 					Path: filepath.Join(tmpdir, "exact-preferred"),
 					Edits: []workspacesdk.FileEdit{
 						{
-							Search:  "hello world",
-							Replace: "goodbye world",
+							OldText: "hello world",
+							NewText: "goodbye world",
 						},
 					},
 				},
@@ -843,14 +844,14 @@ func TestEditFiles(t *testing.T) {
 					Path: filepath.Join(tmpdir, "no-match"),
 					Edits: []workspacesdk.FileEdit{
 						{
-							Search:  "this does not exist in the file",
-							Replace: "whatever",
+							OldText: "this does not exist in the file",
+							NewText: "whatever",
 						},
 					},
 				},
 			},
 			errCode: http.StatusBadRequest,
-			errors:  []string{"search string not found in file"},
+			errors:  []string{"old_text not found in file"},
 			// File should remain unchanged.
 			expected: map[string]string{filepath.Join(tmpdir, "no-match"): "original content"},
 		},
@@ -862,8 +863,8 @@ func TestEditFiles(t *testing.T) {
 					Path: filepath.Join(tmpdir, "ambig-exact"),
 					Edits: []workspacesdk.FileEdit{
 						{
-							Search:  "foo",
-							Replace: "qux",
+							OldText: "foo",
+							NewText: "qux",
 						},
 					},
 				},
@@ -880,8 +881,8 @@ func TestEditFiles(t *testing.T) {
 					Path: filepath.Join(tmpdir, "ra-exact"),
 					Edits: []workspacesdk.FileEdit{
 						{
-							Search:     "foo",
-							Replace:    "qux",
+							OldText:    "foo",
+							NewText:    "qux",
 							ReplaceAll: true,
 						},
 					},
@@ -898,8 +899,8 @@ func TestEditFiles(t *testing.T) {
 					Path: filepath.Join(tmpdir, "ra-fuzzy-trail"),
 					Edits: []workspacesdk.FileEdit{
 						{
-							Search:     "hello\n",
-							Replace:    "bye\n",
+							OldText:    "hello\n",
+							NewText:    "bye\n",
 							ReplaceAll: true,
 						},
 					},
@@ -921,8 +922,8 @@ func TestEditFiles(t *testing.T) {
 					Edits: []workspacesdk.FileEdit{
 						{
 							// Search uses different indentation (spaces instead of tabs).
-							Search:     "    alpha\n",
-							Replace:    "\t\tREPLACED\n",
+							OldText:    "    alpha\n",
+							NewText:    "\t\tREPLACED\n",
 							ReplaceAll: true,
 						},
 					},
@@ -939,8 +940,8 @@ func TestEditFiles(t *testing.T) {
 					Edits: []workspacesdk.FileEdit{
 						{
 							// Search uses spaces, file uses tabs.
-							Search:  "  result := compute()\n  fmt.Println(result)\n",
-							Replace: "\tresult := compute()\n\tlog.Println(result)\n",
+							OldText: "  result := compute()\n  fmt.Println(result)\n",
+							NewText: "\tresult := compute()\n\tlog.Println(result)\n",
 						},
 					},
 				},
@@ -957,8 +958,8 @@ func TestEditFiles(t *testing.T) {
 					Path: noPermsFilePath,
 					Edits: []workspacesdk.FileEdit{
 						{
-							Search:  "file",
-							Replace: "edited7",
+							OldText: "file",
+							NewText: "edited7",
 						},
 					},
 				},
@@ -966,8 +967,8 @@ func TestEditFiles(t *testing.T) {
 					Path: filepath.Join(tmpdir, "file8"),
 					Edits: []workspacesdk.FileEdit{
 						{
-							Search:  "file",
-							Replace: "edited8",
+							OldText: "file",
+							NewText: "edited8",
 						},
 					},
 				},
@@ -975,8 +976,8 @@ func TestEditFiles(t *testing.T) {
 					Path: filepath.Join(tmpdir, "file9"),
 					Edits: []workspacesdk.FileEdit{
 						{
-							Search:  "file",
-							Replace: "edited9",
+							OldText: "file",
+							NewText: "edited9",
 						},
 					},
 				},
@@ -1007,24 +1008,24 @@ func TestEditFiles(t *testing.T) {
 				{
 					Path: filepath.Join(tmpdir, "atomic-a"),
 					Edits: []workspacesdk.FileEdit{
-						{Search: "aaa", Replace: "AAA"},
+						{OldText: "aaa", NewText: "AAA"},
 					},
 				},
 				{
 					Path: filepath.Join(tmpdir, "atomic-b"),
 					Edits: []workspacesdk.FileEdit{
-						{Search: "NOTFOUND", Replace: "XXX"},
+						{OldText: "NOTFOUND", NewText: "XXX"},
 					},
 				},
 				{
 					Path: filepath.Join(tmpdir, "atomic-c"),
 					Edits: []workspacesdk.FileEdit{
-						{Search: "ccc", Replace: "CCC"},
+						{OldText: "ccc", NewText: "CCC"},
 					},
 				},
 			},
 			errCode: http.StatusBadRequest,
-			errors:  []string{"search string not found"},
+			errors:  []string{"old_text not found"},
 			expected: map[string]string{
 				filepath.Join(tmpdir, "atomic-a"): "aaa",
 				filepath.Join(tmpdir, "atomic-b"): "bbb",
@@ -1104,8 +1105,8 @@ func TestEditFiles_PreservesPermissions(t *testing.T) {
 				Path: path,
 				Edits: []workspacesdk.FileEdit{
 					{
-						Search:  "hello",
-						Replace: "world",
+						OldText: "hello",
+						NewText: "world",
 					},
 				},
 			},
@@ -1157,7 +1158,7 @@ func TestHandleWriteFile_ChatHeaders_UpdatesPathStore(t *testing.T) {
 	rr := httptest.NewRecorder()
 	r := chi.NewRouter()
 	r.Post("/write-file", api.HandleWriteFile)
-	r.ServeHTTP(rr, req)
+	agentchat.Middleware(r).ServeHTTP(rr, req)
 
 	require.Equal(t, http.StatusOK, rr.Code)
 
@@ -1185,7 +1186,7 @@ func TestHandleWriteFile_NoChatHeaders_NoPathStoreUpdate(t *testing.T) {
 	rr := httptest.NewRecorder()
 	r := chi.NewRouter()
 	r.Post("/write-file", api.HandleWriteFile)
-	r.ServeHTTP(rr, req)
+	agentchat.Middleware(r).ServeHTTP(rr, req)
 
 	require.Equal(t, http.StatusOK, rr.Code)
 
@@ -1211,7 +1212,7 @@ func TestHandleWriteFile_Failure_NoPathStoreUpdate(t *testing.T) {
 	rr := httptest.NewRecorder()
 	r := chi.NewRouter()
 	r.Post("/write-file", api.HandleWriteFile)
-	r.ServeHTTP(rr, req)
+	agentchat.Middleware(r).ServeHTTP(rr, req)
 
 	require.Equal(t, http.StatusBadRequest, rr.Code)
 
@@ -1239,7 +1240,7 @@ func TestHandleEditFiles_ChatHeaders_UpdatesPathStore(t *testing.T) {
 			{
 				Path: testPath,
 				Edits: []workspacesdk.FileEdit{
-					{Search: "hello", Replace: "world"},
+					{OldText: "hello", NewText: "world"},
 				},
 			},
 		},
@@ -1252,7 +1253,7 @@ func TestHandleEditFiles_ChatHeaders_UpdatesPathStore(t *testing.T) {
 	rr := httptest.NewRecorder()
 	r := chi.NewRouter()
 	r.Post("/edit-files", api.HandleEditFiles)
-	r.ServeHTTP(rr, req)
+	agentchat.Middleware(r).ServeHTTP(rr, req)
 
 	require.Equal(t, http.StatusOK, rr.Code)
 
@@ -1276,7 +1277,7 @@ func TestHandleEditFiles_Failure_NoPathStoreUpdate(t *testing.T) {
 			{
 				Path: "/nonexistent/file.txt",
 				Edits: []workspacesdk.FileEdit{
-					{Search: "hello", Replace: "world"},
+					{OldText: "hello", NewText: "world"},
 				},
 			},
 		},
@@ -1289,7 +1290,7 @@ func TestHandleEditFiles_Failure_NoPathStoreUpdate(t *testing.T) {
 	rr := httptest.NewRecorder()
 	r := chi.NewRouter()
 	r.Post("/edit-files", api.HandleEditFiles)
-	r.ServeHTTP(rr, req)
+	agentchat.Middleware(r).ServeHTTP(rr, req)
 
 	require.NotEqual(t, http.StatusOK, rr.Code)
 
@@ -1556,8 +1557,8 @@ func TestEditFiles_FollowsSymlinks(t *testing.T) {
 				Path: linkPath,
 				Edits: []workspacesdk.FileEdit{
 					{
-						Search:  "hello",
-						Replace: "goodbye",
+						OldText: "hello",
+						NewText: "goodbye",
 					},
 				},
 			},
@@ -1605,7 +1606,7 @@ func TestEditFiles_FileResults(t *testing.T) {
 				{
 					Path: path,
 					Edits: []workspacesdk.FileEdit{
-						{Search: "hello", Replace: "HELLO"},
+						{OldText: "hello", NewText: "HELLO"},
 					},
 				},
 			},
@@ -1634,7 +1635,7 @@ func TestEditFiles_FileResults(t *testing.T) {
 					Path: path,
 					Edits: []workspacesdk.FileEdit{
 						// Replace with identical text (no-op).
-						{Search: "same", Replace: "same"},
+						{OldText: "same", NewText: "same"},
 					},
 				},
 			},
@@ -1658,7 +1659,7 @@ func TestEditFiles_FileResults(t *testing.T) {
 				{
 					Path: path,
 					Edits: []workspacesdk.FileEdit{
-						{Search: "hello", Replace: "HELLO"},
+						{OldText: "hello", NewText: "HELLO"},
 					},
 				},
 			},
@@ -1681,9 +1682,9 @@ func TestEditFiles_FileResults(t *testing.T) {
 		resp := runEditFiles(t, api, workspacesdk.FileEditRequest{
 			IncludeDiff: true,
 			Files: []workspacesdk.FileEdits{
-				{Path: pathA, Edits: []workspacesdk.FileEdit{{Search: "A", Replace: "a"}}},
-				{Path: pathB, Edits: []workspacesdk.FileEdit{{Search: "B", Replace: "b"}}},
-				{Path: pathC, Edits: []workspacesdk.FileEdit{{Search: "C", Replace: "c"}}},
+				{Path: pathA, Edits: []workspacesdk.FileEdit{{OldText: "A", NewText: "a"}}},
+				{Path: pathB, Edits: []workspacesdk.FileEdit{{OldText: "B", NewText: "b"}}},
+				{Path: pathC, Edits: []workspacesdk.FileEdit{{OldText: "C", NewText: "c"}}},
 			},
 		})
 		require.Len(t, resp.Files, 3)
@@ -1717,8 +1718,8 @@ func TestEditFiles_FileResults(t *testing.T) {
 			Files: []workspacesdk.FileEdits{{
 				Path: path,
 				Edits: []workspacesdk.FileEdit{
-					{Search: "one", Replace: "ONE"},
-					{Search: "three", Replace: "THREE"},
+					{OldText: "one", NewText: "ONE"},
+					{OldText: "three", NewText: "THREE"},
 				},
 			}},
 		})
@@ -1754,7 +1755,7 @@ func TestEditFiles_FileResults(t *testing.T) {
 				{
 					Path: linkPath,
 					Edits: []workspacesdk.FileEdit{
-						{Search: "hello", Replace: "HELLO"},
+						{OldText: "hello", NewText: "HELLO"},
 					},
 				},
 			},
@@ -1792,6 +1793,50 @@ func runEditFiles(t *testing.T, api *agentfiles.API, req workspacesdk.FileEditRe
 	return resp
 }
 
+// fuzzyEdit is one search/replace pair for the fuzzy matcher tables.
+type fuzzyEdit struct {
+	search, replace string
+	replaceAll      bool
+}
+
+// applyFuzzyEdits writes content to a fresh in-memory file, posts edits
+// against it through the HTTP handler, and returns the recorded response
+// together with the file's bytes afterwards.
+func applyFuzzyEdits(t *testing.T, name, content string, edits []fuzzyEdit) (*httptest.ResponseRecorder, string) {
+	t.Helper()
+
+	logger := slogtest.Make(t, &slogtest.Options{IgnoreErrors: true}).Leveled(slog.LevelDebug)
+	fs := afero.NewMemMapFs()
+	api := agentfiles.NewAPI(logger, fs, nil)
+	path := filepath.Join(os.TempDir(), name)
+	require.NoError(t, afero.WriteFile(fs, path, []byte(content), 0o644))
+
+	sdkEdits := make([]workspacesdk.FileEdit, 0, len(edits))
+	for _, e := range edits {
+		sdkEdits = append(sdkEdits, workspacesdk.FileEdit{
+			OldText:    e.search,
+			NewText:    e.replace,
+			ReplaceAll: e.replaceAll,
+		})
+	}
+	req := workspacesdk.FileEditRequest{
+		Files: []workspacesdk.FileEdits{{Path: path, Edits: sdkEdits}},
+	}
+
+	ctx := testutil.Context(t, testutil.WaitShort)
+	buf := bytes.NewBuffer(nil)
+	enc := json.NewEncoder(buf)
+	enc.SetEscapeHTML(false)
+	require.NoError(t, enc.Encode(req))
+	w := httptest.NewRecorder()
+	r := httptest.NewRequestWithContext(ctx, http.MethodPost, "/edit-files", buf)
+	api.Routes().ServeHTTP(w, r)
+
+	data, err := afero.ReadFile(fs, path)
+	require.NoError(t, err)
+	return w, string(data)
+}
+
 // TestFuzzyReplace_EndingAndWhitespace exercises the line-endings
 // and per-position whitespace behavior of the fuzzy matcher in
 // both single-replace and replace-all modes.
@@ -1814,17 +1859,10 @@ func runEditFiles(t *testing.T, api *agentfiles.API, req workspacesdk.FileEditRe
 func TestFuzzyReplace_EndingAndWhitespace(t *testing.T) {
 	t.Parallel()
 
-	tmpdir := os.TempDir()
-	logger := slogtest.Make(t, &slogtest.Options{IgnoreErrors: true}).Leveled(slog.LevelDebug)
-
-	type edit struct {
-		search, replace string
-		replaceAll      bool
-	}
 	tests := []struct {
 		name     string
 		content  string
-		edits    []edit
+		edits    []fuzzyEdit
 		expected string
 	}{
 		// CRLF file, LF search: the ending rule lets "line\n"
@@ -1833,7 +1871,7 @@ func TestFuzzyReplace_EndingAndWhitespace(t *testing.T) {
 		{
 			name:     "CRLF_Content_LFSearch_Delete",
 			content:  "foo\r\nline\r\nbar\r\n",
-			edits:    []edit{{search: "line\n", replace: ""}},
+			edits:    []fuzzyEdit{{search: "line\n", replace: ""}},
 			expected: "foo\r\nbar\r\n",
 		},
 		// Pass 2 tolerates the file's trailing whitespace on
@@ -1842,7 +1880,7 @@ func TestFuzzyReplace_EndingAndWhitespace(t *testing.T) {
 		{
 			name:     "TrailingWhitespace_Delete",
 			content:  "foo\nline   \nbar\n",
-			edits:    []edit{{search: "line\n", replace: ""}},
+			edits:    []fuzzyEdit{{search: "line\n", replace: ""}},
 			expected: "foo\nbar\n",
 		},
 		// Pass 1 handles a search without a trailing newline
@@ -1852,7 +1890,7 @@ func TestFuzzyReplace_EndingAndWhitespace(t *testing.T) {
 		{
 			name:     "Pass1_SearchNoNewline_ExactSubstring",
 			content:  "foo\nfirst line\nbar\n",
-			edits:    []edit{{search: "first line", replace: "LINE"}},
+			edits:    []fuzzyEdit{{search: "first line", replace: "LINE"}},
 			expected: "foo\nLINE\nbar\n",
 		},
 		// Fuzzy path, both search and replace lack a newline
@@ -1867,14 +1905,14 @@ func TestFuzzyReplace_EndingAndWhitespace(t *testing.T) {
 		{
 			name:     "FuzzyMatchingWhitespace_FileEndingWins",
 			content:  "foo\nkey\nbar\n",
-			edits:    []edit{{search: "key ", replace: "KEY "}},
+			edits:    []fuzzyEdit{{search: "key ", replace: "KEY "}},
 			expected: "foo\nKEY\nbar\n",
 		},
 		// Last-line-no-newline uses pass 1 exact match.
 		{
 			name:     "Pass1_LastLineNoNewline",
 			content:  "foo\nbar",
-			edits:    []edit{{search: "bar", replace: "BAR"}},
+			edits:    []fuzzyEdit{{search: "bar", replace: "BAR"}},
 			expected: "foo\nBAR",
 		},
 		// Indent-tolerant matching on a CRLF file: search and
@@ -1898,19 +1936,19 @@ func TestFuzzyReplace_EndingAndWhitespace(t *testing.T) {
 		{
 			name:     "FuzzyIndent_CRLF_TwoSpaceSearch_FileTabWins",
 			content:  "foo\r\n\tline\r\nbar\r\n",
-			edits:    []edit{{search: "  line\n", replace: "  LINE\n"}},
+			edits:    []fuzzyEdit{{search: "  line\n", replace: "  LINE\n"}},
 			expected: "foo\r\n\tLINE\r\nbar\r\n",
 		},
 		{
 			name:     "FuzzyIndent_CRLF_SevenSpaceSearch_FileTabStillWins",
 			content:  "foo\r\n\tline\r\nbar\r\n",
-			edits:    []edit{{search: "       line\n", replace: "       LINE\n"}},
+			edits:    []fuzzyEdit{{search: "       line\n", replace: "       LINE\n"}},
 			expected: "foo\r\n\tLINE\r\nbar\r\n",
 		},
 		{
 			name:     "FuzzyIndent_CRLF_CallerRewritesIndent_ReplaceLeadingWins",
 			content:  "foo\r\n\tline\r\nbar\r\n",
-			edits:    []edit{{search: "  line\n", replace: "    LINE\n"}},
+			edits:    []fuzzyEdit{{search: "  line\n", replace: "    LINE\n"}},
 			expected: "foo\r\n    LINE\r\nbar\r\n",
 		},
 
@@ -1921,7 +1959,7 @@ func TestFuzzyReplace_EndingAndWhitespace(t *testing.T) {
 			// whitespace shape (""), and its "\n" ending.
 			name:     "ReplaceAll_FuzzyMatchingWhitespace_FileEndingWins",
 			content:  "key\nkey\nother\n",
-			edits:    []edit{{search: "key ", replace: "KEY ", replaceAll: true}},
+			edits:    []fuzzyEdit{{search: "key ", replace: "KEY ", replaceAll: true}},
 			expected: "KEY\nKEY\nother\n",
 		},
 		{
@@ -1929,7 +1967,7 @@ func TestFuzzyReplace_EndingAndWhitespace(t *testing.T) {
 			// the file's "\r\n" so the output is uniformly CRLF.
 			name:     "ReplaceAll_CRLF_LFSearch_FileEndingWins",
 			content:  "line one\r\nother\r\nline one\r\n",
-			edits:    []edit{{search: "line one\n", replace: "LINE\n", replaceAll: true}},
+			edits:    []fuzzyEdit{{search: "line one\n", replace: "LINE\n", replaceAll: true}},
 			expected: "LINE\r\nother\r\nLINE\r\n",
 		},
 
@@ -1941,7 +1979,7 @@ func TestFuzzyReplace_EndingAndWhitespace(t *testing.T) {
 		{
 			name:     "CallerChosenFold",
 			content:  "foo\nline\nbar\n",
-			edits:    []edit{{search: "line\n", replace: "LINE"}},
+			edits:    []fuzzyEdit{{search: "line\n", replace: "LINE"}},
 			expected: "foo\nLINEbar\n",
 		},
 
@@ -1953,7 +1991,7 @@ func TestFuzzyReplace_EndingAndWhitespace(t *testing.T) {
 		{
 			name:     "CallerRewritesIndent_ReplaceLeadingWins",
 			content:  "foo\n\tline\n\tbar\n",
-			edits:    []edit{{search: "\tline\n", replace: "  line\n"}},
+			edits:    []fuzzyEdit{{search: "\tline\n", replace: "  line\n"}},
 			expected: "foo\n  line\n\tbar\n",
 		},
 
@@ -1966,7 +2004,7 @@ func TestFuzzyReplace_EndingAndWhitespace(t *testing.T) {
 		{
 			name:     "Expansion_ExtraLinesTrackLastPair",
 			content:  "foo\n\tline\nbar\n",
-			edits:    []edit{{search: "    line\n", replace: "    line\n    extra\n"}},
+			edits:    []fuzzyEdit{{search: "    line\n", replace: "    line\n    extra\n"}},
 			expected: "foo\n\tline\n\textra\nbar\n",
 		},
 
@@ -1976,7 +2014,7 @@ func TestFuzzyReplace_EndingAndWhitespace(t *testing.T) {
 		{
 			name:     "Collapse_ReplaceShorterThanSearch",
 			content:  "foo\nkeep\ndrop\nbar\n",
-			edits:    []edit{{search: "keep\ndrop\n", replace: "keep\n"}},
+			edits:    []fuzzyEdit{{search: "keep\ndrop\n", replace: "keep\n"}},
 			expected: "foo\nkeep\nbar\n",
 		},
 
@@ -1991,7 +2029,7 @@ func TestFuzzyReplace_EndingAndWhitespace(t *testing.T) {
 		{
 			name:     "EmptyEndingWildcard_CRLFContent_FileEndingWins",
 			content:  "foo\r\nkey\r\nbar\r\n",
-			edits:    []edit{{search: "  key", replace: "KEY"}},
+			edits:    []fuzzyEdit{{search: "  key", replace: "KEY"}},
 			expected: "foo\r\nKEY\r\nbar\r\n",
 		},
 
@@ -2002,7 +2040,7 @@ func TestFuzzyReplace_EndingAndWhitespace(t *testing.T) {
 		{
 			name:     "MultiLineReplaceAtEOFNoNewline_InteriorLinesKeepNewline",
 			content:  "foo\nbar",
-			edits:    []edit{{search: "foo\nbar\n", replace: "foo\nbaz\nqux\n"}},
+			edits:    []fuzzyEdit{{search: "foo\nbar\n", replace: "foo\nbaz\nqux\n"}},
 			expected: "foo\nbaz\nqux",
 		},
 
@@ -2012,7 +2050,7 @@ func TestFuzzyReplace_EndingAndWhitespace(t *testing.T) {
 		{
 			name:     "EmptyBodyFuzzyReplace_NoWhitespaceGhost",
 			content:  "prefix\n  code  \nsuffix\n",
-			edits:    []edit{{search: "code\n", replace: "\n"}},
+			edits:    []fuzzyEdit{{search: "code\n", replace: "\n"}},
 			expected: "prefix\n\nsuffix\n",
 		},
 
@@ -2025,7 +2063,7 @@ func TestFuzzyReplace_EndingAndWhitespace(t *testing.T) {
 		{
 			name:     "EmptyBodyInteriorAtEOFNoNewline_BothCarveOuts",
 			content:  "foo\nbar",
-			edits:    []edit{{search: "foo\nbar\n", replace: "mid1\n\nmid2\n"}},
+			edits:    []fuzzyEdit{{search: "foo\nbar\n", replace: "mid1\n\nmid2\n"}},
 			expected: "mid1\n\nmid2",
 		},
 	}
@@ -2034,36 +2072,9 @@ func TestFuzzyReplace_EndingAndWhitespace(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			fs := afero.NewMemMapFs()
-			api := agentfiles.NewAPI(logger, fs, nil)
-			path := filepath.Join(tmpdir, "fuzzy-"+tt.name)
-			require.NoError(t, afero.WriteFile(fs, path, []byte(tt.content), 0o644))
-
-			sdkEdits := make([]workspacesdk.FileEdit, 0, len(tt.edits))
-			for _, e := range tt.edits {
-				sdkEdits = append(sdkEdits, workspacesdk.FileEdit{
-					Search:     e.search,
-					Replace:    e.replace,
-					ReplaceAll: e.replaceAll,
-				})
-			}
-			req := workspacesdk.FileEditRequest{
-				Files: []workspacesdk.FileEdits{{Path: path, Edits: sdkEdits}},
-			}
-
-			ctx := testutil.Context(t, testutil.WaitShort)
-			buf := bytes.NewBuffer(nil)
-			enc := json.NewEncoder(buf)
-			enc.SetEscapeHTML(false)
-			require.NoError(t, enc.Encode(req))
-			w := httptest.NewRecorder()
-			r := httptest.NewRequestWithContext(ctx, http.MethodPost, "/edit-files", buf)
-			api.Routes().ServeHTTP(w, r)
-
+			w, got := applyFuzzyEdits(t, "fuzzy-"+tt.name, tt.content, tt.edits)
 			require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
-			data, err := afero.ReadFile(fs, path)
-			require.NoError(t, err)
-			require.Equal(t, tt.expected, string(data))
+			require.Equal(t, tt.expected, got)
 		})
 	}
 }
@@ -2083,17 +2094,10 @@ func TestFuzzyReplace_EndingAndWhitespace(t *testing.T) {
 func TestFuzzyReplace_EndingNormalization(t *testing.T) {
 	t.Parallel()
 
-	tmpdir := os.TempDir()
-	logger := slogtest.Make(t, &slogtest.Options{IgnoreErrors: true}).Leveled(slog.LevelDebug)
-
-	type edit struct {
-		search, replace string
-		replaceAll      bool
-	}
 	tests := []struct {
 		name     string
 		content  string
-		edits    []edit
+		edits    []fuzzyEdit
 		expected string
 	}{
 		// CRLF file, LF search, LF replace with expansion.
@@ -2102,7 +2106,7 @@ func TestFuzzyReplace_EndingNormalization(t *testing.T) {
 		{
 			name:     "CRLFFile_LFSearchReplace_Expansion",
 			content:  "line1\r\nline2\r\nline3\r\n",
-			edits:    []edit{{search: "line1\nline2\n", replace: "line1\nINSERTED\nline2\n"}},
+			edits:    []fuzzyEdit{{search: "line1\nline2\n", replace: "line1\nINSERTED\nline2\n"}},
 			expected: "line1\r\nINSERTED\r\nline2\r\nline3\r\n",
 		},
 		// CRLF file with no trailing newline, LF search/replace
@@ -2112,7 +2116,7 @@ func TestFuzzyReplace_EndingNormalization(t *testing.T) {
 		{
 			name:     "CRLFFileNoEOL_LFSearchReplace_ExpansionAtEOF",
 			content:  "alpha\r\nbeta\r\ngamma",
-			edits:    []edit{{search: "gamma", replace: "gamma\ndelta\nepsilon"}},
+			edits:    []fuzzyEdit{{search: "gamma", replace: "gamma\ndelta\nepsilon"}},
 			expected: "alpha\r\nbeta\r\ngamma\r\ndelta\r\nepsilon",
 		},
 		// CRLF Go file with no final newline; LLM sends LF
@@ -2121,7 +2125,7 @@ func TestFuzzyReplace_EndingNormalization(t *testing.T) {
 		{
 			name:     "CRLFFileNoEOL_LFCallerExpandsFunctionBody",
 			content:  "package main\r\n\r\nfunc main() {\r\n\tprintln(\"hi\")\r\n}",
-			edits:    []edit{{search: "\tprintln(\"hi\")\n}", replace: "\tprintln(\"hi\")\n\tprintln(\"bye\")\n\treturn\n}"}},
+			edits:    []fuzzyEdit{{search: "\tprintln(\"hi\")\n}", replace: "\tprintln(\"hi\")\n\tprintln(\"bye\")\n\treturn\n}"}},
 			expected: "package main\r\n\r\nfunc main() {\r\n\tprintln(\"hi\")\r\n\tprintln(\"bye\")\r\n\treturn\r\n}",
 		},
 		// LF file, CRLF search/replace (caller sent CRLF, file is
@@ -2130,7 +2134,7 @@ func TestFuzzyReplace_EndingNormalization(t *testing.T) {
 		{
 			name:     "LFFile_CRLFSearchReplace_FileLFWins",
 			content:  "one\ntwo\nthree\n",
-			edits:    []edit{{search: "one\r\ntwo\r\n", replace: "ONE\r\nTWO\r\n"}},
+			edits:    []fuzzyEdit{{search: "one\r\ntwo\r\n", replace: "ONE\r\nTWO\r\n"}},
 			expected: "ONE\nTWO\nthree\n",
 		},
 		// Caller got endings right: CRLF in search, replace, and file.
@@ -2138,7 +2142,7 @@ func TestFuzzyReplace_EndingNormalization(t *testing.T) {
 		{
 			name:     "CRLFFile_CRLFSearchReplace_SanityPreserved",
 			content:  "a\r\nb\r\nc\r\n",
-			edits:    []edit{{search: "a\r\nb\r\n", replace: "A\r\nB\r\n"}},
+			edits:    []fuzzyEdit{{search: "a\r\nb\r\n", replace: "A\r\nB\r\n"}},
 			expected: "A\r\nB\r\nc\r\n",
 		},
 		// ReplaceAll with expansion on a CRLF file via LF caller.
@@ -2146,7 +2150,7 @@ func TestFuzzyReplace_EndingNormalization(t *testing.T) {
 		{
 			name:    "ReplaceAll_CRLFFile_LFCaller_Expansion",
 			content: "key\r\nother\r\nkey\r\n",
-			edits: []edit{{
+			edits: []fuzzyEdit{{
 				search:     "key\n",
 				replace:    "KEY\nEXTRA\n",
 				replaceAll: true,
@@ -2162,7 +2166,7 @@ func TestFuzzyReplace_EndingNormalization(t *testing.T) {
 		{
 			name:     "CallerIntent_SearchMatchesFile_ReplaceEndingsHonored",
 			content:  "x\r\ny\r\nz\r\n",
-			edits:    []edit{{search: "x\r\ny\r\n", replace: "X\nY\n"}},
+			edits:    []fuzzyEdit{{search: "x\r\ny\r\n", replace: "X\nY\n"}},
 			expected: "X\nY\nz\r\n",
 		},
 		// Single-line search against a CRLF file, multi-line
@@ -2171,7 +2175,7 @@ func TestFuzzyReplace_EndingNormalization(t *testing.T) {
 		{
 			name:     "SingleLineSearch_MultiLineReplace_FileEndingWins",
 			content:  "a\r\nx\r\nb\r\n",
-			edits:    []edit{{search: "x", replace: "X\nY"}},
+			edits:    []fuzzyEdit{{search: "x", replace: "X\nY"}},
 			expected: "a\r\nX\r\nY\r\nb\r\n",
 		},
 		// Trivial baseline: neither side has endings, nothing to
@@ -2179,7 +2183,7 @@ func TestFuzzyReplace_EndingNormalization(t *testing.T) {
 		{
 			name:     "SingleLineSearch_SingleLineReplace_NoEndingsToNormalize",
 			content:  "a\r\nx\r\nb\r\n",
-			edits:    []edit{{search: "x", replace: "X"}},
+			edits:    []fuzzyEdit{{search: "x", replace: "X"}},
 			expected: "a\r\nX\r\nb\r\n",
 		},
 	}
@@ -2188,36 +2192,9 @@ func TestFuzzyReplace_EndingNormalization(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			fs := afero.NewMemMapFs()
-			api := agentfiles.NewAPI(logger, fs, nil)
-			path := filepath.Join(tmpdir, "endnorm-"+tt.name)
-			require.NoError(t, afero.WriteFile(fs, path, []byte(tt.content), 0o644))
-
-			sdkEdits := make([]workspacesdk.FileEdit, 0, len(tt.edits))
-			for _, e := range tt.edits {
-				sdkEdits = append(sdkEdits, workspacesdk.FileEdit{
-					Search:     e.search,
-					Replace:    e.replace,
-					ReplaceAll: e.replaceAll,
-				})
-			}
-			req := workspacesdk.FileEditRequest{
-				Files: []workspacesdk.FileEdits{{Path: path, Edits: sdkEdits}},
-			}
-
-			ctx := testutil.Context(t, testutil.WaitShort)
-			buf := bytes.NewBuffer(nil)
-			enc := json.NewEncoder(buf)
-			enc.SetEscapeHTML(false)
-			require.NoError(t, enc.Encode(req))
-			w := httptest.NewRecorder()
-			r := httptest.NewRequestWithContext(ctx, http.MethodPost, "/edit-files", buf)
-			api.Routes().ServeHTTP(w, r)
-
+			w, got := applyFuzzyEdits(t, "endnorm-"+tt.name, tt.content, tt.edits)
 			require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
-			data, err := afero.ReadFile(fs, path)
-			require.NoError(t, err)
-			require.Equal(t, tt.expected, string(data))
+			require.Equal(t, tt.expected, got)
 		})
 	}
 }
@@ -2228,16 +2205,10 @@ func TestFuzzyReplace_EndingNormalization(t *testing.T) {
 func TestFuzzyReplace_FuzzyCollapse_PreservesNextLine(t *testing.T) {
 	t.Parallel()
 
-	tmpdir := os.TempDir()
-	logger := slogtest.Make(t, &slogtest.Options{IgnoreErrors: true}).Leveled(slog.LevelDebug)
-
-	type edit struct {
-		search, replace string
-	}
 	tests := []struct {
 		name     string
 		content  string
-		edits    []edit
+		edits    []fuzzyEdit
 		expected string
 	}{
 		// Minimal: tab-indented file, space-indented caller
@@ -2245,7 +2216,7 @@ func TestFuzzyReplace_FuzzyCollapse_PreservesNextLine(t *testing.T) {
 		{
 			name:    "Minimal",
 			content: "\tone\n\ttwo\n\tthree\n\tafter\n",
-			edits: []edit{{
+			edits: []fuzzyEdit{{
 				search:  "    one\n    two\n    three\n",
 				replace: "    ONE\n    TWO\n",
 			}},
@@ -2267,7 +2238,7 @@ func TestFuzzyReplace_FuzzyCollapse_PreservesNextLine(t *testing.T) {
 				"\t\tvalid := codersdk.NameValid(str)\n" +
 				"\t\treturn valid == nil\n" +
 				"\t}\n",
-			edits: []edit{{
+			edits: []fuzzyEdit{{
 				search: "        f := fl.Field().Interface()\n" +
 					"        str, ok := f.(string)\n" +
 					"        if !ok {\n" +
@@ -2291,35 +2262,9 @@ func TestFuzzyReplace_FuzzyCollapse_PreservesNextLine(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			fs := afero.NewMemMapFs()
-			api := agentfiles.NewAPI(logger, fs, nil)
-			path := filepath.Join(tmpdir, "fuzzycollapse-"+tt.name)
-			require.NoError(t, afero.WriteFile(fs, path, []byte(tt.content), 0o644))
-
-			sdkEdits := make([]workspacesdk.FileEdit, 0, len(tt.edits))
-			for _, e := range tt.edits {
-				sdkEdits = append(sdkEdits, workspacesdk.FileEdit{
-					Search:  e.search,
-					Replace: e.replace,
-				})
-			}
-			req := workspacesdk.FileEditRequest{
-				Files: []workspacesdk.FileEdits{{Path: path, Edits: sdkEdits}},
-			}
-
-			ctx := testutil.Context(t, testutil.WaitShort)
-			buf := bytes.NewBuffer(nil)
-			enc := json.NewEncoder(buf)
-			enc.SetEscapeHTML(false)
-			require.NoError(t, enc.Encode(req))
-			w := httptest.NewRecorder()
-			r := httptest.NewRequestWithContext(ctx, http.MethodPost, "/edit-files", buf)
-			api.Routes().ServeHTTP(w, r)
-
+			w, got := applyFuzzyEdits(t, "fuzzycollapse-"+tt.name, tt.content, tt.edits)
 			require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
-			data, err := afero.ReadFile(fs, path)
-			require.NoError(t, err)
-			require.Equal(t, tt.expected, string(data))
+			require.Equal(t, tt.expected, got)
 		})
 	}
 }
@@ -2330,9 +2275,6 @@ func TestFuzzyReplace_FuzzyCollapse_PreservesNextLine(t *testing.T) {
 // Each case has a short comment describing the behavior it pins.
 func TestEditFiles_WhitespaceAndLineEndings(t *testing.T) {
 	t.Parallel()
-
-	tmpdir := os.TempDir()
-	logger := slogtest.Make(t, &slogtest.Options{IgnoreErrors: true}).Leveled(slog.LevelDebug)
 
 	cases := []struct {
 		name            string
@@ -2375,7 +2317,7 @@ func TestEditFiles_WhitespaceAndLineEndings(t *testing.T) {
 			content: "above\n\n\nbelow\n",
 			search:  "above\nbelow",
 			replace: "above\nbelow",
-			errSub:  "search string not found",
+			errSub:  "old_text not found",
 		},
 
 		// Search matches blank lines exactly; replacement
@@ -2440,45 +2382,22 @@ func TestEditFiles_WhitespaceAndLineEndings(t *testing.T) {
 		t.Run(ct.name, func(t *testing.T) {
 			t.Parallel()
 
-			fs := afero.NewMemMapFs()
-			api := agentfiles.NewAPI(logger, fs, nil)
-			path := filepath.Join(tmpdir, "ws-"+ct.name)
-			require.NoError(t, afero.WriteFile(fs, path, []byte(ct.content), 0o644))
-
-			req := workspacesdk.FileEditRequest{
-				Files: []workspacesdk.FileEdits{{
-					Path: path,
-					Edits: []workspacesdk.FileEdit{{
-						Search:     ct.search,
-						Replace:    ct.replace,
-						ReplaceAll: ct.replaceAll,
-					}},
-				}},
-			}
-
-			ctx := testutil.Context(t, testutil.WaitShort)
-			buf := bytes.NewBuffer(nil)
-			enc := json.NewEncoder(buf)
-			enc.SetEscapeHTML(false)
-			require.NoError(t, enc.Encode(req))
-			w := httptest.NewRecorder()
-			r := httptest.NewRequestWithContext(ctx, http.MethodPost, "/edit-files", buf)
-			api.Routes().ServeHTTP(w, r)
+			w, got := applyFuzzyEdits(t, "ws-"+ct.name, ct.content, []fuzzyEdit{{
+				search:     ct.search,
+				replace:    ct.replace,
+				replaceAll: ct.replaceAll,
+			}})
 
 			if ct.errSub != "" {
 				require.Equal(t, http.StatusBadRequest, w.Code, "body: %s", w.Body.String())
-				got := &codersdk.Error{}
-				require.NoError(t, json.NewDecoder(w.Body).Decode(got))
-				require.ErrorContains(t, got, ct.errSub)
-				data, err := afero.ReadFile(fs, path)
-				require.NoError(t, err)
-				require.Equal(t, ct.content, string(data))
+				gotErr := &codersdk.Error{}
+				require.NoError(t, json.NewDecoder(w.Body).Decode(gotErr))
+				require.ErrorContains(t, gotErr, ct.errSub)
+				require.Equal(t, ct.content, got)
 				return
 			}
 			require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
-			data, err := afero.ReadFile(fs, path)
-			require.NoError(t, err)
-			require.Equal(t, ct.expected, string(data))
+			require.Equal(t, ct.expected, got)
 		})
 	}
 }
@@ -2502,17 +2421,10 @@ func TestEditFiles_WhitespaceAndLineEndings(t *testing.T) {
 func TestFuzzyReplace_Rejects(t *testing.T) {
 	t.Parallel()
 
-	tmpdir := os.TempDir()
-	logger := slogtest.Make(t, &slogtest.Options{IgnoreErrors: true}).Leveled(slog.LevelDebug)
-
-	type edit struct {
-		search, replace string
-		replaceAll      bool
-	}
 	tests := []struct {
 		name    string
 		content string
-		edits   []edit
+		edits   []fuzzyEdit
 		errSub  string
 	}{
 		// Empty search with replace_all=false: reject to prevent
@@ -2520,8 +2432,8 @@ func TestFuzzyReplace_Rejects(t *testing.T) {
 		{
 			name:    "EmptySearch_Rejects",
 			content: "hello\n",
-			edits:   []edit{{search: "", replace: "X"}},
-			errSub:  "search string must not be empty",
+			edits:   []fuzzyEdit{{search: "", replace: "X"}},
+			errSub:  "old_text must not be empty",
 		},
 		// Empty search with replace_all=true: historically
 		// injected the replacement between every byte, silently
@@ -2529,15 +2441,15 @@ func TestFuzzyReplace_Rejects(t *testing.T) {
 		{
 			name:    "EmptySearch_ReplaceAll_Rejects",
 			content: "hello\n",
-			edits:   []edit{{search: "", replace: "X", replaceAll: true}},
-			errSub:  "search string must not be empty",
+			edits:   []fuzzyEdit{{search: "", replace: "X", replaceAll: true}},
+			errSub:  "old_text must not be empty",
 		},
 		// Ambiguous single-replace: 3 distinct matches, caller
 		// did not ask for replace_all.
 		{
 			name:    "Ambiguous_SingleReplace_Rejects",
 			content: "a\na\na\nother\n",
-			edits:   []edit{{search: "a", replace: "A"}},
+			edits:   []fuzzyEdit{{search: "a", replace: "A"}},
 			errSub:  "matches 3 occurrences",
 		},
 		// Search text does not appear anywhere in the file. All
@@ -2545,16 +2457,16 @@ func TestFuzzyReplace_Rejects(t *testing.T) {
 		{
 			name:    "NotFound_Rejects",
 			content: "hello\nworld\n",
-			edits:   []edit{{search: "nonexistent\n", replace: "X\n"}},
-			errSub:  "search string not found",
+			edits:   []fuzzyEdit{{search: "nonexistent\n", replace: "X\n"}},
+			errSub:  "old_text not found",
 		},
 		// Content mismatch that trimming cannot recover: search
 		// has different letters, not just different whitespace.
 		{
 			name:    "ContentMismatch_Rejects",
 			content: "hello\n",
-			edits:   []edit{{search: "Hello\n", replace: "HELLO\n"}},
-			errSub:  "search string not found",
+			edits:   []fuzzyEdit{{search: "Hello\n", replace: "HELLO\n"}},
+			errSub:  "old_text not found",
 		},
 		// Blank lines in the file that the search omits: the
 		// fuzzy window cannot align against the blank lines, so
@@ -2562,8 +2474,8 @@ func TestFuzzyReplace_Rejects(t *testing.T) {
 		{
 			name:    "BlankLineMismatch_Rejects",
 			content: "above\n\n\nbelow\n",
-			edits:   []edit{{search: "above\nbelow\n", replace: "above\nbelow\n"}},
-			errSub:  "search string not found",
+			edits:   []fuzzyEdit{{search: "above\nbelow\n", replace: "above\nbelow\n"}},
+			errSub:  "old_text not found",
 		},
 		// Search/replace disagreement signals intent to rewrite
 		// endings; search must byte-match the file's. LF search
@@ -2572,8 +2484,8 @@ func TestFuzzyReplace_Rejects(t *testing.T) {
 		{
 			name:    "CallerIntent_SearchDoesNotMatchFileEnding_Rejects",
 			content: "x\r\ny\r\nz\r\n",
-			edits:   []edit{{search: "x\ny\n", replace: "X\r\nY\r\n"}},
-			errSub:  "search string not found",
+			edits:   []fuzzyEdit{{search: "x\ny\n", replace: "X\r\nY\r\n"}},
+			errSub:  "old_text not found",
 		},
 	}
 
@@ -2581,51 +2493,23 @@ func TestFuzzyReplace_Rejects(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			fs := afero.NewMemMapFs()
-			api := agentfiles.NewAPI(logger, fs, nil)
-			path := filepath.Join(tmpdir, "reject-"+tt.name)
-			require.NoError(t, afero.WriteFile(fs, path, []byte(tt.content), 0o644))
-
-			sdkEdits := make([]workspacesdk.FileEdit, 0, len(tt.edits))
-			for _, e := range tt.edits {
-				sdkEdits = append(sdkEdits, workspacesdk.FileEdit{
-					Search:     e.search,
-					Replace:    e.replace,
-					ReplaceAll: e.replaceAll,
-				})
-			}
-			req := workspacesdk.FileEditRequest{
-				Files: []workspacesdk.FileEdits{{Path: path, Edits: sdkEdits}},
-			}
-
-			ctx := testutil.Context(t, testutil.WaitShort)
-			buf := bytes.NewBuffer(nil)
-			enc := json.NewEncoder(buf)
-			enc.SetEscapeHTML(false)
-			require.NoError(t, enc.Encode(req))
-			w := httptest.NewRecorder()
-			r := httptest.NewRequestWithContext(ctx, http.MethodPost, "/edit-files", buf)
-			api.Routes().ServeHTTP(w, r)
-
+			w, got := applyFuzzyEdits(t, "reject-"+tt.name, tt.content, tt.edits)
 			require.Equal(t, http.StatusBadRequest, w.Code, "body: %s", w.Body.String())
-			got := &codersdk.Error{}
-			require.NoError(t, json.NewDecoder(w.Body).Decode(got))
-			require.ErrorContains(t, got, tt.errSub)
+			gotErr := &codersdk.Error{}
+			require.NoError(t, json.NewDecoder(w.Body).Decode(gotErr))
+			require.ErrorContains(t, gotErr, tt.errSub)
 
 			// File must not have been modified by any partial
 			// splice or write.
-			data, err := afero.ReadFile(fs, path)
-			require.NoError(t, err)
-			require.Equal(t, tt.content, string(data))
+			require.Equal(t, tt.content, got)
 		})
 	}
 }
 
-// TestEditFiles_DuplicatePath_Rejects pins that duplicate paths in
-// one request are rejected with 400 and the file on disk is
-// unchanged. The pre-fix behavior silently dropped the first
-// entry's edits while reporting success (last write wins).
-func TestEditFiles_DuplicatePath_Rejects(t *testing.T) {
+// TestEditFiles_DuplicatePath_Merges verifies that duplicate paths in
+// one request are merged: edits from all entries for the same path are
+// concatenated and applied in order.
+func TestEditFiles_DuplicatePath_Merges(t *testing.T) {
 	t.Parallel()
 
 	tmpdir := os.TempDir()
@@ -2636,10 +2520,12 @@ func TestEditFiles_DuplicatePath_Rejects(t *testing.T) {
 	original := "one\ntwo\nthree\n"
 	require.NoError(t, afero.WriteFile(fs, path, []byte(original), 0o644))
 
+	// Entry 2 searches for the output of entry 1, proving edits
+	// are applied in the order they appear across entries.
 	req := workspacesdk.FileEditRequest{
 		Files: []workspacesdk.FileEdits{
-			{Path: path, Edits: []workspacesdk.FileEdit{{Search: "one", Replace: "ONE"}}},
-			{Path: path, Edits: []workspacesdk.FileEdit{{Search: "three", Replace: "THREE"}}},
+			{Path: path, Edits: []workspacesdk.FileEdit{{OldText: "one", NewText: "CHANGED"}}},
+			{Path: path, Edits: []workspacesdk.FileEdit{{OldText: "CHANGED", NewText: "FINAL"}}},
 		},
 	}
 
@@ -2652,15 +2538,49 @@ func TestEditFiles_DuplicatePath_Rejects(t *testing.T) {
 	r := httptest.NewRequestWithContext(ctx, http.MethodPost, "/edit-files", buf)
 	api.Routes().ServeHTTP(w, r)
 
-	require.Equal(t, http.StatusBadRequest, w.Code, "body: %s", w.Body.String())
-	got := &codersdk.Error{}
-	require.NoError(t, json.NewDecoder(w.Body).Decode(got))
-	require.ErrorContains(t, got, "duplicate file path")
+	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
 
-	// File on disk must be untouched: no partial edits.
 	data, err := afero.ReadFile(fs, path)
 	require.NoError(t, err)
-	require.Equal(t, original, string(data))
+	require.Equal(t, "FINAL\ntwo\nthree\n", string(data))
+}
+
+// TestEditFiles_DuplicatePath_NonCanonicalMerges verifies that
+// non-canonical paths normalizing to the same file are merged,
+// not rejected as symlink aliases.
+func TestEditFiles_DuplicatePath_NonCanonicalMerges(t *testing.T) {
+	t.Parallel()
+
+	tmpdir := os.TempDir()
+	logger := slogtest.Make(t, &slogtest.Options{IgnoreErrors: true}).Leveled(slog.LevelDebug)
+	fs := afero.NewMemMapFs()
+	api := agentfiles.NewAPI(logger, fs, nil)
+	canonical := filepath.Join(tmpdir, "noncanon")
+	nonCanonical := canonical[:len(tmpdir)] + "/./noncanon"
+	original := "one\ntwo\nthree\n"
+	require.NoError(t, afero.WriteFile(fs, canonical, []byte(original), 0o644))
+
+	req := workspacesdk.FileEditRequest{
+		Files: []workspacesdk.FileEdits{
+			{Path: canonical, Edits: []workspacesdk.FileEdit{{OldText: "one", NewText: "ONE"}}},
+			{Path: nonCanonical, Edits: []workspacesdk.FileEdit{{OldText: "three", NewText: "THREE"}}},
+		},
+	}
+
+	ctx := testutil.Context(t, testutil.WaitShort)
+	buf := bytes.NewBuffer(nil)
+	enc := json.NewEncoder(buf)
+	enc.SetEscapeHTML(false)
+	require.NoError(t, enc.Encode(req))
+	w := httptest.NewRecorder()
+	r := httptest.NewRequestWithContext(ctx, http.MethodPost, "/edit-files", buf)
+	api.Routes().ServeHTTP(w, r)
+
+	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+
+	data, err := afero.ReadFile(fs, canonical)
+	require.NoError(t, err)
+	require.Equal(t, "ONE\ntwo\nTHREE\n", string(data))
 }
 
 // TestEditFiles_DuplicatePath_SymlinkAliasRejects pins that two
@@ -2689,8 +2609,8 @@ func TestEditFiles_DuplicatePath_SymlinkAliasRejects(t *testing.T) {
 
 	req := workspacesdk.FileEditRequest{
 		Files: []workspacesdk.FileEdits{
-			{Path: realPath, Edits: []workspacesdk.FileEdit{{Search: "one", Replace: "ONE"}}},
-			{Path: linkPath, Edits: []workspacesdk.FileEdit{{Search: "three", Replace: "THREE"}}},
+			{Path: realPath, Edits: []workspacesdk.FileEdit{{OldText: "one", NewText: "ONE"}}},
+			{Path: linkPath, Edits: []workspacesdk.FileEdit{{OldText: "three", NewText: "THREE"}}},
 		},
 	}
 
@@ -2757,10 +2677,10 @@ func TestEditFiles_ReplaceAll_FuzzyIndentGap(t *testing.T) {
 		Files: []workspacesdk.FileEdits{{
 			Path: path,
 			Edits: []workspacesdk.FileEdit{{
-				Search: "    if err != nil {\n" +
+				OldText: "    if err != nil {\n" +
 					"        return err\n" +
 					"    }\n",
-				Replace: "    if err != nil {\n" +
+				NewText: "    if err != nil {\n" +
 					"        return fmt.Errorf(\"wrap: %w\", err)\n" +
 					"    }\n",
 				ReplaceAll: true,
@@ -2799,17 +2719,10 @@ func TestEditFiles_ReplaceAll_FuzzyIndentGap(t *testing.T) {
 func TestEditFiles_FuzzyIndent_InsertionLevelAware(t *testing.T) {
 	t.Parallel()
 
-	tmpdir := os.TempDir()
-	logger := slogtest.Make(t, &slogtest.Options{IgnoreErrors: true}).Leveled(slog.LevelDebug)
-
-	type edit struct {
-		search, replace string
-		replaceAll      bool
-	}
 	tests := []struct {
 		name     string
 		content  string
-		edits    []edit
+		edits    []fuzzyEdit
 		expected string
 	}{
 		// Wrap an existing line in a new block. Tab file, 4sp caller.
@@ -2819,7 +2732,7 @@ func TestEditFiles_FuzzyIndent_InsertionLevelAware(t *testing.T) {
 				"\tfmt.Println(\"hello\")\n" +
 				"\tfmt.Println(\"world\")\n" +
 				"}\n",
-			edits: []edit{{
+			edits: []fuzzyEdit{{
 				search: "    fmt.Println(\"hello\")\n" +
 					"    fmt.Println(\"world\")",
 				replace: "    fmt.Println(\"hello\")\n" +
@@ -2843,7 +2756,7 @@ func TestEditFiles_FuzzyIndent_InsertionLevelAware(t *testing.T) {
 				"  console.log('hello')\n" +
 				"  console.log('world')\n" +
 				"}\n",
-			edits: []edit{{
+			edits: []fuzzyEdit{{
 				search: "    console.log('hello')\n" +
 					"    console.log('world')",
 				replace: "    console.log('hello')\n" +
@@ -2866,7 +2779,7 @@ func TestEditFiles_FuzzyIndent_InsertionLevelAware(t *testing.T) {
 				"\tx := getValue()\n" +
 				"\tfmt.Println(x)\n" +
 				"}\n",
-			edits: []edit{{
+			edits: []fuzzyEdit{{
 				search: "    x := getValue()",
 				replace: "    x, err := getValue()\n" +
 					"    if err != nil {\n" +
@@ -2894,7 +2807,7 @@ func TestEditFiles_FuzzyIndent_InsertionLevelAware(t *testing.T) {
 				"\n" +
 				"\treturn \u0026cfg, nil\n" +
 				"}\n",
-			edits: []edit{{
+			edits: []fuzzyEdit{{
 				search: "    var cfg Config\n" +
 					"    err = json.Unmarshal(data, \u0026cfg)\n" +
 					"    if err != nil {\n" +
@@ -2940,7 +2853,7 @@ func TestEditFiles_FuzzyIndent_InsertionLevelAware(t *testing.T) {
 				"\t\tprocess(data)\n" +
 				"\t})\n" +
 				"}\n",
-			edits: []edit{{
+			edits: []fuzzyEdit{{
 				search: "        data := readBody(r)\n" +
 					"        process(data)",
 				replace: "        data := readBody(r)\n" +
@@ -2978,7 +2891,7 @@ func TestEditFiles_FuzzyIndent_InsertionLevelAware(t *testing.T) {
 				"\t\tdoMore()\n" +
 				"\t}\n" +
 				"}\n",
-			edits: []edit{{
+			edits: []fuzzyEdit{{
 				search: "    if condition {\n" +
 					"        doSomething()\n" +
 					"        doMore()\n" +
@@ -3007,7 +2920,7 @@ func TestEditFiles_FuzzyIndent_InsertionLevelAware(t *testing.T) {
 				"\t}\n" +
 				"\treturn results\n" +
 				"}\n",
-			edits: []edit{{
+			edits: []fuzzyEdit{{
 				search: "    var results []Result\n" +
 					"    for _, item := range items {\n" +
 					"        if item.Valid {\n" +
@@ -3052,7 +2965,7 @@ func TestEditFiles_FuzzyIndent_InsertionLevelAware(t *testing.T) {
 				"  }\n" +
 				"  return results;\n" +
 				"}\n",
-			edits: []edit{{
+			edits: []fuzzyEdit{{
 				search: "    const results = [];\n" +
 					"    for (const item of items) {\n" +
 					"        if (item.valid) {\n" +
@@ -3090,29 +3003,9 @@ func TestEditFiles_FuzzyIndent_InsertionLevelAware(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			fs := afero.NewMemMapFs()
-			api := agentfiles.NewAPI(logger, fs, nil)
-			path := filepath.Join(tmpdir, "fuzzyindent-"+tt.name)
-			require.NoError(t, afero.WriteFile(fs, path, []byte(tt.content), 0o644))
-
-			req := workspacesdk.FileEditRequest{
-				Files: []workspacesdk.FileEdits{{
-					Path:  path,
-					Edits: make([]workspacesdk.FileEdit, 0, len(tt.edits)),
-				}},
-			}
-			for _, e := range tt.edits {
-				req.Files[0].Edits = append(req.Files[0].Edits, workspacesdk.FileEdit{
-					Search:     e.search,
-					Replace:    e.replace,
-					ReplaceAll: e.replaceAll,
-				})
-			}
-
-			_ = runEditFiles(t, api, req)
-			data, err := afero.ReadFile(fs, path)
-			require.NoError(t, err)
-			require.Equal(t, tt.expected, string(data))
+			w, got := applyFuzzyEdits(t, "fuzzyindent-"+tt.name, tt.content, tt.edits)
+			require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+			require.Equal(t, tt.expected, got)
 		})
 	}
 }
@@ -3145,13 +3038,13 @@ func TestFuzzyReplace_Expansion_PreservesFileIndent(t *testing.T) {
 		Files: []workspacesdk.FileEdits{{
 			Path: path,
 			Edits: []workspacesdk.FileEdit{{
-				Search: "        f := fl.Field().Interface()\n" +
+				OldText: "        f := fl.Field().Interface()\n" +
 					"        str, ok := f.(string)\n" +
 					"        if !ok {\n" +
 					"            return false\n" +
 					"        }\n" +
 					"        valid := codersdk.NameValid(str)",
-				Replace: "        f := fl.Field().Interface()\n" +
+				NewText: "        f := fl.Field().Interface()\n" +
 					"        str, ok := f.(string)\n" +
 					"        if !ok {\n" +
 					"            log.Println(\"type assertion failed\")\n" +
@@ -3181,4 +3074,406 @@ func TestFuzzyReplace_Expansion_PreservesFileIndent(t *testing.T) {
 	data, err := afero.ReadFile(fs, path)
 	require.NoError(t, err)
 	require.Equal(t, expected, string(data))
+}
+
+// baseFuzzyNotFoundMessage is the leading sentence the matcher
+// returns when all three passes miss. It must remain the leading
+// sentence even when diagnostic hints are appended, so existing log
+// scrapers continue to match.
+const baseFuzzyNotFoundMessage = "old_text not found in file. " +
+	"Verify that old_text matches the file content exactly, " +
+	"including whitespace and indentation"
+
+// TestFuzzyReplace_Hints exercises the post-fail diagnostic hints:
+// inversion (search and replace swapped) and miscount (one repeated
+// rune at the wrong count). Each detector lists every match it finds
+// and truncates the output to five entries with " and N more".
+func TestFuzzyReplace_Hints(t *testing.T) {
+	t.Parallel()
+
+	tmpdir := os.TempDir()
+	logger := slogtest.Make(t, &slogtest.Options{IgnoreErrors: true}).Leveled(slog.LevelDebug)
+
+	type edit struct {
+		search, replace string
+	}
+	tests := []struct {
+		name        string
+		content     string
+		edit        edit
+		wantSubs    []string
+		notWantSubs []string
+	}{
+		{
+			name: "Inversion_HintIncludesSwapAndLine",
+			content: "package main\n" +
+				"\n" +
+				"func adder(a int, b int) int { return a + b }\n" +
+				"\n" +
+				"// trailing comment\n",
+			edit: edit{
+				search:  "func adder(a, b int) int {\n\treturn a + b\n}\n",
+				replace: "func adder(a int, b int) int { return a + b }\n",
+			},
+			wantSubs: []string{
+				baseFuzzyNotFoundMessage,
+				`Did you swap "old_text" and "new_text"? Your new_text string appears at line 3`,
+			},
+		},
+		{
+			// CODAGT-523 falsifier: the hint must name the current
+			// schema fields, not the deprecated search/replace.
+			name: "Inversion_HintUsesNewSchemaNames",
+			content: "package main\n" +
+				"\n" +
+				"func adder(a int, b int) int { return a + b }\n" +
+				"\n" +
+				"// trailing comment\n",
+			edit: edit{
+				search:  "func adder(a, b int) int {\n\treturn a + b\n}\n",
+				replace: "func adder(a int, b int) int { return a + b }\n",
+			},
+			wantSubs:    []string{`"old_text"`, `"new_text"`},
+			notWantSubs: []string{`"search"`, `"replace"`},
+		},
+		{
+			name: "Inversion_ThreeAnchors_AllListed",
+			content: "a\n" +
+				"matching block body of substantial length\n" +
+				"b\n" +
+				"matching block body of substantial length\n" +
+				"c\n" +
+				"matching block body of substantial length\n" +
+				"d\n",
+			edit: edit{
+				search:  "this search text is absent from the file\n",
+				replace: "matching block body of substantial length\n",
+			},
+			wantSubs: []string{
+				baseFuzzyNotFoundMessage,
+				`Did you swap "old_text" and "new_text"? Your new_text string appears at line 2, 4, 6`,
+			},
+			notWantSubs: []string{"more"},
+		},
+		{
+			name: "Inversion_SevenAnchors_TruncatedWithAndMore",
+			content: "matching block body of substantial length\n" +
+				"matching block body of substantial length\n" +
+				"matching block body of substantial length\n" +
+				"matching block body of substantial length\n" +
+				"matching block body of substantial length\n" +
+				"matching block body of substantial length\n" +
+				"matching block body of substantial length\n",
+			edit: edit{
+				search:  "this search text is absent from the file\n",
+				replace: "matching block body of substantial length\n",
+			},
+			wantSubs: []string{
+				baseFuzzyNotFoundMessage,
+				`Did you swap "old_text" and "new_text"? Your new_text string appears at line 1, 2, 3, 4, 5 and 2 more`,
+			},
+		},
+		{
+			name: "Inversion_ShortReplace_TruncatedWithAndMore",
+			// Short replace strings used to be silently suppressed by
+			// a length floor. Now the line-list cap signals "your
+			// replace is too generic" by showing five matches plus
+			// " and N more", which is more informative than no hint.
+			content: "alpha\nbeta\nbeta\nbeta\nbeta\nbeta\nbeta\nbeta\ngamma\n",
+			edit: edit{
+				search:  "missing line that does not occur anywhere\n",
+				replace: "beta\n",
+			},
+			wantSubs: []string{
+				baseFuzzyNotFoundMessage,
+				`Did you swap "old_text" and "new_text"? Your new_text string appears at line 2, 3, 4, 5, 6 and 2 more`,
+			},
+		},
+		{
+			name: "Miscount_BoxDrawingDashes_HintNamesCodepoint",
+			content: "<header>\n" +
+				"{/* SECTION HEADING " + strings.Repeat("\u2500", 37) + " */}\n" +
+				"<body/>\n",
+			edit: edit{
+				search:  "{/* SECTION HEADING " + strings.Repeat("\u2500", 32) + " */}\n",
+				replace: "{/* REPLACED */}\n",
+			},
+			wantSubs: []string{
+				baseFuzzyNotFoundMessage,
+				"Your old_text has 32 \"\u2500\" (U+2500); the file has 37 at line 2",
+			},
+		},
+		{
+			name: "Miscount_ASCIIEquals_HintWorks",
+			content: "title\n" +
+				"section =======\n" +
+				"body\n",
+			edit: edit{
+				search:  "section =====\n",
+				replace: "section *****\n",
+			},
+			wantSubs: []string{
+				baseFuzzyNotFoundMessage,
+				`Your old_text has 5 "=" (U+003D); the file has 7 at line 2`,
+			},
+		},
+		{
+			name: "Miscount_TwoCandidates_BothListed",
+			content: "section =======\n" +
+				"section ===\n",
+			edit: edit{
+				search:  "section =====\n",
+				replace: "section *****\n",
+			},
+			wantSubs: []string{
+				baseFuzzyNotFoundMessage,
+				`Your old_text has 5 "=" (U+003D); the file has 7 at line 1, 3 at line 2`,
+			},
+			notWantSubs: []string{"more"},
+		},
+		{
+			name: "Miscount_SixCandidates_TruncatedWithAndMore",
+			content: "section ==\n" +
+				"section ===\n" +
+				"section ======\n" +
+				"section =======\n" +
+				"section ========\n" +
+				"section =========\n",
+			edit: edit{
+				search:  "section =====\n",
+				replace: "section *****\n",
+			},
+			wantSubs: []string{
+				baseFuzzyNotFoundMessage,
+				`Your old_text has 5 "=" (U+003D); the file has 2 at line 1, 3 at line 2, 6 at line 3, 7 at line 4, 8 at line 5 and 1 more`,
+			},
+		},
+		{
+			name: "Miscount_TwoDistinctChanges_NoHint",
+			content: "first\n" +
+				"a===b\n" +
+				"last\n",
+			edit: edit{
+				search:  "a=====b!\n",
+				replace: "unused\n",
+			},
+			wantSubs:    []string{baseFuzzyNotFoundMessage},
+			notWantSubs: []string{"Your old_text has", "the file has"},
+		},
+		{
+			name:    "Miscount_Unrelated_NoHint",
+			content: "package foo\n\nfunc bar() {}\n",
+			edit: edit{
+				search:  "this content is wholly different from the file\n",
+				replace: "unused\n",
+			},
+			wantSubs:    []string{baseFuzzyNotFoundMessage},
+			notWantSubs: []string{"Your old_text has", "the file has"},
+		},
+		{
+			name: "Miscount_SuppressesInversion_WhenBothCouldFire",
+			content: "<header>\n" +
+				"{/* SECTION HEADING " + strings.Repeat("\u2500", 8) + " */}\n" +
+				"<body>\n" +
+				"doSomethingWithLongName(ctx)\n" +
+				"</body>\n",
+			edit: edit{
+				// Search has 6 dashes (miscount target on line 2).
+				search: "{/* SECTION HEADING " + strings.Repeat("\u2500", 6) + " */}\n",
+				// Replace is unrelated text that happens to appear at
+				// line 4. Without miscount-takes-precedence, the
+				// inversion hint would direct an agent to swap and
+				// corrupt line 4.
+				replace: "doSomethingWithLongName(ctx)\n",
+			},
+			wantSubs: []string{
+				baseFuzzyNotFoundMessage,
+				"Your old_text has 6 \"\u2500\" (U+2500); the file has 8 at line 2",
+			},
+			notWantSubs: []string{"swap", "appears at line"},
+		},
+		{
+			name: "Inversion_DedupRepeatsOnOneLine",
+			content: "prefix\n" +
+				"AAAAAAAAAAAAAAAAAAAA AAAAAAAAAAAAAAAAAAAA AAAAAAAAAAAAAAAAAAAA\n" +
+				"suffix\n",
+			edit: edit{
+				search:  "absent search line not in file at all\n",
+				replace: "AAAAAAAAAAAAAAAAAAAA\n",
+			},
+			wantSubs: []string{
+				baseFuzzyNotFoundMessage,
+				`Did you swap "old_text" and "new_text"? Your new_text string appears at line 2`,
+			},
+			// Line 2 must appear once, not 2, 2, 2.
+			notWantSubs: []string{"line 2, 2", "more"},
+		},
+		{
+			name: "Inversion_TrimRightFallback_TrailingSpaces",
+			// Content line has trailing spaces; replace omits them.
+			// Byte-substring misses; trimRight line-equivalent
+			// matches.
+			content: "preamble\n" +
+				"matching block body of substantial length   \n" +
+				"trailer\n",
+			edit: edit{
+				search:  "absent search line not in file at all\n",
+				replace: "matching block body of substantial length\n",
+			},
+			wantSubs: []string{
+				baseFuzzyNotFoundMessage,
+				`Did you swap "old_text" and "new_text"? Your new_text string appears at line 2`,
+			},
+		},
+		{
+			name: "Inversion_TrimAllFallback_LeadingIndent",
+			// Content line has leading indentation that replace
+			// omits. Byte-substring misses; trim-right also misses
+			// (the leading whitespace is on a different side);
+			// trim-all matches.
+			content: "preamble\n" +
+				"\t\tmatching block body of substantial length\n" +
+				"trailer\n",
+			edit: edit{
+				search:  "absent search line not in file at all\n",
+				replace: "matching block body of substantial length\n",
+			},
+			wantSubs: []string{
+				baseFuzzyNotFoundMessage,
+				`Did you swap "old_text" and "new_text"? Your new_text string appears at line 2`,
+			},
+		},
+		{
+			name: "Miscount_SingleRuneDiff_Suppressed",
+			// Rune `b` differs (sc=1, cc=0). Both counts < 2, the
+			// suppression guard fires, no hint.
+			content: "first\nxa\nlast\n",
+			edit: edit{
+				search:  "xab\n",
+				replace: "unused\n",
+			},
+			wantSubs:    []string{baseFuzzyNotFoundMessage},
+			notWantSubs: []string{"Your old_text has", "the file has"},
+		},
+		{
+			name: "Miscount_TotalHintsCapped",
+			// Four search lines, each matching a distinct file line
+			// via a distinct miscount rune. With maxMiscountHints=3,
+			// only 3 hint sentences appear plus " and 1 more".
+			content: "section ==\n" +
+				"divider ++\n" +
+				"line ##\n" +
+				"header @@\n",
+			edit: edit{
+				search: "section ====\n" +
+					"divider ++++\n" +
+					"line ####\n" +
+					"header @@@@\n",
+				replace: "unused\n",
+			},
+			wantSubs: []string{
+				baseFuzzyNotFoundMessage,
+				`Your old_text has 4 "=" (U+003D)`,
+				`Your old_text has 4 "+" (U+002B)`,
+				`Your old_text has 4 "#" (U+0023)`,
+				"and 1 more",
+			},
+			// The fourth hint (`@`) is suppressed by the cap.
+			notWantSubs: []string{`"@"`},
+		},
+		{
+			name: "Inversion_OverlappingMultilineMatch",
+			// Self-overlapping multi-line replace: "A\nB\nA\n"
+			// starts at line 1 and line 3 of the file. The old
+			// non-overlapping advancement missed line 3.
+			content: "AAAAAAAAAAAAAAAAAAAA\n" +
+				"BBBBBBBBBBBBBBBBBBBB\n" +
+				"AAAAAAAAAAAAAAAAAAAA\n" +
+				"BBBBBBBBBBBBBBBBBBBB\n" +
+				"AAAAAAAAAAAAAAAAAAAA\n",
+			edit: edit{
+				search: "absent search line not in file at all\n",
+				replace: "AAAAAAAAAAAAAAAAAAAA\n" +
+					"BBBBBBBBBBBBBBBBBBBB\n" +
+					"AAAAAAAAAAAAAAAAAAAA\n",
+			},
+			wantSubs: []string{
+				baseFuzzyNotFoundMessage,
+				`Did you swap "old_text" and "new_text"? Your new_text string appears at line 1, 3`,
+			},
+			notWantSubs: []string{"more"},
+		},
+		{
+			name: "Miscount_RuneOnlyInFile",
+			// Disagreeing rune `b` appears only in the file line.
+			// Exercises the second loop of singleRuneCountMismatch
+			// (runes in c but absent from s).
+			content: "section ==bb\n",
+			edit: edit{
+				search:  "section ==\n",
+				replace: "section --\n",
+			},
+			wantSubs: []string{
+				baseFuzzyNotFoundMessage,
+				`Your old_text has 0 "b" (U+0062); the file has 2 at line 1`,
+			},
+		},
+		{
+			name: "NoHints_BaseErrorOnly",
+			content: "package foo\n" +
+				"\n" +
+				"func bar() {}\n",
+			edit: edit{
+				search:  "func zzzz() {}\n",
+				replace: "new\n",
+			},
+			wantSubs:    []string{baseFuzzyNotFoundMessage},
+			notWantSubs: []string{"swap", "Your old_text has", "appears at line"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			fs := afero.NewMemMapFs()
+			api := agentfiles.NewAPI(logger, fs, nil)
+			path := filepath.Join(tmpdir, "hint-"+tt.name)
+			require.NoError(t, afero.WriteFile(fs, path, []byte(tt.content), 0o644))
+
+			req := workspacesdk.FileEditRequest{
+				Files: []workspacesdk.FileEdits{{
+					Path: path,
+					Edits: []workspacesdk.FileEdit{{
+						OldText: tt.edit.search,
+						NewText: tt.edit.replace,
+					}},
+				}},
+			}
+
+			ctx := testutil.Context(t, testutil.WaitShort)
+			buf := bytes.NewBuffer(nil)
+			enc := json.NewEncoder(buf)
+			enc.SetEscapeHTML(false)
+			require.NoError(t, enc.Encode(req))
+			w := httptest.NewRecorder()
+			r := httptest.NewRequestWithContext(ctx, http.MethodPost, "/edit-files", buf)
+			api.Routes().ServeHTTP(w, r)
+
+			require.Equal(t, http.StatusBadRequest, w.Code, "body: %s", w.Body.String())
+			got := &codersdk.Error{}
+			require.NoError(t, json.NewDecoder(w.Body).Decode(got))
+			msg := got.Message
+			for _, sub := range tt.wantSubs {
+				require.Contains(t, msg, sub, "want substring missing")
+			}
+			for _, sub := range tt.notWantSubs {
+				require.NotContains(t, msg, sub, "unwanted substring present")
+			}
+
+			data, err := afero.ReadFile(fs, path)
+			require.NoError(t, err)
+			require.Equal(t, tt.content, string(data))
+		})
+	}
 }

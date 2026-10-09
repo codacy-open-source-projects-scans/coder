@@ -30,6 +30,16 @@ const buildOptimisticEditedContent = ({
 				content: part.content ?? "",
 			};
 		}
+		if (part.type === "workspace-file-reference") {
+			return {
+				type: "workspace-file-reference",
+				workspace_file_path: part.workspace_file_path ?? "",
+				workspace_file_name: part.workspace_file_name ?? "",
+				workspace_file_size: part.workspace_file_size ?? 0,
+				workspace_file_media_type: part.workspace_file_media_type,
+				workspace_file_workspace_id: part.workspace_file_workspace_id ?? "",
+			};
+		}
 		const fileId = part.file_id ?? "";
 		return (
 			existingFilePartsByID.get(fileId) ?? {
@@ -117,28 +127,35 @@ export const projectEditedConversationIntoCache = ({
 export const reconcileEditedMessageInCache = ({
 	currentData,
 	optimisticMessageId,
-	responseMessage,
+	responseMessages,
+	deletedMessageIds,
 }: {
 	currentData: InfiniteData<TypesGen.ChatMessagesResponse> | undefined;
 	optimisticMessageId: number;
-	responseMessage: TypesGen.ChatMessage;
+	responseMessages: readonly TypesGen.ChatMessage[];
+	deletedMessageIds?: readonly number[];
 }): InfiniteData<TypesGen.ChatMessagesResponse> | undefined => {
-	if (!currentData?.pages?.length) {
+	if (!currentData?.pages?.length || responseMessages.length === 0) {
 		return currentData;
 	}
 
+	const responseIDs = new Set(responseMessages.map((message) => message.id));
+	const deletedIDs = new Set(deletedMessageIds ?? []);
 	const replacedPages = currentData.pages.map((page, pageIndex) => {
 		const preservedMessages = page.messages.filter(
 			(message) =>
-				message.id !== optimisticMessageId && message.id !== responseMessage.id,
+				message.id !== optimisticMessageId &&
+				!responseIDs.has(message.id) &&
+				!deletedIDs.has(message.id),
 		);
 		if (pageIndex !== 0) {
 			return { ...page, messages: preservedMessages };
 		}
-		return {
-			...page,
-			messages: upsertFirstPageMessage(preservedMessages, responseMessage),
-		};
+		let messages = preservedMessages;
+		for (const responseMessage of responseMessages) {
+			messages = upsertFirstPageMessage(messages, responseMessage);
+		}
+		return { ...page, messages };
 	});
 
 	return {

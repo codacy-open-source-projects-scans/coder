@@ -2,6 +2,8 @@ package coderd_test
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"slices"
@@ -21,6 +23,7 @@ import (
 	"github.com/coder/coder/v2/coderd/coderdtest"
 	"github.com/coder/coder/v2/coderd/coderdtest/oidctest"
 	"github.com/coder/coder/v2/coderd/database"
+	"github.com/coder/coder/v2/coderd/database/dbauthz"
 	"github.com/coder/coder/v2/coderd/database/dbfake"
 	"github.com/coder/coder/v2/coderd/database/dbgen"
 	"github.com/coder/coder/v2/coderd/database/dbtime"
@@ -28,7 +31,6 @@ import (
 	"github.com/coder/coder/v2/coderd/notifications/notificationstest"
 	"github.com/coder/coder/v2/coderd/rbac"
 	"github.com/coder/coder/v2/coderd/rbac/policy"
-	"github.com/coder/coder/v2/coderd/util/ptr"
 	"github.com/coder/coder/v2/coderd/util/slice"
 	"github.com/coder/coder/v2/codersdk"
 	"github.com/coder/coder/v2/testutil"
@@ -84,12 +86,12 @@ func TestFirstUser(t *testing.T) {
 
 	t.Run("Trial", func(t *testing.T) {
 		t.Parallel()
-		trialGenerated := make(chan struct{})
+		trialGenerated := make(chan codersdk.LicensorTrialRequest, 1)
 		entitlementsRefreshed := make(chan struct{})
 
 		client := coderdtest.New(t, &coderdtest.Options{
-			TrialGenerator: func(context.Context, codersdk.LicensorTrialRequest) error {
-				close(trialGenerated)
+			TrialGenerator: func(_ context.Context, req codersdk.LicensorTrialRequest) error {
+				trialGenerated <- req
 				return nil
 			},
 			RefreshEntitlements: func(context.Context) error {
@@ -111,7 +113,9 @@ func TestFirstUser(t *testing.T) {
 		_, err := client.CreateFirstUser(ctx, req)
 		require.NoError(t, err)
 
-		_ = testutil.TryReceive(ctx, t, trialGenerated)
+		trialReq := testutil.TryReceive(ctx, t, trialGenerated)
+
+		require.Equal(t, codersdk.LicensorTrialSourceNewUser, trialReq.Source)
 		_ = testutil.TryReceive(ctx, t, entitlementsRefreshed)
 	})
 }
@@ -231,6 +235,115 @@ func TestPostLogin(t *testing.T) {
 
 		require.Len(t, auditor.AuditLogs(), numLogs)
 		require.Equal(t, database.AuditActionLogin, auditor.AuditLogs()[numLogs-1].Action)
+	})
+
+	// "hunter2" was the input of the previous hardcoded simulated hash, which
+	// an empty stored hash wrongly matched; this is a regression test.
+	t.Run("NonexistentUser401", func(t *testing.T) {
+		t.Parallel()
+		client := coderdtest.New(t, nil)
+		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitLong)
+		defer cancel()
+
+		_, err := client.LoginWithPassword(ctx, codersdk.LoginWithPasswordRequest{
+			Email:    "does-not-exist@coder.com",
+			Password: "hunter2",
+		})
+		var apiErr *codersdk.Error
+		require.ErrorAs(t, err, &apiErr)
+		require.Equal(t, http.StatusUnauthorized, apiErr.StatusCode())
+		require.Equal(t, "Incorrect email or password.", apiErr.Message)
+	})
+
+	// Attempting built-in login as an SSO user returns a 401 to avoid
+	// divulging login type.
+	t.Run("SSOReturns401", func(t *testing.T) {
+		t.Parallel()
+		client, db := coderdtest.NewWithDatabase(t, nil)
+		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitLong)
+		defer cancel()
+
+		// An SSO user has no password hash stored. Create one directly in the
+		// database since the API requires OIDC to be configured. dbgen.User
+		// substitutes a random hash for an empty one, so clear it explicitly.
+		ssoUser := dbgen.User(t, db, database.User{
+			Email:     "sso-user@coder.com",
+			LoginType: database.LoginTypeOIDC,
+		})
+		//nolint:gocritic // Test setup requires a system context to clear the hash.
+		err := db.UpdateUserHashedPassword(dbauthz.AsSystemRestricted(ctx), database.UpdateUserHashedPasswordParams{
+			ID:             ssoUser.ID,
+			HashedPassword: []byte{},
+		})
+		require.NoError(t, err)
+
+		anonClient := codersdk.New(client.URL)
+		_, err = anonClient.LoginWithPassword(ctx, codersdk.LoginWithPasswordRequest{
+			Email:    ssoUser.Email,
+			Password: "hunter2",
+		})
+		var apiErr *codersdk.Error
+		require.ErrorAs(t, err, &apiErr)
+		require.Equal(t, http.StatusUnauthorized, apiErr.StatusCode())
+		require.Equal(t, "Incorrect email or password.", apiErr.Message)
+		// The login type must not be leaked.
+		require.NotContains(t, apiErr.Message, string(codersdk.LoginTypeOIDC))
+	})
+
+	// Regression: the legacy `login_type = 'none'` migration converts these
+	// accounts to password auth, but they have no password hash. Converting
+	// login type must never let someone authenticate with an empty or guessed
+	// password.
+	t.Run("ConvertedNoneUserHasNoUsablePassword", func(t *testing.T) {
+		t.Parallel()
+		client, db := coderdtest.NewWithDatabase(t, nil)
+		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitLong)
+		defer cancel()
+
+		// A legacy machine user was created with login_type 'none' and no
+		// password. dbgen.User substitutes a random hash for an empty one, so
+		// clear it explicitly to match the real account.
+		noneUser := dbgen.User(t, db, database.User{
+			Email:     "legacy-machine-user@coder.com",
+			LoginType: database.LoginTypeNone,
+		})
+		//nolint:gocritic // Test setup requires a system context to clear the hash.
+		err := db.UpdateUserHashedPassword(dbauthz.AsSystemRestricted(ctx), database.UpdateUserHashedPasswordParams{
+			ID:             noneUser.ID,
+			HashedPassword: []byte{},
+		})
+		require.NoError(t, err)
+
+		// Apply the migration's conversion: login_type 'none' -> 'password'.
+		//nolint:gocritic // Test setup requires a system context to convert the login type.
+		_, err = db.UpdateUserLoginType(dbauthz.AsSystemRestricted(ctx), database.UpdateUserLoginTypeParams{
+			NewLoginType: database.LoginTypePassword,
+			UserID:       noneUser.ID,
+		})
+		require.NoError(t, err)
+
+		// Neither an empty password nor a guessed one may authenticate. An empty
+		// password is rejected by request validation (400); a non-empty guess
+		// fails the hash comparison against the empty stored hash (401). Both must
+		// deny access.
+		cases := []struct {
+			name       string
+			password   string
+			wantStatus int
+		}{
+			{"EmptyPassword", "", http.StatusBadRequest},
+			{"GuessedPassword", "hunter2", http.StatusUnauthorized},
+		}
+		for _, tc := range cases {
+			anonClient := codersdk.New(client.URL)
+			_, err := anonClient.LoginWithPassword(ctx, codersdk.LoginWithPasswordRequest{
+				Email:    noneUser.Email,
+				Password: tc.password,
+			})
+			var apiErr *codersdk.Error
+			require.ErrorAs(t, err, &apiErr, "%s must not authenticate", tc.name)
+			require.Equal(t, tc.wantStatus, apiErr.StatusCode(), "%s", tc.name)
+		}
 	})
 
 	t.Run("Suspended", func(t *testing.T) {
@@ -633,6 +746,7 @@ func TestNotifyDeletedUser(t *testing.T) {
 		require.Equal(t, user.Username, notifyEnq.Sent()[1].Labels["deleted_account_name"])
 		require.Equal(t, user.Name, notifyEnq.Sent()[1].Labels["deleted_account_user_name"])
 		require.Equal(t, firstUser.Name, notifyEnq.Sent()[1].Labels["initiator"])
+		require.Equal(t, "user", notifyEnq.Sent()[1].Labels["account_type"])
 	})
 
 	t.Run("UserAdminNotified", func(t *testing.T) {
@@ -847,7 +961,7 @@ func TestPostUsers(t *testing.T) {
 			Email:           "another@user.org",
 			Username:        "someone-else",
 			Password:        "SomeSecurePassword!",
-			UserStatus:      ptr.Ref(codersdk.UserStatusActive),
+			UserStatus:      new(codersdk.UserStatusActive),
 		})
 		require.NoError(t, err)
 
@@ -898,18 +1012,17 @@ func TestPostUsers(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitLong)
 		defer cancel()
 
-		user, err := client.CreateUserWithOrgs(ctx, codersdk.CreateUserRequestWithOrgs{
+		_, err := client.CreateUserWithOrgs(ctx, codersdk.CreateUserRequestWithOrgs{
 			OrganizationIDs: []uuid.UUID{first.OrganizationID},
 			Email:           "another@user.org",
 			Username:        "someone-else",
 			Password:        "",
 			UserLoginType:   codersdk.LoginTypeNone,
 		})
-		require.NoError(t, err)
-
-		found, err := client.User(ctx, user.ID.String())
-		require.NoError(t, err)
-		require.Equal(t, found.LoginType, codersdk.LoginTypeNone)
+		var apiErr *codersdk.Error
+		require.ErrorAs(t, err, &apiErr)
+		require.Equal(t, http.StatusBadRequest, apiErr.StatusCode())
+		require.Contains(t, apiErr.Message, "service account")
 	})
 
 	t.Run("CreateOIDCLoginType", func(t *testing.T) {
@@ -941,8 +1054,9 @@ func TestPostUsers(t *testing.T) {
 
 		// Try to log in with OIDC.
 		userClient, _ := fake.Login(t, client, jwt.MapClaims{
-			"email": email,
-			"sub":   uuid.NewString(),
+			"email":          email,
+			"email_verified": true,
+			"sub":            uuid.NewString(),
 		})
 
 		found, err := userClient.User(ctx, "me")
@@ -1021,6 +1135,7 @@ func TestNotifyCreatedUser(t *testing.T) {
 		require.Equal(t, firstUser.UserID, sent[0].UserID)
 		require.Contains(t, sent[0].Targets, user.ID)
 		require.Equal(t, user.Username, sent[0].Labels["created_account_name"])
+		require.Equal(t, "user", sent[0].Labels["account_type"])
 
 		require.IsType(t, map[string]any{}, sent[0].Data["user"])
 		userData := sent[0].Data["user"].(map[string]any)
@@ -1097,6 +1212,164 @@ func TestNotifyCreatedUser(t *testing.T) {
 		})
 		require.Len(t, userAdminNotifiedAboutMember, 1)
 	})
+}
+
+func TestUpdateUserEmailExperimental(t *testing.T) {
+	t.Parallel()
+
+	// Share one server because these assertions do not require isolated state.
+	auditor := audit.NewMock()
+	client, db := coderdtest.NewWithDatabase(t, &coderdtest.Options{Auditor: auditor})
+	owner := coderdtest.CreateFirstUser(t, client)
+	ctx := testutil.Context(t, testutil.WaitLong)
+
+	// Only built-in deployment owners may use the endpoint.
+	userAdminClient, _ := coderdtest.CreateAnotherUser(t, client, owner.OrganizationID, rbac.RoleUserAdmin())
+	_, authTarget := coderdtest.CreateAnotherUser(t, client, owner.OrganizationID)
+	auditor.ResetLogs()
+
+	err := userAdminClient.UpdateUserEmail(ctx, codersdk.UpdateUserEmailRequest{
+		OldEmail: authTarget.Email,
+		NewEmail: fmt.Sprintf("new-%s@example.com", uuid.NewString()),
+	})
+	var apiErr *codersdk.Error
+	require.ErrorAs(t, err, &apiErr)
+	require.Equal(t, http.StatusNotFound, apiErr.StatusCode())
+	unchanged, err := db.GetUserByID(dbauthz.AsSystemRestricted(ctx), authTarget.ID)
+	require.NoError(t, err)
+	require.Equal(t, authTarget.Email, unchanged.Email)
+	logs := auditor.AuditLogs()
+	require.Len(t, logs, 1)
+	require.Equal(t, int32(http.StatusNotFound), logs[0].StatusCode)
+	require.JSONEq(t, `{}`, string(logs[0].AdditionalFields))
+
+	// Owners cannot update their own email.
+	ownerUser, err := client.User(ctx, owner.UserID.String())
+	require.NoError(t, err)
+	err = client.UpdateUserEmail(ctx, codersdk.UpdateUserEmailRequest{
+		OldEmail: ownerUser.Email,
+		NewEmail: fmt.Sprintf("self-%s@example.com", uuid.NewString()),
+	})
+	require.ErrorAs(t, err, &apiErr)
+	require.Equal(t, http.StatusBadRequest, apiErr.StatusCode())
+
+	// Invalid inputs do not change user state.
+	_, validTarget := coderdtest.CreateAnotherUser(t, client, owner.OrganizationID)
+	for _, req := range []codersdk.UpdateUserEmailRequest{
+		{OldEmail: " " + validTarget.Email, NewEmail: "new@example.com"},
+		{OldEmail: validTarget.Email, NewEmail: validTarget.Email},
+		{OldEmail: strings.ToUpper(validTarget.Email), NewEmail: validTarget.Email},
+	} {
+		err := client.UpdateUserEmail(ctx, req)
+		require.ErrorAs(t, err, &apiErr)
+		require.Equal(t, http.StatusBadRequest, apiErr.StatusCode())
+	}
+
+	// The old email must exist and the new email must be available.
+	_, conflictTarget := coderdtest.CreateAnotherUser(t, client, owner.OrganizationID)
+	_, existingUser := coderdtest.CreateAnotherUser(t, client, owner.OrganizationID)
+
+	err = client.UpdateUserEmail(ctx, codersdk.UpdateUserEmailRequest{
+		OldEmail: fmt.Sprintf("missing-%s@example.com", uuid.NewString()),
+		NewEmail: fmt.Sprintf("new-%s@example.com", uuid.NewString()),
+	})
+	require.ErrorAs(t, err, &apiErr)
+	require.Equal(t, http.StatusNotFound, apiErr.StatusCode())
+
+	err = client.UpdateUserEmail(ctx, codersdk.UpdateUserEmailRequest{
+		OldEmail: conflictTarget.Email,
+		NewEmail: strings.ToUpper(existingUser.Email),
+	})
+	require.ErrorAs(t, err, &apiErr)
+	require.Equal(t, http.StatusConflict, apiErr.StatusCode())
+
+	// Login type, status, and the target's owner role do not prevent updates.
+	for _, tc := range []struct {
+		name      string
+		loginType database.LoginType
+		role      rbac.RoleIdentifier
+		status    database.UserStatus
+	}{
+		{name: "OIDC", loginType: database.LoginTypeOIDC},
+		{name: "GitHub", loginType: database.LoginTypeGithub},
+		{name: "Dormant", status: database.UserStatusDormant},
+		{name: "Suspended", status: database.UserStatusSuspended},
+		{name: "Owner", role: rbac.RoleOwner()},
+	} {
+		roles := []rbac.RoleIdentifier{}
+		if tc.role.Name != "" {
+			roles = append(roles, tc.role)
+		}
+		_, variant := coderdtest.CreateAnotherUser(t, client, owner.OrganizationID, roles...)
+		if tc.loginType != "" {
+			variantUpdated, err := db.UpdateUserLoginType(dbauthz.AsSystemRestricted(ctx), database.UpdateUserLoginTypeParams{
+				UserID:       variant.ID,
+				NewLoginType: tc.loginType,
+			})
+			require.NoError(t, err)
+			variant.LoginType = codersdk.LoginType(variantUpdated.LoginType)
+		}
+		if tc.status != "" {
+			_, err := db.UpdateUserStatus(dbauthz.AsSystemRestricted(ctx), database.UpdateUserStatusParams{
+				ID:         variant.ID,
+				Status:     tc.status,
+				UpdatedAt:  dbtime.Now(),
+				UserIsSeen: false,
+			})
+			require.NoError(t, err)
+		}
+		newVariantEmail := fmt.Sprintf("variant-%s@example.com", uuid.NewString())
+		err := client.UpdateUserEmail(ctx, codersdk.UpdateUserEmailRequest{
+			OldEmail: variant.Email,
+			NewEmail: newVariantEmail,
+		})
+		require.NoError(t, err, "variant %s should succeed", tc.name)
+	}
+
+	// The API clears OTP state, revokes tokens, and records the audit event.
+	memberClient, member := coderdtest.CreateAnotherUser(t, client, owner.OrganizationID)
+	oldEmail := member.Email
+	newEmail := fmt.Sprintf("Updated-%s@example.com", uuid.NewString())
+	oldToken := memberClient.SessionToken()
+	extraToken, err := client.CreateToken(ctx, member.ID.String(), codersdk.CreateTokenRequest{})
+	require.NoError(t, err)
+	err = db.UpdateUserHashedOneTimePasscode(dbauthz.AsSystemRestricted(ctx), database.UpdateUserHashedOneTimePasscodeParams{
+		ID:                       member.ID,
+		HashedOneTimePasscode:    []byte("hashed-passcode"),
+		OneTimePasscodeExpiresAt: sql.NullTime{Time: time.Now().Add(time.Hour), Valid: true},
+	})
+	require.NoError(t, err)
+	auditor.ResetLogs()
+
+	err = client.UpdateUserEmail(ctx, codersdk.UpdateUserEmailRequest{
+		OldEmail: oldEmail,
+		NewEmail: newEmail,
+	})
+	require.NoError(t, err)
+
+	sideEffectsUser, err := db.GetUserByID(dbauthz.AsSystemRestricted(ctx), member.ID)
+	require.NoError(t, err)
+	require.Nil(t, sideEffectsUser.HashedOneTimePasscode)
+	require.False(t, sideEffectsUser.OneTimePasscodeExpiresAt.Valid)
+
+	for _, token := range []string{oldToken, extraToken.Key} {
+		revokedClient := codersdk.New(client.URL, codersdk.WithSessionToken(token))
+		_, err := revokedClient.User(ctx, codersdk.Me)
+		require.Error(t, err)
+	}
+	_, err = client.User(ctx, codersdk.Me)
+	require.NoError(t, err)
+
+	logs = auditor.AuditLogs()
+	require.Len(t, logs, 1)
+	require.Equal(t, owner.UserID, logs[0].UserID)
+	require.Equal(t, member.ID, logs[0].ResourceID)
+	require.Equal(t, database.AuditActionWrite, logs[0].Action)
+	require.Equal(t, int32(http.StatusNoContent), logs[0].StatusCode)
+	var fields map[string]string
+	require.NoError(t, json.Unmarshal(logs[0].AdditionalFields, &fields))
+	require.Equal(t, oldEmail, fields["old_email"])
+	require.Equal(t, newEmail, fields["new_email"])
 }
 
 func TestUpdateUserProfile(t *testing.T) {
@@ -1278,6 +1551,68 @@ func TestUpdateUserProfile(t *testing.T) {
 		require.ErrorAs(t, err, &apiErr)
 		require.Equal(t, http.StatusBadRequest, apiErr.StatusCode())
 	})
+
+	t.Run("UpdateAvatar", func(t *testing.T) {
+		t.Parallel()
+		client := coderdtest.New(t, nil)
+		coderdtest.CreateFirstUser(t, client)
+
+		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitLong)
+		defer cancel()
+
+		me, err := client.User(ctx, codersdk.Me)
+		require.NoError(t, err)
+
+		// The first user is a password user, so the avatar is editable.
+		const newAvatar = "/emojis/1f600.png"
+		userProfile, err := client.UpdateUserProfile(ctx, codersdk.Me, codersdk.UpdateUserProfileRequest{
+			Username:  me.Username,
+			Name:      me.Name,
+			AvatarURL: newAvatar,
+		})
+		require.NoError(t, err)
+		require.Equal(t, newAvatar, userProfile.AvatarURL)
+	})
+
+	t.Run("IgnoresAvatarForSSOUser", func(t *testing.T) {
+		t.Parallel()
+		client, db := coderdtest.NewWithDatabase(t, nil)
+		// The first user is an owner and can update other users' profiles.
+		coderdtest.CreateFirstUser(t, client)
+
+		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitLong)
+		defer cancel()
+
+		// Avatars for SSO users are synced from the identity provider on login,
+		// so a submitted avatar must be ignored and the existing one preserved.
+		ssoUser := dbgen.User(t, db, database.User{
+			Email:     "sso-avatar@coder.com",
+			Username:  "sso-avatar",
+			LoginType: database.LoginTypeOIDC,
+		})
+
+		// dbgen.User does not persist the avatar at creation, so set it directly
+		// to emulate an avatar synced from the identity provider.
+		const idpAvatar = "https://idp.example.com/avatar.png"
+		//nolint:gocritic // Test setup requires a system context to set the avatar.
+		ssoUser, err := db.UpdateUserProfile(dbauthz.AsSystemRestricted(ctx), database.UpdateUserProfileParams{
+			ID:        ssoUser.ID,
+			Email:     ssoUser.Email,
+			Name:      ssoUser.Name,
+			AvatarURL: idpAvatar,
+			Username:  ssoUser.Username,
+			UpdatedAt: dbtime.Now(),
+		})
+		require.NoError(t, err)
+
+		userProfile, err := client.UpdateUserProfile(ctx, ssoUser.ID.String(), codersdk.UpdateUserProfileRequest{
+			Username:  ssoUser.Username,
+			Name:      ssoUser.Name,
+			AvatarURL: "/emojis/1f600.png",
+		})
+		require.NoError(t, err)
+		require.Equal(t, idpAvatar, userProfile.AvatarURL)
+	})
 }
 
 func TestUpdateUserPassword(t *testing.T) {
@@ -1323,6 +1658,70 @@ func TestUpdateUserPassword(t *testing.T) {
 			Password: "SomeNewStrongPassword!",
 		})
 		require.NoError(t, err, "member should login successfully with the new password")
+	})
+
+	t.Run("UserAdminCanUpdateMemberPassword", func(t *testing.T) {
+		t.Parallel()
+		client := coderdtest.New(t, nil)
+		owner := coderdtest.CreateFirstUser(t, client)
+
+		userAdmin, _ := coderdtest.CreateAnotherUser(t, client, owner.OrganizationID, rbac.RoleUserAdmin())
+		memberClient, member := coderdtest.CreateAnotherUser(t, client, owner.OrganizationID)
+
+		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitLong)
+		defer cancel()
+
+		apikey1, err := memberClient.CreateToken(ctx, codersdk.Me, codersdk.CreateTokenRequest{})
+		require.NoError(t, err)
+		apikey1ID, _, ok := strings.Cut(apikey1.Key, "-")
+		require.True(t, ok)
+
+		apikey2, err := memberClient.CreateToken(ctx, codersdk.Me, codersdk.CreateTokenRequest{})
+		require.NoError(t, err)
+		apikey2ID, _, ok := strings.Cut(apikey2.Key, "-")
+		require.True(t, ok)
+
+		// Confirm the token IDs resolve before the reset, so later
+		// 404s prove password reset removed them.
+		_, err = memberClient.APIKeyByID(ctx, member.ID.String(), apikey1ID)
+		require.NoError(t, err)
+		_, err = memberClient.APIKeyByID(ctx, member.ID.String(), apikey2ID)
+		require.NoError(t, err)
+
+		err = userAdmin.UpdateUserPassword(ctx, member.ID.String(), codersdk.UpdateUserPasswordRequest{
+			Password: "SomeNewStrongPassword!",
+		})
+		require.NoError(t, err, "user-admin should be able to update member password")
+
+		// The old session token was deleted with the password reset, so the
+		// member client is unauthorized before it logs back in.
+		_, err = memberClient.APIKeyByID(ctx, member.ID.String(), apikey1ID)
+		require.Error(t, err)
+		cerr := coderdtest.SDKError(t, err)
+		require.Equal(t, http.StatusUnauthorized, cerr.StatusCode())
+
+		resp, err := client.LoginWithPassword(ctx, codersdk.LoginWithPasswordRequest{
+			Email:    member.Email,
+			Password: "SomeNewStrongPassword!",
+		})
+		require.NoError(t, err, "member should login successfully with the new password")
+
+		memberClient = codersdk.New(
+			memberClient.URL,
+			codersdk.WithSessionToken(resp.SessionToken),
+			codersdk.WithHTTPClient(coderdtest.NewIsolatedHTTPClient(memberClient.URL)),
+		)
+
+		// After re-authentication, the old API keys should be gone from storage.
+		_, err = memberClient.APIKeyByID(ctx, member.ID.String(), apikey1ID)
+		require.Error(t, err)
+		cerr = coderdtest.SDKError(t, err)
+		require.Equal(t, http.StatusNotFound, cerr.StatusCode())
+
+		_, err = memberClient.APIKeyByID(ctx, member.ID.String(), apikey2ID)
+		require.Error(t, err)
+		cerr = coderdtest.SDKError(t, err)
+		require.Equal(t, http.StatusNotFound, cerr.StatusCode())
 	})
 
 	t.Run("AuditorCantUpdateOtherUserPassword", func(t *testing.T) {
@@ -1515,6 +1914,57 @@ func TestUpdateUserPassword(t *testing.T) {
 		require.Error(t, err)
 		cerr = coderdtest.SDKError(t, err)
 		require.Equal(t, http.StatusNotFound, cerr.StatusCode())
+	})
+
+	t.Run("UserAdminCannotResetOwnerPassword", func(t *testing.T) {
+		t.Parallel()
+		client := coderdtest.New(t, nil)
+		owner := coderdtest.CreateFirstUser(t, client)
+		userAdmin, _ := coderdtest.CreateAnotherUser(t, client, owner.OrganizationID, rbac.RoleUserAdmin())
+
+		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitLong)
+		defer cancel()
+
+		err := userAdmin.UpdateUserPassword(ctx, owner.UserID.String(), codersdk.UpdateUserPasswordRequest{
+			Password: "SomeNewStrongPassword!",
+		})
+		require.Error(t, err, "user-admin should not be able to reset owner password")
+		var apiErr *codersdk.Error
+		require.ErrorAs(t, err, &apiErr)
+		require.Equal(t, http.StatusBadRequest, apiErr.StatusCode())
+		require.Contains(t, apiErr.Message, "Only owners can change the password of an owner")
+	})
+
+	t.Run("OwnerCanResetOwnerPassword", func(t *testing.T) {
+		t.Parallel()
+		client := coderdtest.New(t, nil)
+		owner := coderdtest.CreateFirstUser(t, client)
+
+		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitLong)
+		defer cancel()
+
+		anotherOwner, err := client.CreateUserWithOrgs(ctx, codersdk.CreateUserRequestWithOrgs{
+			Email:           "another-owner@coder.com",
+			Username:        "another-owner",
+			Password:        "SomeStrongPassword!",
+			OrganizationIDs: []uuid.UUID{owner.OrganizationID},
+		})
+		require.NoError(t, err)
+		_, err = client.UpdateUserRoles(ctx, anotherOwner.ID.String(), codersdk.UpdateRoles{
+			Roles: []string{rbac.RoleOwner().String()},
+		})
+		require.NoError(t, err)
+
+		err = client.UpdateUserPassword(ctx, anotherOwner.ID.String(), codersdk.UpdateUserPasswordRequest{
+			Password: "SomeNewStrongPassword!",
+		})
+		require.NoError(t, err, "owner should be able to reset another owner's password")
+
+		_, err = client.LoginWithPassword(ctx, codersdk.LoginWithPasswordRequest{
+			Email:    "another-owner@coder.com",
+			Password: "SomeNewStrongPassword!",
+		})
+		require.NoError(t, err, "other owner should login with the new password")
 	})
 
 	t.Run("PasswordsMustDiffer", func(t *testing.T) {
@@ -1818,15 +2268,13 @@ func TestUserTerminalFont(t *testing.T) {
 	})
 }
 
-func TestUserTaskNotificationAlertDismissed(t *testing.T) {
+func TestUserThemeMode(t *testing.T) {
 	t.Parallel()
 
-	// Single instance shared across all sub-tests. Each sub-test
-	// creates its own non-admin user for isolation.
 	adminClient := coderdtest.New(t, nil)
 	firstUser := coderdtest.CreateFirstUser(t, adminClient)
 
-	t.Run("defaults to false", func(t *testing.T) {
+	t.Run("defaults to empty", func(t *testing.T) {
 		t.Parallel()
 
 		client, _ := coderdtest.CreateAnotherUser(t, adminClient, firstUser.OrganizationID)
@@ -1834,56 +2282,379 @@ func TestUserTaskNotificationAlertDismissed(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitShort)
 		defer cancel()
 
-		// When: getting user preference settings for a user
+		initial, err := client.GetUserAppearanceSettings(ctx, codersdk.Me)
+		require.NoError(t, err)
+		// A fresh user has never written any theme_* key. The GET handler
+		// should return empty strings rather than error out.
+		require.Equal(t, codersdk.ThemeModeUnset, initial.ThemeMode)
+		require.Equal(t, "", initial.ThemeLight)
+		require.Equal(t, "", initial.ThemeDark)
+	})
+
+	t.Run("sync mode roundtrip", func(t *testing.T) {
+		t.Parallel()
+
+		client, _ := coderdtest.CreateAnotherUser(t, adminClient, firstUser.OrganizationID)
+
+		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitShort)
+		defer cancel()
+
+		updated, err := client.UpdateUserAppearanceSettings(ctx, codersdk.Me, codersdk.UpdateUserAppearanceSettingsRequest{
+			ThemePreference: "dark-tritan",
+			ThemeMode:       codersdk.ThemeModeSync,
+			ThemeLight:      "light-tritan",
+			ThemeDark:       "dark-tritan",
+			TerminalFont:    codersdk.TerminalFontGeistMono,
+		})
+		require.NoError(t, err)
+		require.Equal(t, codersdk.ThemeModeSync, updated.ThemeMode)
+		require.Equal(t, "light-tritan", updated.ThemeLight)
+		require.Equal(t, "dark-tritan", updated.ThemeDark)
+
+		// Fetched values should match.
+		fetched, err := client.GetUserAppearanceSettings(ctx, codersdk.Me)
+		require.NoError(t, err)
+		require.Equal(t, codersdk.ThemeModeSync, fetched.ThemeMode)
+		require.Equal(t, "light-tritan", fetched.ThemeLight)
+		require.Equal(t, "dark-tritan", fetched.ThemeDark)
+	})
+
+	t.Run("sync mode accepts any concrete theme per slot", func(t *testing.T) {
+		t.Parallel()
+
+		client, _ := coderdtest.CreateAnotherUser(t, adminClient, firstUser.OrganizationID)
+
+		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitShort)
+		defer cancel()
+
+		updated, err := client.UpdateUserAppearanceSettings(ctx, codersdk.Me, codersdk.UpdateUserAppearanceSettingsRequest{
+			ThemePreference: "dark-tritan",
+			ThemeMode:       codersdk.ThemeModeSync,
+			ThemeLight:      "dark-tritan",
+			ThemeDark:       "light-tritan",
+			TerminalFont:    codersdk.TerminalFontGeistMono,
+		})
+		require.NoError(t, err)
+		require.Equal(t, codersdk.ThemeModeSync, updated.ThemeMode)
+		require.Equal(t, "dark-tritan", updated.ThemeLight)
+		require.Equal(t, "light-tritan", updated.ThemeDark)
+	})
+
+	t.Run("empty theme_mode is accepted for back-compat", func(t *testing.T) {
+		t.Parallel()
+
+		client, _ := coderdtest.CreateAnotherUser(t, adminClient, firstUser.OrganizationID)
+
+		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitShort)
+		defer cancel()
+
+		// A concrete legacy preference plus an unset mode is enough for
+		// modern clients to treat the user as single mode. The server does
+		// not write the new fields for old clients because doing so would
+		// erase existing sync settings.
+		updated, err := client.UpdateUserAppearanceSettings(ctx, codersdk.Me, codersdk.UpdateUserAppearanceSettingsRequest{
+			ThemePreference: "dark",
+			TerminalFont:    codersdk.TerminalFontGeistMono,
+		})
+		require.NoError(t, err)
+		require.Equal(t, "dark", updated.ThemePreference)
+		require.Equal(t, codersdk.ThemeModeUnset, updated.ThemeMode)
+		require.Equal(t, "", updated.ThemeLight)
+		require.Equal(t, "", updated.ThemeDark)
+	})
+
+	t.Run("omitted theme fields preserve sync settings", func(t *testing.T) {
+		t.Parallel()
+
+		client, _ := coderdtest.CreateAnotherUser(t, adminClient, firstUser.OrganizationID)
+
+		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitShort)
+		defer cancel()
+
+		_, err := client.UpdateUserAppearanceSettings(ctx, codersdk.Me, codersdk.UpdateUserAppearanceSettingsRequest{
+			ThemePreference: "dark-tritan",
+			ThemeMode:       codersdk.ThemeModeSync,
+			ThemeLight:      "light-tritan",
+			ThemeDark:       "dark-tritan",
+			TerminalFont:    codersdk.TerminalFontGeistMono,
+		})
+		require.NoError(t, err)
+
+		updated, err := client.UpdateUserAppearanceSettings(ctx, codersdk.Me, codersdk.UpdateUserAppearanceSettingsRequest{
+			ThemePreference: "dark",
+			TerminalFont:    codersdk.TerminalFontFiraCode,
+		})
+		require.NoError(t, err)
+		require.Equal(t, "dark", updated.ThemePreference)
+		require.Equal(t, codersdk.ThemeModeSync, updated.ThemeMode)
+		require.Equal(t, "light-tritan", updated.ThemeLight)
+		require.Equal(t, "dark-tritan", updated.ThemeDark)
+		require.Equal(t, codersdk.TerminalFontFiraCode, updated.TerminalFont)
+
+		fetched, err := client.GetUserAppearanceSettings(ctx, codersdk.Me)
+		require.NoError(t, err)
+		require.Equal(t, "dark", fetched.ThemePreference)
+		require.Equal(t, codersdk.ThemeModeSync, fetched.ThemeMode)
+		require.Equal(t, "light-tritan", fetched.ThemeLight)
+		require.Equal(t, "dark-tritan", fetched.ThemeDark)
+		require.Equal(t, codersdk.TerminalFontFiraCode, fetched.TerminalFont)
+	})
+
+	t.Run("single mode with omitted slots preserves sync settings", func(t *testing.T) {
+		t.Parallel()
+
+		client, _ := coderdtest.CreateAnotherUser(t, adminClient, firstUser.OrganizationID)
+
+		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitShort)
+		defer cancel()
+
+		_, err := client.UpdateUserAppearanceSettings(ctx, codersdk.Me, codersdk.UpdateUserAppearanceSettingsRequest{
+			ThemePreference: "dark-tritan",
+			ThemeMode:       codersdk.ThemeModeSync,
+			ThemeLight:      "light-tritan",
+			ThemeDark:       "dark-tritan",
+			TerminalFont:    codersdk.TerminalFontGeistMono,
+		})
+		require.NoError(t, err)
+
+		updated, err := client.UpdateUserAppearanceSettings(ctx, codersdk.Me, codersdk.UpdateUserAppearanceSettingsRequest{
+			ThemePreference: "dark",
+			ThemeMode:       codersdk.ThemeModeSingle,
+			TerminalFont:    codersdk.TerminalFontFiraCode,
+		})
+		require.NoError(t, err)
+		require.Equal(t, "dark", updated.ThemePreference)
+		require.Equal(t, codersdk.ThemeModeSingle, updated.ThemeMode)
+		require.Equal(t, "light-tritan", updated.ThemeLight)
+		require.Equal(t, "dark-tritan", updated.ThemeDark)
+		require.Equal(t, codersdk.TerminalFontFiraCode, updated.TerminalFont)
+
+		fetched, err := client.GetUserAppearanceSettings(ctx, codersdk.Me)
+		require.NoError(t, err)
+		require.Equal(t, "dark", fetched.ThemePreference)
+		require.Equal(t, codersdk.ThemeModeSingle, fetched.ThemeMode)
+		require.Equal(t, "light-tritan", fetched.ThemeLight)
+		require.Equal(t, "dark-tritan", fetched.ThemeDark)
+		require.Equal(t, codersdk.TerminalFontFiraCode, fetched.TerminalFont)
+	})
+
+	t.Run("single mode with explicit slots updates slots", func(t *testing.T) {
+		t.Parallel()
+
+		client, _ := coderdtest.CreateAnotherUser(t, adminClient, firstUser.OrganizationID)
+
+		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitShort)
+		defer cancel()
+
+		updated, err := client.UpdateUserAppearanceSettings(ctx, codersdk.Me, codersdk.UpdateUserAppearanceSettingsRequest{
+			ThemePreference: "light-tritan",
+			ThemeMode:       codersdk.ThemeModeSingle,
+			ThemeLight:      "dark-tritan",
+			ThemeDark:       "light-protan-deuter",
+			TerminalFont:    codersdk.TerminalFontFiraCode,
+		})
+		require.NoError(t, err)
+		require.Equal(t, "light-tritan", updated.ThemePreference)
+		require.Equal(t, codersdk.ThemeModeSingle, updated.ThemeMode)
+		require.Equal(t, "dark-tritan", updated.ThemeLight)
+		require.Equal(t, "light-protan-deuter", updated.ThemeDark)
+		require.Equal(t, codersdk.TerminalFontFiraCode, updated.TerminalFont)
+
+		fetched, err := client.GetUserAppearanceSettings(ctx, codersdk.Me)
+		require.NoError(t, err)
+		require.Equal(t, "light-tritan", fetched.ThemePreference)
+		require.Equal(t, codersdk.ThemeModeSingle, fetched.ThemeMode)
+		require.Equal(t, "dark-tritan", fetched.ThemeLight)
+		require.Equal(t, "light-protan-deuter", fetched.ThemeDark)
+		require.Equal(t, codersdk.TerminalFontFiraCode, fetched.TerminalFont)
+	})
+
+	t.Run("single mode with one explicit slot updates only that slot", func(t *testing.T) {
+		t.Parallel()
+
+		client, _ := coderdtest.CreateAnotherUser(t, adminClient, firstUser.OrganizationID)
+
+		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitShort)
+		defer cancel()
+
+		_, err := client.UpdateUserAppearanceSettings(ctx, codersdk.Me, codersdk.UpdateUserAppearanceSettingsRequest{
+			ThemePreference: "dark-tritan",
+			ThemeMode:       codersdk.ThemeModeSync,
+			ThemeLight:      "light-tritan",
+			ThemeDark:       "dark-tritan",
+			TerminalFont:    codersdk.TerminalFontGeistMono,
+		})
+		require.NoError(t, err)
+
+		updated, err := client.UpdateUserAppearanceSettings(ctx, codersdk.Me, codersdk.UpdateUserAppearanceSettingsRequest{
+			ThemePreference: "light",
+			ThemeMode:       codersdk.ThemeModeSingle,
+			ThemeLight:      "light-protan-deuter",
+			TerminalFont:    codersdk.TerminalFontFiraCode,
+		})
+		require.NoError(t, err)
+		require.Equal(t, "light", updated.ThemePreference)
+		require.Equal(t, codersdk.ThemeModeSingle, updated.ThemeMode)
+		require.Equal(t, "light-protan-deuter", updated.ThemeLight)
+		require.Equal(t, "dark-tritan", updated.ThemeDark)
+		require.Equal(t, codersdk.TerminalFontFiraCode, updated.TerminalFont)
+
+		fetched, err := client.GetUserAppearanceSettings(ctx, codersdk.Me)
+		require.NoError(t, err)
+		require.Equal(t, "light", fetched.ThemePreference)
+		require.Equal(t, codersdk.ThemeModeSingle, fetched.ThemeMode)
+		require.Equal(t, "light-protan-deuter", fetched.ThemeLight)
+		require.Equal(t, "dark-tritan", fetched.ThemeDark)
+		require.Equal(t, codersdk.TerminalFontFiraCode, fetched.TerminalFont)
+	})
+
+	t.Run("legacy auto with omitted theme_mode clears mode", func(t *testing.T) {
+		t.Parallel()
+
+		client, _ := coderdtest.CreateAnotherUser(t, adminClient, firstUser.OrganizationID)
+
+		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitShort)
+		defer cancel()
+
+		_, err := client.UpdateUserAppearanceSettings(ctx, codersdk.Me, codersdk.UpdateUserAppearanceSettingsRequest{
+			ThemePreference: "dark-tritan",
+			ThemeMode:       codersdk.ThemeModeSync,
+			ThemeLight:      "light-tritan",
+			ThemeDark:       "dark-tritan",
+			TerminalFont:    codersdk.TerminalFontGeistMono,
+		})
+		require.NoError(t, err)
+
+		updated, err := client.UpdateUserAppearanceSettings(ctx, codersdk.Me, codersdk.UpdateUserAppearanceSettingsRequest{
+			ThemePreference: "auto",
+			TerminalFont:    codersdk.TerminalFontFiraCode,
+		})
+		require.NoError(t, err)
+		require.Equal(t, "auto", updated.ThemePreference)
+		require.Equal(t, codersdk.ThemeModeUnset, updated.ThemeMode)
+		require.Equal(t, "light-tritan", updated.ThemeLight)
+		require.Equal(t, "dark-tritan", updated.ThemeDark)
+		require.Equal(t, codersdk.TerminalFontFiraCode, updated.TerminalFont)
+
+		fetched, err := client.GetUserAppearanceSettings(ctx, codersdk.Me)
+		require.NoError(t, err)
+		require.Equal(t, "auto", fetched.ThemePreference)
+		require.Equal(t, codersdk.ThemeModeUnset, fetched.ThemeMode)
+		require.Equal(t, "light-tritan", fetched.ThemeLight)
+		require.Equal(t, "dark-tritan", fetched.ThemeDark)
+		require.Equal(t, codersdk.TerminalFontFiraCode, fetched.TerminalFont)
+	})
+
+	t.Run("invalid theme_mode is rejected", func(t *testing.T) {
+		t.Parallel()
+
+		client, _ := coderdtest.CreateAnotherUser(t, adminClient, firstUser.OrganizationID)
+
+		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitShort)
+		defer cancel()
+
+		_, err := client.UpdateUserAppearanceSettings(ctx, codersdk.Me, codersdk.UpdateUserAppearanceSettingsRequest{
+			ThemePreference: "dark",
+			ThemeMode:       codersdk.ThemeMode("wizard"),
+			TerminalFont:    codersdk.TerminalFontGeistMono,
+		})
+		var apiErr *codersdk.Error
+		require.ErrorAs(t, err, &apiErr)
+		require.Equal(t, http.StatusBadRequest, apiErr.StatusCode())
+	})
+
+	t.Run("invalid theme slots are rejected", func(t *testing.T) {
+		t.Parallel()
+
+		client, _ := coderdtest.CreateAnotherUser(t, adminClient, firstUser.OrganizationID)
+
+		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitShort)
+		defer cancel()
+
+		for _, tc := range []struct {
+			name       string
+			themeMode  codersdk.ThemeMode
+			themeLight string
+			themeDark  string
+		}{
+			{
+				name:       "arbitrary light slot",
+				themeMode:  codersdk.ThemeModeSync,
+				themeLight: "../../etc/passwd",
+				themeDark:  "dark",
+			},
+			{
+				name:       "arbitrary dark slot",
+				themeMode:  codersdk.ThemeModeSync,
+				themeLight: "light",
+				themeDark:  "xss-payload",
+			},
+			{
+				name:       "empty light slot in sync mode",
+				themeMode:  codersdk.ThemeModeSync,
+				themeLight: "",
+				themeDark:  "dark",
+			},
+			{
+				name:       "empty dark slot in sync mode",
+				themeMode:  codersdk.ThemeModeSync,
+				themeLight: "light",
+				themeDark:  "",
+			},
+			{
+				name:       "arbitrary light slot in single mode",
+				themeMode:  codersdk.ThemeModeSingle,
+				themeLight: "../../etc/passwd",
+			},
+			{
+				name:      "arbitrary dark slot with omitted mode",
+				themeDark: "xss-payload",
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				_, err := client.UpdateUserAppearanceSettings(ctx, codersdk.Me, codersdk.UpdateUserAppearanceSettingsRequest{
+					ThemePreference: "dark",
+					ThemeMode:       tc.themeMode,
+					ThemeLight:      tc.themeLight,
+					ThemeDark:       tc.themeDark,
+					TerminalFont:    codersdk.TerminalFontGeistMono,
+				})
+				var apiErr *codersdk.Error
+				require.ErrorAs(t, err, &apiErr)
+				require.Equal(t, http.StatusBadRequest, apiErr.StatusCode())
+			})
+		}
+	})
+}
+
+func TestUserCollapseAssistantSteps(t *testing.T) {
+	t.Parallel()
+
+	client := coderdtest.New(t, nil)
+	coderdtest.CreateFirstUser(t, client)
+	ctx := testutil.Context(t, testutil.WaitShort)
+
+	settings, err := client.GetUserPreferenceSettings(ctx, codersdk.Me)
+	require.NoError(t, err)
+	require.False(t, settings.CollapseAssistantSteps)
+
+	for _, collapse := range []bool{true, false} {
+		updated, err := client.UpdateUserPreferenceSettings(ctx, codersdk.Me, codersdk.UpdateUserPreferenceSettingsRequest{
+			CollapseAssistantSteps: &collapse,
+		})
+		require.NoError(t, err)
+		require.Equal(t, collapse, updated.CollapseAssistantSteps)
+
 		settings, err := client.GetUserPreferenceSettings(ctx, codersdk.Me)
 		require.NoError(t, err)
+		require.Equal(t, collapse, settings.CollapseAssistantSteps)
 
-		// Then: the task notification alert dismissed should default to false
-		require.False(t, settings.TaskNotificationAlertDismissed)
-	})
-
-	t.Run("update to true", func(t *testing.T) {
-		t.Parallel()
-
-		client, _ := coderdtest.CreateAnotherUser(t, adminClient, firstUser.OrganizationID)
-
-		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitShort)
-		defer cancel()
-
-		// When: user dismisses the task notification alert
-		updated, err := client.UpdateUserPreferenceSettings(ctx, codersdk.Me, codersdk.UpdateUserPreferenceSettingsRequest{
-			TaskNotificationAlertDismissed: ptr.Ref(true),
+		updated, err = client.UpdateUserPreferenceSettings(ctx, codersdk.Me, codersdk.UpdateUserPreferenceSettingsRequest{
+			ThinkingDisplayMode: codersdk.ThinkingDisplayModePreview,
 		})
 		require.NoError(t, err)
-
-		// Then: the setting is updated to true
-		require.True(t, updated.TaskNotificationAlertDismissed)
-	})
-
-	t.Run("update to false", func(t *testing.T) {
-		t.Parallel()
-
-		client, _ := coderdtest.CreateAnotherUser(t, adminClient, firstUser.OrganizationID)
-
-		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitShort)
-		defer cancel()
-
-		// Given: user has dismissed the task notification alert
-		_, err := client.UpdateUserPreferenceSettings(ctx, codersdk.Me, codersdk.UpdateUserPreferenceSettingsRequest{
-			TaskNotificationAlertDismissed: ptr.Ref(true),
-		})
-		require.NoError(t, err)
-
-		// When: the task notification alert dismissal is cleared
-		// (e.g., when user enables a task notification in the UI settings)
-		updated, err := client.UpdateUserPreferenceSettings(ctx, codersdk.Me, codersdk.UpdateUserPreferenceSettingsRequest{
-			TaskNotificationAlertDismissed: ptr.Ref(false),
-		})
-		require.NoError(t, err)
-
-		// Then: the setting is updated to false
-		require.False(t, updated.TaskNotificationAlertDismissed)
-	})
+		require.Equal(t, collapse, updated.CollapseAssistantSteps)
+	}
 }
 
 func TestThinkingDisplayMode(t *testing.T) {
@@ -1955,11 +2726,263 @@ func TestThinkingDisplayMode(t *testing.T) {
 		require.NoError(t, err)
 
 		// Send an update that omits thinking_display_mode (zero value).
+		updated, err := client.UpdateUserPreferenceSettings(ctx, codersdk.Me, codersdk.UpdateUserPreferenceSettingsRequest{})
+		require.NoError(t, err)
+		require.Equal(t, codersdk.ThinkingDisplayModePreview, updated.ThinkingDisplayMode)
+	})
+}
+
+func TestAgentChatSendShortcutPreference(t *testing.T) {
+	t.Parallel()
+
+	adminClient := coderdtest.New(t, nil)
+	firstUser := coderdtest.CreateFirstUser(t, adminClient)
+
+	requireValidationField := func(t *testing.T, err error, field string) {
+		t.Helper()
+
+		var sdkErr *codersdk.Error
+		require.ErrorAs(t, err, &sdkErr)
+		require.Equal(t, http.StatusBadRequest, sdkErr.StatusCode())
+		require.Len(t, sdkErr.Validations, 1)
+		require.Equal(t, field, sdkErr.Validations[0].Field)
+	}
+
+	t.Run("defaults to enter", func(t *testing.T) {
+		t.Parallel()
+
+		client, _ := coderdtest.CreateAnotherUser(t, adminClient, firstUser.OrganizationID)
+
+		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitShort)
+		defer cancel()
+
+		settings, err := client.GetUserPreferenceSettings(ctx, codersdk.Me)
+		require.NoError(t, err)
+		require.Equal(t, codersdk.AgentChatSendShortcutEnter, settings.AgentChatSendShortcut)
+	})
+
+	t.Run("round-trips shortcut", func(t *testing.T) {
+		t.Parallel()
+
+		client, _ := coderdtest.CreateAnotherUser(t, adminClient, firstUser.OrganizationID)
+
+		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitShort)
+		defer cancel()
+
 		updated, err := client.UpdateUserPreferenceSettings(ctx, codersdk.Me, codersdk.UpdateUserPreferenceSettingsRequest{
-			TaskNotificationAlertDismissed: ptr.Ref(true),
+			AgentChatSendShortcut: codersdk.AgentChatSendShortcutModifierEnter,
+		})
+		require.NoError(t, err)
+		require.Equal(t, codersdk.AgentChatSendShortcutModifierEnter, updated.AgentChatSendShortcut)
+
+		settings, err := client.GetUserPreferenceSettings(ctx, codersdk.Me)
+		require.NoError(t, err)
+		require.Equal(t, codersdk.AgentChatSendShortcutModifierEnter, settings.AgentChatSendShortcut)
+	})
+
+	t.Run("rejects invalid shortcut", func(t *testing.T) {
+		t.Parallel()
+
+		client, _ := coderdtest.CreateAnotherUser(t, adminClient, firstUser.OrganizationID)
+
+		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitShort)
+		defer cancel()
+
+		_, err := client.UpdateUserPreferenceSettings(ctx, codersdk.Me, codersdk.UpdateUserPreferenceSettingsRequest{
+			AgentChatSendShortcut: codersdk.AgentChatSendShortcut("bogus"),
+		})
+		requireValidationField(t, err, "agent_chat_send_shortcut")
+	})
+
+	t.Run("updates preserve stored shortcut", func(t *testing.T) {
+		t.Parallel()
+
+		client, _ := coderdtest.CreateAnotherUser(t, adminClient, firstUser.OrganizationID)
+
+		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitShort)
+		defer cancel()
+
+		_, err := client.UpdateUserPreferenceSettings(ctx, codersdk.Me, codersdk.UpdateUserPreferenceSettingsRequest{
+			AgentChatSendShortcut: codersdk.AgentChatSendShortcutModifierEnter,
+			ThinkingDisplayMode:   codersdk.ThinkingDisplayModePreview,
+		})
+		require.NoError(t, err)
+
+		updated, err := client.UpdateUserPreferenceSettings(ctx, codersdk.Me, codersdk.UpdateUserPreferenceSettingsRequest{
+			ThinkingDisplayMode: codersdk.ThinkingDisplayModeAlwaysExpanded,
+		})
+		require.NoError(t, err)
+		require.Equal(t, codersdk.ThinkingDisplayModeAlwaysExpanded, updated.ThinkingDisplayMode)
+		require.Equal(t, codersdk.AgentChatSendShortcutModifierEnter, updated.AgentChatSendShortcut)
+	})
+}
+
+func TestAgentDisplayModePreferences(t *testing.T) {
+	t.Parallel()
+
+	adminClient := coderdtest.New(t, nil)
+	firstUser := coderdtest.CreateFirstUser(t, adminClient)
+
+	requireValidationField := func(t *testing.T, err error, field string) {
+		t.Helper()
+
+		var sdkErr *codersdk.Error
+		require.ErrorAs(t, err, &sdkErr)
+		require.Equal(t, http.StatusBadRequest, sdkErr.StatusCode())
+		require.Len(t, sdkErr.Validations, 1)
+		require.Equal(t, field, sdkErr.Validations[0].Field)
+	}
+
+	t.Run("defaults shell tools to always collapsed", func(t *testing.T) {
+		t.Parallel()
+
+		client, _ := coderdtest.CreateAnotherUser(t, adminClient, firstUser.OrganizationID)
+
+		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitShort)
+		defer cancel()
+
+		settings, err := client.GetUserPreferenceSettings(ctx, codersdk.Me)
+		require.NoError(t, err)
+		require.Equal(t, codersdk.AgentDisplayModeAlwaysCollapsed, settings.ShellToolDisplayMode)
+		require.Empty(t, settings.CodeDiffDisplayMode)
+	})
+
+	t.Run("round-trips shell tool display mode", func(t *testing.T) {
+		t.Parallel()
+
+		client, _ := coderdtest.CreateAnotherUser(t, adminClient, firstUser.OrganizationID)
+
+		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitShort)
+		defer cancel()
+
+		for _, mode := range []codersdk.AgentDisplayMode{
+			codersdk.AgentDisplayModeAlwaysExpanded,
+			codersdk.AgentDisplayModeAlwaysCollapsed,
+		} {
+			updated, err := client.UpdateUserPreferenceSettings(ctx, codersdk.Me, codersdk.UpdateUserPreferenceSettingsRequest{
+				ShellToolDisplayMode: mode,
+			})
+			require.NoError(t, err)
+			require.Equal(t, mode, updated.ShellToolDisplayMode)
+
+			settings, err := client.GetUserPreferenceSettings(ctx, codersdk.Me)
+			require.NoError(t, err)
+			require.Equal(t, mode, settings.ShellToolDisplayMode)
+		}
+	})
+
+	t.Run("round-trips code diff display mode", func(t *testing.T) {
+		t.Parallel()
+
+		client, _ := coderdtest.CreateAnotherUser(t, adminClient, firstUser.OrganizationID)
+
+		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitShort)
+		defer cancel()
+
+		for _, mode := range []codersdk.AgentDisplayMode{
+			codersdk.AgentDisplayModeAlwaysExpanded,
+			codersdk.AgentDisplayModeAlwaysCollapsed,
+		} {
+			updated, err := client.UpdateUserPreferenceSettings(ctx, codersdk.Me, codersdk.UpdateUserPreferenceSettingsRequest{
+				CodeDiffDisplayMode: mode,
+			})
+			require.NoError(t, err)
+			require.Equal(t, mode, updated.CodeDiffDisplayMode)
+
+			settings, err := client.GetUserPreferenceSettings(ctx, codersdk.Me)
+			require.NoError(t, err)
+			require.Equal(t, mode, settings.CodeDiffDisplayMode)
+		}
+	})
+
+	t.Run("updates preserve stored display modes", func(t *testing.T) {
+		t.Parallel()
+
+		client, _ := coderdtest.CreateAnotherUser(t, adminClient, firstUser.OrganizationID)
+
+		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitShort)
+		defer cancel()
+
+		_, err := client.UpdateUserPreferenceSettings(ctx, codersdk.Me, codersdk.UpdateUserPreferenceSettingsRequest{
+			ThinkingDisplayMode:  codersdk.ThinkingDisplayModePreview,
+			ShellToolDisplayMode: codersdk.AgentDisplayModeAlwaysCollapsed,
+			CodeDiffDisplayMode:  codersdk.AgentDisplayModeAlwaysExpanded,
+		})
+		require.NoError(t, err)
+
+		updated, err := client.UpdateUserPreferenceSettings(ctx, codersdk.Me, codersdk.UpdateUserPreferenceSettingsRequest{
+			ShellToolDisplayMode: codersdk.AgentDisplayModeAlwaysExpanded,
 		})
 		require.NoError(t, err)
 		require.Equal(t, codersdk.ThinkingDisplayModePreview, updated.ThinkingDisplayMode)
+		require.Equal(t, codersdk.AgentDisplayModeAlwaysExpanded, updated.ShellToolDisplayMode)
+		require.Equal(t, codersdk.AgentDisplayModeAlwaysExpanded, updated.CodeDiffDisplayMode)
+
+		settings, err := client.GetUserPreferenceSettings(ctx, codersdk.Me)
+		require.NoError(t, err)
+		require.Equal(t, codersdk.ThinkingDisplayModePreview, settings.ThinkingDisplayMode)
+		require.Equal(t, codersdk.AgentDisplayModeAlwaysExpanded, settings.ShellToolDisplayMode)
+		require.Equal(t, codersdk.AgentDisplayModeAlwaysExpanded, settings.CodeDiffDisplayMode)
+	})
+
+	t.Run("rejects invalid shell tool display mode", func(t *testing.T) {
+		t.Parallel()
+
+		client, _ := coderdtest.CreateAnotherUser(t, adminClient, firstUser.OrganizationID)
+
+		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitShort)
+		defer cancel()
+
+		for _, tt := range []struct {
+			name string
+			mode codersdk.AgentDisplayMode
+		}{
+			{
+				name: "bogus",
+				mode: codersdk.AgentDisplayMode("bogus"),
+			},
+			{
+				name: "thinking preview",
+				mode: codersdk.AgentDisplayMode(codersdk.ThinkingDisplayModePreview),
+			},
+		} {
+			t.Run(tt.name, func(t *testing.T) {
+				_, err := client.UpdateUserPreferenceSettings(ctx, codersdk.Me, codersdk.UpdateUserPreferenceSettingsRequest{
+					ShellToolDisplayMode: tt.mode,
+				})
+				requireValidationField(t, err, "shell_tool_display_mode")
+			})
+		}
+	})
+
+	t.Run("rejects invalid code diff display mode", func(t *testing.T) {
+		t.Parallel()
+
+		client, _ := coderdtest.CreateAnotherUser(t, adminClient, firstUser.OrganizationID)
+
+		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitShort)
+		defer cancel()
+
+		for _, tt := range []struct {
+			name string
+			mode codersdk.AgentDisplayMode
+		}{
+			{
+				name: "bogus",
+				mode: codersdk.AgentDisplayMode("bogus"),
+			},
+			{
+				name: "thinking preview",
+				mode: codersdk.AgentDisplayMode(codersdk.ThinkingDisplayModePreview),
+			},
+		} {
+			t.Run(tt.name, func(t *testing.T) {
+				_, err := client.UpdateUserPreferenceSettings(ctx, codersdk.Me, codersdk.UpdateUserPreferenceSettingsRequest{
+					CodeDiffDisplayMode: tt.mode,
+				})
+				requireValidationField(t, err, "code_diff_display_mode")
+			})
+		}
 	})
 }
 
@@ -2053,54 +3076,6 @@ func TestDormantUser(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, users.Users, 1)
 	require.Equal(t, codersdk.UserStatusActive, users.Users[0].Status)
-}
-
-// TestSuspendedPagination is when the after_id is a suspended record.
-// The database query should still return the correct page, as the after_id
-// is in a subquery that finds the record regardless of its status.
-// This is mainly to confirm the db fake has the same behavior.
-func TestSuspendedPagination(t *testing.T) {
-	t.Parallel()
-	t.Skip("This fails when two users are created at the exact same time. The reason is unknown... See: https://github.com/coder/coder/actions/runs/3057047622/jobs/4931863163")
-	client := coderdtest.New(t, nil)
-	coderdtest.CreateFirstUser(t, client)
-
-	ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitLong)
-	t.Cleanup(cancel)
-
-	me, err := client.User(ctx, codersdk.Me)
-	require.NoError(t, err)
-	orgID := me.OrganizationIDs[0]
-
-	total := 10
-	users := make([]codersdk.User, 0, total)
-	// Create users
-	for i := 0; i < total; i++ {
-		email := fmt.Sprintf("%d@coder.com", i)
-		username := fmt.Sprintf("user%d", i)
-		user, err := client.CreateUserWithOrgs(ctx, codersdk.CreateUserRequestWithOrgs{
-			Email:           email,
-			Username:        username,
-			Password:        "MySecurePassword!",
-			OrganizationIDs: []uuid.UUID{orgID},
-		})
-		require.NoError(t, err)
-		users = append(users, user)
-	}
-	sortUsers(users)
-	deletedUser := users[2]
-	expected := users[3:8]
-	_, err = client.UpdateUserStatus(ctx, deletedUser.ID.String(), codersdk.UserStatusSuspended)
-	require.NoError(t, err, "suspend user")
-
-	page, err := client.Users(ctx, codersdk.UsersRequest{
-		Pagination: codersdk.Pagination{
-			Limit:   len(expected),
-			AfterID: deletedUser.ID,
-		},
-	})
-	require.NoError(t, err)
-	require.Equal(t, expected, page.Users, "expected page")
 }
 
 func TestUserAutofillParameters(t *testing.T) {
@@ -2344,11 +3319,7 @@ func assertPagination(ctx context.Context, t *testing.T, client *codersdk.Client
 	require.Equalf(t, onlyUsernames(page.Users), onlyUsernames(allUsers[:limit]), "first page, limit=%d", limit)
 	count += len(page.Users)
 
-	for {
-		if len(page.Users) == 0 {
-			break
-		}
-
+	for len(page.Users) != 0 {
 		afterCursor := page.Users[len(page.Users)-1].ID
 		// Assert each page is the next expected page
 		// This is using a cursor, and only works if all users created_at
@@ -2390,13 +3361,6 @@ func assertPagination(ctx context.Context, t *testing.T, client *codersdk.Client
 		require.Equal(t, onlyUsernames(allUsers[count-limit:count]), onlyUsernames(prevPage.Users), "prev users")
 		count += len(page.Users)
 	}
-}
-
-// sortUsers sorts by (created_at, id)
-func sortUsers(users []codersdk.User) {
-	slices.SortFunc(users, func(a, b codersdk.User) int {
-		return slice.Ascending(strings.ToLower(a.Username), strings.ToLower(b.Username))
-	})
 }
 
 func sortDatabaseUsers(users []database.User) {

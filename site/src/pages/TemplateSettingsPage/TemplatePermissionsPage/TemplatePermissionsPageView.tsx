@@ -1,5 +1,5 @@
 import { EllipsisVerticalIcon, UserPlusIcon } from "lucide-react";
-import { type FC, useState } from "react";
+import { useState } from "react";
 import type {
 	Group,
 	ReducedUser,
@@ -11,18 +11,12 @@ import type {
 import { Avatar } from "#/components/Avatar/Avatar";
 import { AvatarData } from "#/components/Avatar/AvatarData";
 import { Button } from "#/components/Button/Button";
-import { ChooseOne, Cond } from "#/components/Conditionals/ChooseOne";
 import {
 	DropdownMenu,
 	DropdownMenuContent,
 	DropdownMenuItem,
 	DropdownMenuTrigger,
 } from "#/components/DropdownMenu/DropdownMenu";
-import { EmptyState } from "#/components/EmptyState/EmptyState";
-import {
-	PageHeader,
-	PageHeaderTitle,
-} from "#/components/PageHeader/PageHeader";
 import {
 	Select,
 	SelectContent,
@@ -39,6 +33,7 @@ import {
 	TableHeader,
 	TableRow,
 } from "#/components/Table/Table";
+import { TableEmpty } from "#/components/TableEmpty/TableEmpty";
 import { TableLoader } from "#/components/TableLoader/TableLoader";
 import { getGroupSubtitle } from "#/modules/groups";
 import {
@@ -61,7 +56,7 @@ type AddTemplateUserOrGroupProps = {
 	) => void;
 };
 
-const AddTemplateUserOrGroup: FC<AddTemplateUserOrGroupProps> = ({
+const AddTemplateUserOrGroup: React.FC<AddTemplateUserOrGroupProps> = ({
 	isLoading,
 	templateID,
 	templateACL,
@@ -136,13 +131,13 @@ const AddTemplateUserOrGroup: FC<AddTemplateUserOrGroupProps> = ({
 	);
 };
 
-interface RoleSelectProps {
+type RoleSelectProps = {
 	value: TemplateRole;
 	disabled?: boolean;
 	onValueChange: (value: TemplateRole) => void;
-}
+};
 
-const RoleSelect: FC<RoleSelectProps> = ({
+const RoleSelect: React.FC<RoleSelectProps> = ({
 	value,
 	disabled,
 	onValueChange,
@@ -180,7 +175,7 @@ const RoleSelect: FC<RoleSelectProps> = ({
 	);
 };
 
-interface TemplatePermissionsPageViewProps {
+type TemplatePermissionsPageViewProps = {
 	templateACL: TemplateACL | undefined;
 	templateID: string;
 	canUpdatePermissions: boolean;
@@ -204,9 +199,9 @@ interface TemplatePermissionsPageViewProps {
 	onUpdateGroup: (group: TemplateGroup, role: TemplateRole) => void;
 	updatingGroupId?: TemplateGroup["id"] | undefined;
 	onRemoveGroup: (group: Group) => void;
-}
+};
 
-export const TemplatePermissionsPageView: FC<
+export const TemplatePermissionsPageView: React.FC<
 	TemplatePermissionsPageViewProps
 > = ({
 	templateACL,
@@ -225,18 +220,8 @@ export const TemplatePermissionsPageView: FC<
 	onUpdateGroup,
 	onRemoveGroup,
 }) => {
-	const isEmpty = Boolean(
-		templateACL &&
-			templateACL.users.length === 0 &&
-			templateACL.group.length === 0,
-	);
-
 	return (
-		<>
-			<PageHeader className="pt-0">
-				<PageHeaderTitle>Permissions</PageHeaderTitle>
-			</PageHeader>
-
+		<div className="flex flex-col gap-12">
 			<div className="flex flex-col gap-2.5">
 				{canUpdatePermissions && (
 					<AddTemplateUserOrGroup
@@ -259,137 +244,166 @@ export const TemplatePermissionsPageView: FC<
 						</TableRow>
 					</TableHeader>
 					<TableBody>
-						<ChooseOne>
-							<Cond condition={!templateACL}>
-								<TableLoader />
-							</Cond>
-							<Cond condition={isEmpty}>
-								<TableRow>
-									<TableCell colSpan={999}>
-										<EmptyState
-											message="No members yet"
-											description="Add a member using the controls above"
-										/>
-									</TableCell>
-								</TableRow>
-							</Cond>
-							<Cond>
-								{templateACL?.group.map((group) => (
-									<TableRow key={group.id}>
-										<TableCell>
-											<AvatarData
-												avatar={
-													<Avatar
-														size="lg"
-														fallback={group.display_name || group.name}
-														src={group.avatar_url}
-													/>
-												}
-												title={group.display_name || group.name}
-												subtitle={getGroupSubtitle(group)}
-											/>
-										</TableCell>
-										<TableCell>
-											<ChooseOne>
-												<Cond condition={canUpdatePermissions}>
-													<RoleSelect
-														value={group.role}
-														disabled={updatingGroupId === group.id}
-														onValueChange={(role) => {
-															onUpdateGroup(group, role);
-														}}
-													/>
-												</Cond>
-												<Cond>
-													<div className="capitalize">{group.role}</div>
-												</Cond>
-											</ChooseOne>
-										</TableCell>
-
-										<TableCell>
-											{canUpdatePermissions && (
-												<DropdownMenu>
-													<DropdownMenuTrigger asChild>
-														<Button
-															size="icon-lg"
-															variant="subtle"
-															aria-label="Open menu"
-														>
-															<EllipsisVerticalIcon aria-hidden="true" />
-															<span className="sr-only">Open menu</span>
-														</Button>
-													</DropdownMenuTrigger>
-													<DropdownMenuContent align="end">
-														<DropdownMenuItem
-															className="text-content-destructive focus:text-content-destructive"
-															onClick={() => onRemoveGroup(group)}
-														>
-															Remove
-														</DropdownMenuItem>
-													</DropdownMenuContent>
-												</DropdownMenu>
-											)}
-										</TableCell>
-									</TableRow>
-								))}
-
-								{templateACL?.users.map((user) => (
-									<TableRow key={user.id}>
-										<TableCell>
-											<AvatarData
-												title={user.username}
-												subtitle={user.email}
-												src={user.avatar_url}
-											/>
-										</TableCell>
-										<TableCell>
-											<ChooseOne>
-												<Cond condition={canUpdatePermissions}>
-													<RoleSelect
-														value={user.role}
-														disabled={updatingUserId === user.id}
-														onValueChange={(role) => {
-															onUpdateUser(user, role);
-														}}
-													/>
-												</Cond>
-												<Cond>
-													<div className="capitalize">{user.role}</div>
-												</Cond>
-											</ChooseOne>
-										</TableCell>
-
-										<TableCell>
-											{canUpdatePermissions && (
-												<DropdownMenu>
-													<DropdownMenuTrigger asChild>
-														<Button
-															size="icon-lg"
-															variant="subtle"
-															aria-label="Open menu"
-														>
-															<EllipsisVerticalIcon aria-hidden="true" />
-															<span className="sr-only">Open menu</span>
-														</Button>
-													</DropdownMenuTrigger>
-													<DropdownMenuContent align="end">
-														<DropdownMenuItem
-															className="text-content-destructive focus:text-content-destructive"
-															onClick={() => onRemoveUser(user)}
-														>
-															Remove
-														</DropdownMenuItem>
-													</DropdownMenuContent>
-												</DropdownMenu>
-											)}
-										</TableCell>
-									</TableRow>
-								))}
-							</Cond>
-						</ChooseOne>
+						<MembersTableBody
+							templateACL={templateACL}
+							canUpdatePermissions={canUpdatePermissions}
+							updatingUserId={updatingUserId}
+							updatingGroupId={updatingGroupId}
+							onUpdateUser={onUpdateUser}
+							onRemoveUser={onRemoveUser}
+							onUpdateGroup={onUpdateGroup}
+							onRemoveGroup={onRemoveGroup}
+						/>
 					</TableBody>
 				</Table>
 			</div>
+		</div>
+	);
+};
+
+type MembersTableBodyProps = {
+	templateACL: TemplateACL | undefined;
+	canUpdatePermissions: boolean;
+	updatingUserId: TemplateUser["id"] | undefined;
+	updatingGroupId: TemplateGroup["id"] | undefined;
+	onUpdateUser: (user: TemplateUser, role: TemplateRole) => void;
+	onRemoveUser: (user: TemplateUser) => void;
+	onUpdateGroup: (group: TemplateGroup, role: TemplateRole) => void;
+	onRemoveGroup: (group: Group) => void;
+};
+
+const MembersTableBody: React.FC<MembersTableBodyProps> = ({
+	templateACL,
+	canUpdatePermissions,
+	updatingUserId,
+	updatingGroupId,
+	onUpdateUser,
+	onRemoveUser,
+	onUpdateGroup,
+	onRemoveGroup,
+}) => {
+	if (!templateACL) {
+		return <TableLoader />;
+	}
+
+	const isEmpty =
+		templateACL.users.length === 0 && templateACL.group.length === 0;
+	if (isEmpty) {
+		return (
+			<TableEmpty
+				message="No members yet"
+				description="Add a member using the controls above"
+			/>
+		);
+	}
+
+	return (
+		<>
+			{templateACL.group.map((group) => (
+				<TableRow key={group.id}>
+					<TableCell>
+						<AvatarData
+							avatar={
+								<Avatar
+									size="lg"
+									fallback={group.display_name || group.name}
+									src={group.avatar_url}
+								/>
+							}
+							title={group.display_name || group.name}
+							subtitle={getGroupSubtitle(group)}
+						/>
+					</TableCell>
+					<TableCell>
+						{canUpdatePermissions ? (
+							<RoleSelect
+								value={group.role}
+								disabled={updatingGroupId === group.id}
+								onValueChange={(role) => {
+									onUpdateGroup(group, role);
+								}}
+							/>
+						) : (
+							<div className="capitalize">{group.role}</div>
+						)}
+					</TableCell>
+
+					<TableCell>
+						{canUpdatePermissions && (
+							<DropdownMenu>
+								<DropdownMenuTrigger asChild>
+									<Button
+										size="icon-lg"
+										variant="subtle"
+										aria-label="Open menu"
+									>
+										<EllipsisVerticalIcon aria-hidden="true" />
+										<span className="sr-only">Open menu</span>
+									</Button>
+								</DropdownMenuTrigger>
+								<DropdownMenuContent align="end">
+									<DropdownMenuItem
+										className="text-content-destructive focus:text-content-destructive"
+										onClick={() => onRemoveGroup(group)}
+									>
+										Remove
+									</DropdownMenuItem>
+								</DropdownMenuContent>
+							</DropdownMenu>
+						)}
+					</TableCell>
+				</TableRow>
+			))}
+
+			{templateACL.users.map((user) => (
+				<TableRow key={user.id}>
+					<TableCell>
+						<AvatarData
+							title={user.username}
+							subtitle={user.email}
+							src={user.avatar_url}
+						/>
+					</TableCell>
+					<TableCell>
+						{canUpdatePermissions ? (
+							<RoleSelect
+								value={user.role}
+								disabled={updatingUserId === user.id}
+								onValueChange={(role) => {
+									onUpdateUser(user, role);
+								}}
+							/>
+						) : (
+							<div className="capitalize">{user.role}</div>
+						)}
+					</TableCell>
+
+					<TableCell>
+						{canUpdatePermissions && (
+							<DropdownMenu>
+								<DropdownMenuTrigger asChild>
+									<Button
+										size="icon-lg"
+										variant="subtle"
+										aria-label="Open menu"
+									>
+										<EllipsisVerticalIcon aria-hidden="true" />
+										<span className="sr-only">Open menu</span>
+									</Button>
+								</DropdownMenuTrigger>
+								<DropdownMenuContent align="end">
+									<DropdownMenuItem
+										className="text-content-destructive focus:text-content-destructive"
+										onClick={() => onRemoveUser(user)}
+									>
+										Remove
+									</DropdownMenuItem>
+								</DropdownMenuContent>
+							</DropdownMenu>
+						)}
+					</TableCell>
+				</TableRow>
+			))}
 		</>
 	);
 };

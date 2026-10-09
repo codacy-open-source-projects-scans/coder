@@ -217,6 +217,24 @@ func TestCustomOrganizationRole(t *testing.T) {
 			UserPermissions:         nil,
 		})
 		require.ErrorContains(t, err, "Reserved")
+
+		//nolint:gocritic // owner is required for this
+		_, err = owner.CreateOrganizationRole(ctx, codersdk.Role{
+			Name:           codersdk.RoleAgentsAccess,
+			DisplayName:    "Testing Purposes",
+			OrganizationID: first.OrganizationID.String(),
+		})
+		require.ErrorContains(t, err, "Reserved")
+
+		// Custom role names are stored lowercase, so a case variant would
+		// shadow the built-in role.
+		//nolint:gocritic // owner is required for this
+		_, err = owner.CreateOrganizationRole(ctx, codersdk.Role{
+			Name:           "Agents-Access",
+			DisplayName:    "Testing Purposes",
+			OrganizationID: first.OrganizationID.String(),
+		})
+		require.ErrorContains(t, err, "Reserved")
 	})
 
 	// Attempt to add site & user permissions, which is not allowed
@@ -453,7 +471,6 @@ func TestListRoles(t *testing.T) {
 	t.Parallel()
 
 	dv := coderdtest.DeploymentValues(t)
-	dv.Experiments = []string{string(codersdk.ExperimentAgents)}
 
 	client, owner := coderdenttest.New(t, &coderdenttest.Options{
 		Options: &coderdtest.Options{
@@ -506,6 +523,7 @@ func TestListRoles(t *testing.T) {
 				{Name: codersdk.RoleOrganizationTemplateAdmin, OrganizationID: owner.OrganizationID}:        false,
 				{Name: codersdk.RoleOrganizationUserAdmin, OrganizationID: owner.OrganizationID}:            false,
 				{Name: codersdk.RoleOrganizationWorkspaceCreationBan, OrganizationID: owner.OrganizationID}: false,
+				{Name: codersdk.RoleOrganizationWorkspaceAccess, OrganizationID: owner.OrganizationID}:      false,
 				{Name: codersdk.RoleAgentsAccess, OrganizationID: owner.OrganizationID}:                     false,
 			}),
 		},
@@ -540,6 +558,7 @@ func TestListRoles(t *testing.T) {
 				{Name: codersdk.RoleOrganizationTemplateAdmin, OrganizationID: owner.OrganizationID}:        true,
 				{Name: codersdk.RoleOrganizationUserAdmin, OrganizationID: owner.OrganizationID}:            true,
 				{Name: codersdk.RoleOrganizationWorkspaceCreationBan, OrganizationID: owner.OrganizationID}: true,
+				{Name: codersdk.RoleOrganizationWorkspaceAccess, OrganizationID: owner.OrganizationID}:      true,
 				{Name: codersdk.RoleAgentsAccess, OrganizationID: owner.OrganizationID}:                     true,
 			}),
 		},
@@ -574,6 +593,7 @@ func TestListRoles(t *testing.T) {
 				{Name: codersdk.RoleOrganizationTemplateAdmin, OrganizationID: owner.OrganizationID}:        true,
 				{Name: codersdk.RoleOrganizationUserAdmin, OrganizationID: owner.OrganizationID}:            true,
 				{Name: codersdk.RoleOrganizationWorkspaceCreationBan, OrganizationID: owner.OrganizationID}: true,
+				{Name: codersdk.RoleOrganizationWorkspaceAccess, OrganizationID: owner.OrganizationID}:      true,
 				{Name: codersdk.RoleAgentsAccess, OrganizationID: owner.OrganizationID}:                     true,
 			}),
 		},

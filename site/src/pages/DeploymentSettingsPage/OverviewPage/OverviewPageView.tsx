@@ -1,4 +1,3 @@
-import type { FC } from "react";
 import type {
 	DAUsResponse,
 	Experiment,
@@ -24,7 +23,7 @@ type OverviewPageViewProps = {
 	readonly safeExperiments: readonly Experiment[];
 };
 
-export const OverviewPageView: FC<OverviewPageViewProps> = ({
+export const OverviewPageView: React.FC<OverviewPageViewProps> = ({
 	deploymentOptions,
 	dailyActiveUsers,
 	safeExperiments,
@@ -32,12 +31,11 @@ export const OverviewPageView: FC<OverviewPageViewProps> = ({
 }) => {
 	return (
 		<>
-			<SettingsHeader
-				actions={<SettingsHeaderDocsLink href={docs("/admin/setup")} />}
-			>
+			<SettingsHeader>
 				<SettingsHeaderTitle>General</SettingsHeaderTitle>
 				<SettingsHeaderDescription>
-					Information about your Coder deployment.
+					Information about your Coder deployment.{" "}
+					<SettingsHeaderDocsLink href={docs("/admin/setup")} />
 				</SettingsHeaderDescription>
 			</SettingsHeader>
 
@@ -79,6 +77,20 @@ export const OverviewPageView: FC<OverviewPageViewProps> = ({
 					)}
 					additionalValues={safeExperiments}
 				/>
+				<p className="m-0 text-sm text-content-secondary">
+					Experiments lists the startup defaults. Runtime experiment rules can
+					override them per user without a restart. See{" "}
+					<Link
+						href={docs(
+							"/reference/feature-stages#target-experiments-at-runtime",
+						)}
+						target="_blank"
+						rel="noreferrer"
+					>
+						the documentation
+					</Link>
+					.
+				</p>
 			</div>
 		</>
 	);

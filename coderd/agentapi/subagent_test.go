@@ -12,6 +12,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
 	"cdr.dev/slog/v3"
 	"github.com/coder/coder/v2/agent/proto"
@@ -19,9 +20,9 @@ import (
 	"github.com/coder/coder/v2/coderd/database"
 	"github.com/coder/coder/v2/coderd/database/dbauthz"
 	"github.com/coder/coder/v2/coderd/database/dbgen"
+	"github.com/coder/coder/v2/coderd/database/dbmock"
 	"github.com/coder/coder/v2/coderd/database/dbtestutil"
 	"github.com/coder/coder/v2/coderd/rbac"
-	"github.com/coder/coder/v2/coderd/util/ptr"
 	"github.com/coder/coder/v2/codersdk"
 	"github.com/coder/coder/v2/testutil"
 	"github.com/coder/quartz"
@@ -240,11 +241,11 @@ func TestSubAgentAPI(t *testing.T) {
 				apps: []*proto.CreateSubAgentRequest_App{
 					{
 						Slug:        "code-server",
-						DisplayName: ptr.Ref("VS Code"),
-						Icon:        ptr.Ref("/icon/code.svg"),
-						Url:         ptr.Ref("http://localhost:13337"),
+						DisplayName: new("VS Code"),
+						Icon:        new("/icon/code.svg"),
+						Url:         new("http://localhost:13337"),
 						Share:       proto.CreateSubAgentRequest_App_OWNER.Enum(),
-						Subdomain:   ptr.Ref(false),
+						Subdomain:   new(false),
 						OpenIn:      proto.CreateSubAgentRequest_App_SLIM_WINDOW.Enum(),
 						Healthcheck: &proto.CreateSubAgentRequest_App_Healthcheck{
 							Interval:  5,
@@ -254,9 +255,9 @@ func TestSubAgentAPI(t *testing.T) {
 					},
 					{
 						Slug:        "vim",
-						Command:     ptr.Ref("vim"),
-						DisplayName: ptr.Ref("Vim"),
-						Icon:        ptr.Ref("/icon/vim.svg"),
+						Command:     new("vim"),
+						DisplayName: new("Vim"),
+						Icon:        new("/icon/vim.svg"),
 					},
 				},
 				expectApps: []database.WorkspaceApp{
@@ -294,7 +295,7 @@ func TestSubAgentAPI(t *testing.T) {
 				apps: []*proto.CreateSubAgentRequest_App{
 					{
 						Slug:        "",
-						DisplayName: ptr.Ref("App"),
+						DisplayName: new("App"),
 					},
 				},
 				expectApps: []database.WorkspaceApp{},
@@ -311,7 +312,7 @@ func TestSubAgentAPI(t *testing.T) {
 				apps: []*proto.CreateSubAgentRequest_App{
 					{
 						Slug:        "invalid_slug_with_underscores",
-						DisplayName: ptr.Ref("App"),
+						DisplayName: new("App"),
 					},
 				},
 				expectApps: []database.WorkspaceApp{},
@@ -328,7 +329,7 @@ func TestSubAgentAPI(t *testing.T) {
 				apps: []*proto.CreateSubAgentRequest_App{
 					{
 						Slug:        "InvalidSlug",
-						DisplayName: ptr.Ref("App"),
+						DisplayName: new("App"),
 					},
 				},
 				expectApps: []database.WorkspaceApp{},
@@ -345,7 +346,7 @@ func TestSubAgentAPI(t *testing.T) {
 				apps: []*proto.CreateSubAgentRequest_App{
 					{
 						Slug:        "-invalid-app",
-						DisplayName: ptr.Ref("App"),
+						DisplayName: new("App"),
 					},
 				},
 				expectApps: []database.WorkspaceApp{},
@@ -362,7 +363,7 @@ func TestSubAgentAPI(t *testing.T) {
 				apps: []*proto.CreateSubAgentRequest_App{
 					{
 						Slug:        "invalid-app-",
-						DisplayName: ptr.Ref("App"),
+						DisplayName: new("App"),
 					},
 				},
 				expectApps: []database.WorkspaceApp{},
@@ -379,7 +380,7 @@ func TestSubAgentAPI(t *testing.T) {
 				apps: []*proto.CreateSubAgentRequest_App{
 					{
 						Slug:        "invalid--app",
-						DisplayName: ptr.Ref("App"),
+						DisplayName: new("App"),
 					},
 				},
 				expectApps: []database.WorkspaceApp{},
@@ -396,7 +397,7 @@ func TestSubAgentAPI(t *testing.T) {
 				apps: []*proto.CreateSubAgentRequest_App{
 					{
 						Slug:        "invalid app",
-						DisplayName: ptr.Ref("App"),
+						DisplayName: new("App"),
 					},
 				},
 				expectApps: []database.WorkspaceApp{},
@@ -413,11 +414,11 @@ func TestSubAgentAPI(t *testing.T) {
 				apps: []*proto.CreateSubAgentRequest_App{
 					{
 						Slug:        "valid-app",
-						DisplayName: ptr.Ref("Valid App"),
+						DisplayName: new("Valid App"),
 					},
 					{
 						Slug:        "Invalid_App",
-						DisplayName: ptr.Ref("Invalid App"),
+						DisplayName: new("Invalid App"),
 					},
 				},
 				expectApps: []database.WorkspaceApp{
@@ -506,15 +507,15 @@ func TestSubAgentAPI(t *testing.T) {
 				apps: []*proto.CreateSubAgentRequest_App{
 					{
 						Slug:        "full-app",
-						Command:     ptr.Ref("echo hello"),
-						DisplayName: ptr.Ref("Full Featured App"),
-						External:    ptr.Ref(true),
-						Group:       ptr.Ref("Development"),
-						Hidden:      ptr.Ref(true),
-						Icon:        ptr.Ref("/icon/app.svg"),
-						Order:       ptr.Ref(int32(10)),
-						Subdomain:   ptr.Ref(true),
-						Url:         ptr.Ref("http://localhost:8080"),
+						Command:     new("echo hello"),
+						DisplayName: new("Full Featured App"),
+						External:    new(true),
+						Group:       new("Development"),
+						Hidden:      new(true),
+						Icon:        new("/icon/app.svg"),
+						Order:       new(int32(10)),
+						Subdomain:   new(true),
+						Url:         new("http://localhost:8080"),
 						Healthcheck: &proto.CreateSubAgentRequest_App_Healthcheck{
 							Interval:  30,
 							Threshold: 3,
@@ -567,11 +568,11 @@ func TestSubAgentAPI(t *testing.T) {
 				apps: []*proto.CreateSubAgentRequest_App{
 					{
 						Slug:        "duplicate-app",
-						DisplayName: ptr.Ref("First App"),
+						DisplayName: new("First App"),
 					},
 					{
 						Slug:        "duplicate-app",
-						DisplayName: ptr.Ref("Second App"),
+						DisplayName: new("Second App"),
 					},
 				},
 				expectApps: []database.WorkspaceApp{
@@ -596,19 +597,19 @@ func TestSubAgentAPI(t *testing.T) {
 				apps: []*proto.CreateSubAgentRequest_App{
 					{
 						Slug:        "valid-app",
-						DisplayName: ptr.Ref("Valid App"),
+						DisplayName: new("Valid App"),
 					},
 					{
 						Slug:        "duplicate-app",
-						DisplayName: ptr.Ref("First Duplicate"),
+						DisplayName: new("First Duplicate"),
 					},
 					{
 						Slug:        "duplicate-app",
-						DisplayName: ptr.Ref("Second Duplicate"),
+						DisplayName: new("Second Duplicate"),
 					},
 					{
 						Slug:        "duplicate-app",
-						DisplayName: ptr.Ref("Third Duplicate"),
+						DisplayName: new("Third Duplicate"),
 					},
 				},
 				expectApps: []database.WorkspaceApp{
@@ -738,23 +739,23 @@ func TestSubAgentAPI(t *testing.T) {
 				Apps: []*proto.CreateSubAgentRequest_App{
 					{
 						Slug:        "", // Empty slug - should error on apps[0].slug
-						DisplayName: ptr.Ref("Empty Slug App"),
+						DisplayName: new("Empty Slug App"),
 					},
 					{
 						Slug:        "Invalid_Slug_With_Underscores", // Invalid characters - should error on apps[1].slug
-						DisplayName: ptr.Ref("Invalid Characters App"),
+						DisplayName: new("Invalid Characters App"),
 					},
 					{
 						Slug:        "duplicate-slug", // First occurrence - should succeed
-						DisplayName: ptr.Ref("First Duplicate"),
+						DisplayName: new("First Duplicate"),
 					},
 					{
 						Slug:        "duplicate-slug", // Duplicate - should error on apps[3].slug
-						DisplayName: ptr.Ref("Second Duplicate"),
+						DisplayName: new("Second Duplicate"),
 					},
 					{
 						Slug:        "-invalid-start", // Invalid start character - should error on apps[4].slug
-						DisplayName: ptr.Ref("Invalid Start App"),
+						DisplayName: new("Invalid Start App"),
 					},
 				},
 			})
@@ -802,6 +803,81 @@ func TestSubAgentAPI(t *testing.T) {
 			require.Equal(t, "k5jd7a99-duplicate-slug", apps[0].Slug)
 			require.Equal(t, "First Duplicate", apps[0].DisplayName)
 		})
+	})
+
+	t.Run("CreateSubAgentWithAppRebindRejected", func(t *testing.T) {
+		t.Parallel()
+
+		clock := quartz.NewMock(t)
+		createdAt := clock.Now()
+		parentAgent := database.WorkspaceAgent{
+			ID:                       uuid.New(),
+			ResourceID:               uuid.New(),
+			ConnectionTimeoutSeconds: 30,
+			TroubleshootingURL:       "https://example.com/troubleshoot",
+			APIKeyScope:              database.AgentKeyScopeEnumAll,
+		}
+		workspace := database.Workspace{
+			ID:         uuid.New(),
+			TemplateID: uuid.New(),
+		}
+		template := database.Template{
+			ID:                  workspace.TemplateID,
+			MaxPortSharingLevel: database.AppSharingLevelPublic,
+		}
+		insertedSubAgent := database.WorkspaceAgent{
+			ID:         uuid.New(),
+			ParentID:   uuid.NullUUID{UUID: parentAgent.ID, Valid: true},
+			ResourceID: parentAgent.ResourceID,
+			Name:       "child-agent",
+			AuthToken:  uuid.New(),
+		}
+
+		dbM := dbmock.NewMockStore(gomock.NewController(t))
+		dbM.EXPECT().GetWorkspaceByAgentID(gomock.Any(), parentAgent.ID).Return(workspace, nil)
+		dbM.EXPECT().GetTemplateByID(gomock.Any(), workspace.TemplateID).Return(template, nil)
+		dbM.EXPECT().InsertWorkspaceAgent(gomock.Any(), gomock.Cond(func(params database.InsertWorkspaceAgentParams) bool {
+			return params.ParentID.Valid && params.ParentID.UUID == parentAgent.ID &&
+				params.ResourceID == parentAgent.ResourceID &&
+				params.Name == insertedSubAgent.Name
+		})).Return(insertedSubAgent, nil)
+		dbM.EXPECT().UpsertWorkspaceApp(gomock.Any(), gomock.Cond(func(params database.UpsertWorkspaceAppParams) bool {
+			return params.ID != uuid.Nil &&
+				params.AgentID == insertedSubAgent.ID &&
+				params.CreatedAt.Equal(createdAt) &&
+				params.Slug == "fdqf0lpd-code-server" &&
+				params.DisplayName == "VS Code"
+		})).Return(database.WorkspaceApp{}, sql.ErrNoRows)
+
+		api := &agentapi.SubAgentAPI{
+			OwnerID:        uuid.New(),
+			OrganizationID: uuid.New(),
+			AgentFn:        func(context.Context) (database.WorkspaceAgent, error) { return parentAgent, nil },
+			Clock:          clock,
+			Database:       dbM,
+			Log:            testutil.Logger(t),
+		}
+
+		createResp, err := api.CreateSubAgent(context.Background(), &proto.CreateSubAgentRequest{
+			Name:            insertedSubAgent.Name,
+			Directory:       "/workspaces/coder",
+			Architecture:    "amd64",
+			OperatingSystem: "linux",
+			Apps: []*proto.CreateSubAgentRequest_App{
+				{
+					Slug:        "code-server",
+					DisplayName: new("VS Code"),
+				},
+			},
+		})
+		require.NoError(t, err)
+		require.Len(t, createResp.AppCreationErrors, 1)
+		require.Equal(t, int32(0), createResp.AppCreationErrors[0].Index)
+		require.Nil(t, createResp.AppCreationErrors[0].Field)
+		require.Contains(t, createResp.AppCreationErrors[0].Error, "workspace app slug \"fdqf0lpd-code-server\"")
+		require.Contains(t, createResp.AppCreationErrors[0].Error, "already bound to a workspace-owned agent")
+		require.Contains(t, createResp.AppCreationErrors[0].Error, "cannot be rebound to an agent in another workspace or to an agent without a workspace")
+		require.NotContains(t, createResp.AppCreationErrors[0].Error, "sql: no rows in result set")
 	})
 
 	t.Run("DeleteSubAgent", func(t *testing.T) {
@@ -940,14 +1016,14 @@ func TestSubAgentAPI(t *testing.T) {
 				Apps: []*proto.CreateSubAgentRequest_App{
 					{
 						Slug:        "code-server",
-						DisplayName: ptr.Ref("VS Code"),
-						Icon:        ptr.Ref("/icon/code.svg"),
-						Url:         ptr.Ref("http://localhost:13337"),
+						DisplayName: new("VS Code"),
+						Icon:        new("/icon/code.svg"),
+						Url:         new("http://localhost:13337"),
 					},
 					{
 						Slug:        "vim",
-						Command:     ptr.Ref("vim"),
-						DisplayName: ptr.Ref("Vim"),
+						Command:     new("vim"),
+						DisplayName: new("Vim"),
 					},
 				},
 			})
@@ -1150,8 +1226,8 @@ func TestSubAgentAPI(t *testing.T) {
 			Apps: []*proto.CreateSubAgentRequest_App{
 				{
 					Slug:        "custom-app",
-					DisplayName: ptr.Ref("Custom App"),
-					Url:         ptr.Ref("http://localhost:8080"),
+					DisplayName: new("Custom App"),
+					Url:         new("http://localhost:8080"),
 				},
 			},
 		})

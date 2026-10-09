@@ -2,6 +2,7 @@ package coderd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -25,6 +26,31 @@ import (
 	"github.com/coder/coder/v2/codersdk"
 )
 
+// scopeDocsURL points at the scopes a token may request. The api_key_scope enum
+// table in the API reference is a superset: it lists internal scopes too.
+const scopeDocsURL = "https://coder.com/docs/reference/api-key-scopes"
+
+// writeUnrequestableScope answers 400 for a scope name a token may not carry.
+// It distinguishes an unknown name from an internal api_key_scope member and
+// reports the relevant detail.
+func writeUnrequestableScope(ctx context.Context, rw http.ResponseWriter, name rbac.ScopeName) {
+	detail := fmt.Sprintf("unknown API key scope: %q. See %s for the scopes a token may request.", name, scopeDocsURL)
+	if database.APIKeyScope(name).Valid() {
+		detail = fmt.Sprintf("API key scope %q is internal and cannot be requested by a token. See %s for the scopes a token may request.", name, scopeDocsURL)
+	}
+	httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
+		Message: "Failed to create API key.",
+		Detail:  detail,
+	})
+}
+
+func writeExceedsCaller(ctx context.Context, rw http.ResponseWriter, err error) {
+	httpapi.Write(ctx, rw, http.StatusForbidden, codersdk.Response{
+		Message: "An API key cannot grant more than the API key creating it.",
+		Detail:  err.Error(),
+	})
+}
+
 // Creates a new token API key with the given scope and lifetime.
 //
 // @Summary Create token API key
@@ -36,7 +62,7 @@ import (
 // @Param user path string true "User ID, name, or me"
 // @Param request body codersdk.CreateTokenRequest true "Create token request"
 // @Success 201 {object} codersdk.GenerateAPIKeyResponse
-// @Router /users/{user}/keys/tokens [post]
+// @Router /api/v2/users/{user}/keys/tokens [post]
 func (api *API) postToken(rw http.ResponseWriter, r *http.Request) {
 	var (
 		ctx               = r.Context()
@@ -65,40 +91,27 @@ func (api *API) postToken(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Map and validate requested scope.
-	// Accept legacy special scopes (all, application_connect) and external scopes.
-	// Default to coder:all scopes for backward compatibility.
-	scopes := database.APIKeyScopes{database.ApiKeyScopeCoderAll}
+	// This handler decides only which names may be requested. Rewriting an
+	// accepted alias to the spelling the enum stores belongs to apikey.Generate,
+	// which every caller goes through. The plural field wins when both are set.
+	var scopes database.APIKeyScopes
 	if len(createToken.Scopes) > 0 {
 		scopes = make(database.APIKeyScopes, 0, len(createToken.Scopes))
 		for _, s := range createToken.Scopes {
-			name := string(s)
-			if !rbac.IsExternalScope(rbac.ScopeName(name)) {
-				httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
-					Message: "Failed to create API key.",
-					Detail:  fmt.Sprintf("invalid or unsupported API key scope: %q", name),
-				})
+			name := rbac.ScopeName(s)
+			if !rbac.IsExternalScope(name) {
+				writeUnrequestableScope(ctx, rw, name)
 				return
 			}
 			scopes = append(scopes, database.APIKeyScope(name))
 		}
 	} else if string(createToken.Scope) != "" {
-		name := string(createToken.Scope)
-		if !rbac.IsExternalScope(rbac.ScopeName(name)) {
-			httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
-				Message: "Failed to create API key.",
-				Detail:  fmt.Sprintf("invalid or unsupported API key scope: %q", name),
-			})
+		name := rbac.ScopeName(createToken.Scope)
+		if !rbac.IsExternalScope(name) {
+			writeUnrequestableScope(ctx, rw, name)
 			return
 		}
-		switch name {
-		case "all":
-			scopes = database.APIKeyScopes{database.ApiKeyScopeCoderAll}
-		case "application_connect":
-			scopes = database.APIKeyScopes{database.ApiKeyScopeCoderApplicationConnect}
-		default:
-			scopes = database.APIKeyScopes{database.APIKeyScope(name)}
-		}
+		scopes = database.APIKeyScopes{database.APIKeyScope(name)}
 	}
 
 	tokenName := namesgenerator.NameDigitWith("_")
@@ -159,8 +172,12 @@ func (api *API) postToken(rw http.ResponseWriter, r *http.Request) {
 		params.LifetimeSeconds = int64(createToken.Lifetime.Seconds())
 	}
 
-	cookie, key, err := api.createAPIKey(ctx, params)
+	cookie, key, err := api.createAPIKey(ctx, httpmw.APIKey(r), params)
 	if err != nil {
+		if errors.Is(err, apikey.ErrExceedsCaller) {
+			writeExceedsCaller(ctx, rw, err)
+			return
+		}
 		if database.IsUniqueViolation(err, database.UniqueIndexAPIKeyName) {
 			httpapi.Write(ctx, rw, http.StatusConflict, codersdk.Response{
 				Message: fmt.Sprintf("A token with name %q already exists.", tokenName),
@@ -190,7 +207,7 @@ func (api *API) postToken(rw http.ResponseWriter, r *http.Request) {
 // @Tags Users
 // @Param user path string true "User ID, name, or me"
 // @Success 201 {object} codersdk.GenerateAPIKeyResponse
-// @Router /users/{user}/keys [post]
+// @Router /api/v2/users/{user}/keys [post]
 func (api *API) postAPIKey(rw http.ResponseWriter, r *http.Request) {
 	var (
 		ctx               = r.Context()
@@ -214,12 +231,16 @@ func (api *API) postAPIKey(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cookie, key, err := api.createAPIKey(ctx, apikey.CreateParams{
+	cookie, key, err := api.createAPIKey(ctx, httpmw.APIKey(r), apikey.CreateParams{
 		UserID:          user.ID,
 		DefaultLifetime: api.DeploymentValues.Sessions.DefaultTokenDuration.Value(),
 		LoginType:       database.LoginTypePassword,
 		RemoteAddr:      r.RemoteAddr,
 	})
+	if errors.Is(err, apikey.ErrExceedsCaller) {
+		writeExceedsCaller(ctx, rw, err)
+		return
+	}
 	if err != nil {
 		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
 			Message: "Failed to create API key.",
@@ -244,7 +265,7 @@ func (api *API) postAPIKey(rw http.ResponseWriter, r *http.Request) {
 // @Param user path string true "User ID, name, or me"
 // @Param keyid path string true "Key ID" format(string)
 // @Success 200 {object} codersdk.APIKey
-// @Router /users/{user}/keys/{keyid} [get]
+// @Router /api/v2/users/{user}/keys/{keyid} [get]
 func (api *API) apiKeyByID(rw http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
@@ -273,7 +294,7 @@ func (api *API) apiKeyByID(rw http.ResponseWriter, r *http.Request) {
 // @Param user path string true "User ID, name, or me"
 // @Param keyname path string true "Key Name" format(string)
 // @Success 200 {object} codersdk.APIKey
-// @Router /users/{user}/keys/tokens/{keyname} [get]
+// @Router /api/v2/users/{user}/keys/tokens/{keyname} [get]
 func (api *API) apiKeyByName(rw http.ResponseWriter, r *http.Request) {
 	var (
 		ctx       = r.Context()
@@ -308,7 +329,7 @@ func (api *API) apiKeyByName(rw http.ResponseWriter, r *http.Request) {
 // @Param user path string true "User ID, name, or me"
 // @Success 200 {array} codersdk.APIKey
 // @Param include_expired query bool false "Include expired tokens in the list"
-// @Router /users/{user}/keys/tokens [get]
+// @Router /api/v2/users/{user}/keys/tokens [get]
 func (api *API) tokens(rw http.ResponseWriter, r *http.Request) {
 	var (
 		ctx               = r.Context()
@@ -391,7 +412,7 @@ func (api *API) tokens(rw http.ResponseWriter, r *http.Request) {
 // @Param user path string true "User ID, name, or me"
 // @Param keyid path string true "Key ID" format(string)
 // @Success 204
-// @Router /users/{user}/keys/{keyid} [delete]
+// @Router /api/v2/users/{user}/keys/{keyid} [delete]
 func (api *API) deleteAPIKey(rw http.ResponseWriter, r *http.Request) {
 	var (
 		ctx               = r.Context()
@@ -436,7 +457,7 @@ func (api *API) deleteAPIKey(rw http.ResponseWriter, r *http.Request) {
 // @Success 204
 // @Failure 404 {object} codersdk.Response
 // @Failure 500 {object} codersdk.Response
-// @Router /users/{user}/keys/{keyid}/expire [put]
+// @Router /api/v2/users/{user}/keys/{keyid}/expire [put]
 func (api *API) expireAPIKey(rw http.ResponseWriter, r *http.Request) {
 	var (
 		ctx               = r.Context()
@@ -497,7 +518,7 @@ func (api *API) expireAPIKey(rw http.ResponseWriter, r *http.Request) {
 // @Tags General
 // @Param user path string true "User ID, name, or me"
 // @Success 200 {object} codersdk.TokenConfig
-// @Router /users/{user}/keys/tokens/tokenconfig [get]
+// @Router /api/v2/users/{user}/keys/tokens/tokenconfig [get]
 func (api *API) tokenConfig(rw http.ResponseWriter, r *http.Request) {
 	user := httpmw.UserParam(r)
 	maxLifetime, err := api.getMaxTokenLifetime(r.Context(), user.ID)
@@ -562,7 +583,17 @@ func (api *API) getMaxTokenLifetime(ctx context.Context, userID uuid.UUID) (time
 	return maxLifetime, nil
 }
 
-func (api *API) createAPIKey(ctx context.Context, params apikey.CreateParams) (*http.Cookie, *database.APIKey, error) {
+// createAPIKey mints a key bounded by the caller's. Login flows have no caller
+// and use createLoginAPIKey.
+func (api *API) createAPIKey(ctx context.Context, caller database.APIKey, params apikey.CreateParams) (*http.Cookie, *database.APIKey, error) {
+	params, err := apikey.InheritWithinCaller(caller, params)
+	if err != nil {
+		return nil, nil, err
+	}
+	return api.createLoginAPIKey(ctx, params)
+}
+
+func (api *API) createLoginAPIKey(ctx context.Context, params apikey.CreateParams) (*http.Cookie, *database.APIKey, error) {
 	key, sessionToken, err := apikey.Generate(params)
 	if err != nil {
 		return nil, nil, xerrors.Errorf("generate API key: %w", err)

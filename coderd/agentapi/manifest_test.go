@@ -114,7 +114,7 @@ func TestGetManifest(t *testing.T) {
 				Hidden:               true,
 			},
 		}
-		scripts = []database.WorkspaceAgentScript{
+		scripts = []database.GetWorkspaceAgentScriptsByAgentIDsRow{
 			{
 				ID:               uuid.New(),
 				WorkspaceAgentID: agent.ID,
@@ -396,7 +396,7 @@ func TestGetManifest(t *testing.T) {
 		}
 
 		mDB.EXPECT().GetWorkspaceAppsByAgentID(gomock.Any(), childAgent.ID).Return([]database.WorkspaceApp{}, nil)
-		mDB.EXPECT().GetWorkspaceAgentScriptsByAgentIDs(gomock.Any(), []uuid.UUID{childAgent.ID}).Return([]database.WorkspaceAgentScript{}, nil)
+		mDB.EXPECT().GetWorkspaceAgentScriptsByAgentIDs(gomock.Any(), []uuid.UUID{childAgent.ID}).Return([]database.GetWorkspaceAgentScriptsByAgentIDsRow{}, nil)
 		mDB.EXPECT().GetWorkspaceAgentMetadata(gomock.Any(), database.GetWorkspaceAgentMetadataParams{
 			WorkspaceAgentID: childAgent.ID,
 			Keys:             nil, // all
@@ -459,7 +459,7 @@ func TestGetManifest(t *testing.T) {
 		}
 
 		mDB.EXPECT().GetWorkspaceAppsByAgentID(gomock.Any(), childAgent.ID).Return([]database.WorkspaceApp{}, nil)
-		mDB.EXPECT().GetWorkspaceAgentScriptsByAgentIDs(gomock.Any(), []uuid.UUID{childAgent.ID}).Return([]database.WorkspaceAgentScript{}, nil)
+		mDB.EXPECT().GetWorkspaceAgentScriptsByAgentIDs(gomock.Any(), []uuid.UUID{childAgent.ID}).Return([]database.GetWorkspaceAgentScriptsByAgentIDsRow{}, nil)
 		mDB.EXPECT().GetWorkspaceAgentMetadata(gomock.Any(), database.GetWorkspaceAgentMetadataParams{
 			WorkspaceAgentID: childAgent.ID,
 			Keys:             nil,
@@ -468,19 +468,20 @@ func TestGetManifest(t *testing.T) {
 		mDB.EXPECT().GetWorkspaceByID(gomock.Any(), workspace.ID).Return(workspace, nil)
 
 		// Return a mix of secrets: env-only, file-only, both, and
-		// one with neither set. The last should be filtered out.
+		// one explicitly disabled. The disabled secret should be
+		// filtered out.
 		mDB.EXPECT().ListUserSecretsWithValues(gomock.Any(), workspace.OwnerID).Return([]database.UserSecret{
-			{EnvName: "GITHUB_TOKEN", FilePath: "", Value: "ghp_xxxx"},
-			{EnvName: "", FilePath: "~/.ssh/id_rsa", Value: "private-key"},
-			{EnvName: "BOTH_ENV", FilePath: "/etc/both", Value: "both-val"},
-			{EnvName: "", FilePath: "", Value: "stored-only"},
+			{EnvName: "GITHUB_TOKEN", FilePath: "", Value: "ghp_xxxx", Enabled: true},
+			{EnvName: "", FilePath: "~/.ssh/id_rsa", Value: "private-key", Enabled: true},
+			{EnvName: "BOTH_ENV", FilePath: "/etc/both", Value: "both-val", Enabled: true},
+			{EnvName: "DISABLED_ENV", FilePath: "", Value: "disabled-val", Enabled: false},
 		}, nil)
 
 		got, err := api.GetManifest(context.Background(), &agentproto.GetManifestRequest{})
 		require.NoError(t, err)
 
-		// The secret with neither env_name nor file_path should
-		// be filtered out, leaving exactly 3.
+		// The disabled secret should be filtered out, leaving
+		// exactly 3.
 		require.Len(t, got.Secrets, 3)
 		require.Equal(t, "GITHUB_TOKEN", got.Secrets[0].EnvName)
 		require.Equal(t, "", got.Secrets[0].FilePath)

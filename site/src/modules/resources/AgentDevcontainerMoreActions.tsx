@@ -1,7 +1,7 @@
 import { EllipsisVerticalIcon } from "lucide-react";
-import { type FC, useId, useState } from "react";
+import { useId, useState } from "react";
 import { Button } from "#/components/Button/Button";
-import { ConfirmDialog } from "#/components/Dialogs/ConfirmDialog/ConfirmDialog";
+import { ConfirmDialog } from "#/components/Dialog/ConfirmDialog/ConfirmDialog";
 import {
 	DropdownMenu,
 	DropdownMenuContent,
@@ -13,7 +13,7 @@ type AgentDevcontainerMoreActionsProps = {
 	deleteDevContainer: () => void;
 };
 
-export const AgentDevcontainerMoreActions: FC<
+export const AgentDevcontainerMoreActions: React.FC<
 	AgentDevcontainerMoreActionsProps
 > = ({ deleteDevContainer }) => {
 	const [isConfirmingDelete, setIsConfirmingDelete] = useState(false);
@@ -58,7 +58,7 @@ type DevcontainerDeleteDialogProps = {
 	onConfirm: () => void;
 };
 
-const DevcontainerDeleteDialog: FC<DevcontainerDeleteDialogProps> = ({
+const DevcontainerDeleteDialog: React.FC<DevcontainerDeleteDialogProps> = ({
 	isOpen,
 	onCancel,
 	onConfirm,

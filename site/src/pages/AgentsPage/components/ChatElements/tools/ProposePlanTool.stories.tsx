@@ -37,19 +37,20 @@ const samplePlan = [
 
 const defaultPlanPath =
 	"/home/coder/.coder/plans/PLAN-a1b2c3d4-e5f6-7890-abcd-ef1234567890.md";
-const defaultPlanFilename = defaultPlanPath.split("/").pop() ?? "PLAN.md";
 
 const meta: Meta<typeof Tool> = {
 	title: "pages/AgentsPage/ChatElements/tools/ProposePlan",
 	component: Tool,
-	decorators: [
-		(Story) => (
-			<div className="max-w-3xl rounded-lg border border-solid border-border-default bg-surface-primary p-4">
-				<Story />
-			</div>
-		),
-	],
-	args: { name: "propose_plan" },
+	args: {
+		name: "propose_plan",
+		organizationId: "organization-id",
+		mcpServers: [],
+		isError: false,
+		subagentTitles: new Map(),
+		subagentVariants: new Map(),
+		shellToolDisplayMode: "auto",
+		codeDiffDisplayMode: "auto",
+	},
 	parameters: {
 		reactRouter: reactRouterParameters({ routing: { path: "/" } }),
 	},
@@ -59,15 +60,6 @@ type Story = StoryObj<typeof Tool>;
 
 export const Running: Story = {
 	args: { status: "running", args: { path: defaultPlanPath } },
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		expect(
-			canvas.getByText(`Proposing ${defaultPlanFilename}…`),
-		).toBeInTheDocument();
-		expect(
-			canvas.queryByRole("button", { name: "Implement plan" }),
-		).not.toBeInTheDocument();
-	},
 };
 
 export const Completed: Story = {
@@ -116,13 +108,6 @@ export const CustomPath: Story = {
 	beforeEach: () => {
 		spyOn(API.experimental, "getChatFileText").mockResolvedValue(samplePlan);
 	},
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		expect(await canvas.findByText("Implementation Plan")).toBeInTheDocument();
-		expect(
-			canvas.getByRole("button", { name: "Copy plan" }),
-		).toBeInTheDocument();
-	},
 };
 
 export const CompletedCopyButton: Story = {
@@ -157,16 +142,6 @@ export const ErrorState: Story = {
 		args: { path: defaultPlanPath },
 		result: "Failed to read file: file not found",
 	},
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		expect(
-			canvas.getByText(`Proposed ${defaultPlanFilename}`),
-		).toBeInTheDocument();
-		expect(canvas.getByLabelText("Error")).toBeInTheDocument();
-		expect(
-			canvas.queryByRole("button", { name: "Implement plan" }),
-		).not.toBeInTheDocument();
-	},
 };
 
 export const EmptyContent: Story = {
@@ -183,10 +158,6 @@ export const EmptyContent: Story = {
 	},
 	beforeEach: () => {
 		spyOn(API.experimental, "getChatFileText").mockResolvedValue("");
-	},
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		expect(await canvas.findByText("No plan content.")).toBeInTheDocument();
 	},
 };
 
@@ -207,31 +178,6 @@ export const FileIDLoading: Story = {
 			() => new Promise(() => {}),
 		);
 	},
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		expect(await canvas.findByText(/Loading plan/)).toBeInTheDocument();
-	},
-};
-
-export const FileIDCompleted: Story = {
-	args: {
-		status: "completed",
-		args: { path: defaultPlanPath },
-		result: {
-			ok: true,
-			path: defaultPlanPath,
-			kind: "plan",
-			file_id: "test-file-id-success",
-			media_type: "text/markdown",
-		},
-	},
-	beforeEach: () => {
-		spyOn(API.experimental, "getChatFileText").mockResolvedValue(samplePlan);
-	},
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		expect(await canvas.findByText("Implementation Plan")).toBeInTheDocument();
-	},
 };
 
 export const FileIDFetchError: Story = {
@@ -250,9 +196,5 @@ export const FileIDFetchError: Story = {
 		spyOn(API.experimental, "getChatFileText").mockRejectedValue(
 			new Error("Failed to load plan"),
 		);
-	},
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		expect(await canvas.findByLabelText("Error")).toBeInTheDocument();
 	},
 };

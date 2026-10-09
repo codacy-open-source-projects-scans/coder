@@ -1,15 +1,15 @@
+import { cn } from "cn";
 import { EyeIcon, EyeOffIcon } from "lucide-react";
-import { type FC, useState } from "react";
+import { useState } from "react";
 import { Button } from "#/components/Button/Button";
 import {
 	Tooltip,
 	TooltipContent,
 	TooltipTrigger,
 } from "#/components/Tooltip/Tooltip";
-import { cn } from "#/utils/cn";
 import { CopyButton } from "../CopyButton/CopyButton";
 
-interface CodeExampleProps {
+type CodeExampleProps = {
 	code: string;
 	/** Defaulting to true to be on the safe side; you should have to opt out of the secure option, not remember to opt in */
 	secret?: boolean;
@@ -19,19 +19,22 @@ interface CodeExampleProps {
 	redactReplacement?: string;
 	/** Show a button to reveal the redacted parts of the code */
 	showRevealButton?: boolean;
+	/** Accessible name of the copy button. */
+	copyLabel?: string;
 	className?: string;
-}
+};
 
 /**
  * Component to show single-line code examples, with a copy button
  */
-export const CodeExample: FC<CodeExampleProps> = ({
+export const CodeExample: React.FC<CodeExampleProps> = ({
 	code,
 	className,
 	secret = true,
 	redactPattern,
 	redactReplacement = "********",
 	showRevealButton,
+	copyLabel = "Copy code",
 }) => {
 	const [showFullValue, setShowFullValue] = useState(false);
 
@@ -45,9 +48,9 @@ export const CodeExample: FC<CodeExampleProps> = ({
 		? "Hide sensitive data"
 		: "Show sensitive data";
 	const icon = showFullValue ? (
-		<EyeOffIcon className="h-4 w-4" />
+		<EyeOffIcon className="size-4" />
 	) : (
-		<EyeIcon className="h-4 w-4" />
+		<EyeIcon className="size-4" />
 	);
 
 	return (
@@ -62,7 +65,7 @@ export const CodeExample: FC<CodeExampleProps> = ({
 		>
 			<code
 				className={cn([
-					"px-2 py-0 flex-grow break-all",
+					"px-2 py-0 grow break-all",
 					secret && "[-webkit-text-security:disc]", // also supported by firefox
 				])}
 			>
@@ -86,23 +89,23 @@ export const CodeExample: FC<CodeExampleProps> = ({
 				)}
 			</code>
 
-			<div className="flex items-center gap-1">
+			<div className="flex items-center gap-1 select-none">
 				{showRevealButton && redactPattern && !secret && (
 					<Tooltip>
 						<TooltipTrigger asChild>
 							<Button
 								size="icon"
 								variant="subtle"
+								aria-label={showButtonLabel}
 								onClick={() => setShowFullValue(!showFullValue)}
 							>
 								{icon}
-								<span className="sr-only">{showButtonLabel}</span>
 							</Button>
 						</TooltipTrigger>
 						<TooltipContent>{showButtonLabel}</TooltipContent>
 					</Tooltip>
 				)}
-				<CopyButton text={code} label="Copy code" />
+				<CopyButton text={code} label={copyLabel} />
 			</div>
 		</div>
 	);

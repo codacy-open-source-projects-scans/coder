@@ -24,7 +24,6 @@ import (
 	"github.com/coder/coder/v2/coderd/database/pubsub"
 	"github.com/coder/coder/v2/coderd/prebuilds"
 	"github.com/coder/coder/v2/coderd/util/namesgenerator"
-	"github.com/coder/coder/v2/coderd/util/ptr"
 	"github.com/coder/coder/v2/codersdk"
 	"github.com/coder/coder/v2/codersdk/drpcsdk"
 	"github.com/coder/coder/v2/enterprise/coderd"
@@ -67,6 +66,7 @@ type Options struct {
 	BrowserOnly                bool
 	EntitlementsUpdateInterval time.Duration
 	SCIMAPIKey                 []byte
+	UseLegacySCIM              bool
 	UserWorkspaceQuota         int
 	ProxyHealthInterval        time.Duration
 	LicenseOptions             *LicenseOptions
@@ -108,6 +108,7 @@ func NewWithAPI(t *testing.T, options *Options) (
 		AuditLogging:               options.AuditLogging,
 		BrowserOnly:                options.BrowserOnly,
 		SCIMAPIKey:                 options.SCIMAPIKey,
+		UseLegacySCIM:              options.UseLegacySCIM,
 		DERPServerRelayAddress:     serverURL.String(),
 		DERPServerRegionID:         int(oop.DeploymentValues.DERP.Server.RegionID.Value()),
 		ReplicaSyncUpdateInterval:  options.ReplicaSyncUpdateInterval,
@@ -235,6 +236,17 @@ func (opts *LicenseOptions) ManagedAgentLimit(limit int64) *LicenseOptions {
 	return opts.Feature(codersdk.FeatureManagedAgentLimit, limit)
 }
 
+func (opts *LicenseOptions) AgentRuntimeHours(allocation int64, softLimit, hardLimit *int64) *LicenseOptions {
+	opts.Feature(license.ClaimAgentRuntimeHoursAllocation, allocation)
+	if softLimit != nil {
+		opts.Feature(license.ClaimAgentRuntimeHoursLimitSoft, *softLimit)
+	}
+	if hardLimit != nil {
+		opts.Feature(license.ClaimAgentRuntimeHoursLimitHard, *hardLimit)
+	}
+	return opts
+}
+
 func (opts *LicenseOptions) Feature(name codersdk.FeatureName, value int64) *LicenseOptions {
 	if opts.Features == nil {
 		opts.Features = license.Features{}
@@ -245,11 +257,6 @@ func (opts *LicenseOptions) Feature(name codersdk.FeatureName, value int64) *Lic
 
 func (opts *LicenseOptions) Generate(t *testing.T) string {
 	return GenerateLicense(t, *opts)
-}
-
-// AddFullLicense generates a license with all features enabled.
-func AddFullLicense(t *testing.T, client *codersdk.Client) codersdk.License {
-	return AddLicense(t, client, LicenseOptions{AllFeatures: true})
 }
 
 // AddLicense generates a new license with the options provided and inserts it.
@@ -491,7 +498,7 @@ func GetRunningPrebuilds(
 
 		t.Logf("found %d running prebuilds so far, want %d", len(runningPrebuilds), desiredPrebuilds)
 		return len(runningPrebuilds) == desiredPrebuilds
-	}, testutil.IntervalSlow, "found %d running prebuilds, expected %d", len(runningPrebuilds), desiredPrebuilds)
+	}, testutil.IntervalFast, "found %d running prebuilds, expected %d", len(runningPrebuilds), desiredPrebuilds)
 
 	return runningPrebuilds
 }
@@ -540,7 +547,7 @@ func MustClaimPrebuild(
 		TemplateVersionID:       version.ID,
 		Name:                    workspaceName,
 		TemplateVersionPresetID: presetID,
-		AutostartSchedule:       ptr.Ref(startSchedule),
+		AutostartSchedule:       &startSchedule,
 	})
 	require.NoError(t, err)
 	build := coderdtest.AwaitWorkspaceBuildJobCompleted(t, userClient, userWorkspace.LatestBuild.ID)

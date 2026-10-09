@@ -1,16 +1,12 @@
-import type { FC, ReactNode } from "react";
-
-interface SectionHeaderProps {
+type SectionHeaderProps = {
 	label: string;
 	description?: string;
-	badge?: ReactNode;
-	action?: ReactNode;
-	/** Controls heading size. "page" (default) renders a larger h2,
-	 *  "section" renders a smaller h3 for sub-sections. */
+	badge?: React.ReactNode;
+	action?: React.ReactNode;
 	level?: "page" | "section";
-}
+};
 
-export const SectionHeader: FC<SectionHeaderProps> = ({
+export const SectionHeader: React.FC<SectionHeaderProps> = ({
 	label,
 	description,
 	badge,

@@ -8,7 +8,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"io"
-	"net/url"
 	"time"
 
 	"golang.org/x/xerrors"
@@ -32,13 +31,6 @@ import (
 
 func (r *RootCmd) Server(_ func()) *serpent.Command {
 	cmd := r.RootCmd.Server(func(ctx context.Context, options *agplcoderd.Options) (*agplcoderd.API, io.Closer, error) {
-		if options.DeploymentValues.DERP.Server.RelayURL.String() != "" {
-			_, err := url.Parse(options.DeploymentValues.DERP.Server.RelayURL.String())
-			if err != nil {
-				return nil, nil, xerrors.Errorf("derp-server-relay-address must be a valid HTTP URL: %w", err)
-			}
-		}
-
 		// Always generate a mesh key, even if the built-in DERP server is
 		// disabled. This mesh key is still used by workspace proxies running
 		// HA.
@@ -87,7 +79,7 @@ func (r *RootCmd) Server(_ func()) *serpent.Command {
 			backends.NewSlog(options.Logger),
 		)
 
-		options.TrialGenerator = trialer.New(options.Database, "https://v2-licensor.coder.com/trial", coderd.Keys)
+		options.TrialGenerator = trialer.New(options.Database, trialer.LicenseRequestURL, coderd.Keys).Generate
 
 		o := &coderd.Options{
 			Options:                   options,
@@ -95,6 +87,7 @@ func (r *RootCmd) Server(_ func()) *serpent.Command {
 			ConnectionLogging:         true,
 			BrowserOnly:               options.DeploymentValues.BrowserOnly.Value(),
 			SCIMAPIKey:                []byte(options.DeploymentValues.SCIMAPIKey.Value()),
+			UseLegacySCIM:             options.DeploymentValues.UseLegacySCIM.Value(),
 			RBAC:                      true,
 			DERPServerRelayAddress:    options.DeploymentValues.DERP.Server.RelayURL.String(),
 			DERPServerRegionID:        int(options.DeploymentValues.DERP.Server.RegionID.Value()),
@@ -137,9 +130,13 @@ func (r *RootCmd) Server(_ func()) *serpent.Command {
 		// Start the enterprise usage publisher routine. This won't do anything
 		// unless the deployment is licensed and one of the licenses has usage
 		// publishing enabled.
-		publisher := usage.NewTallymanPublisher(ctx, options.Logger, options.Database, o.LicenseKeys,
+		publisherOptions := []usage.TallymanPublisherOption{
 			usage.PublisherWithHTTPClient(api.HTTPClient),
-		)
+		}
+		if options.DeploymentValues.Prometheus.Enable {
+			publisherOptions = append(publisherOptions, usage.PublisherWithPrometheusRegisterer(options.PrometheusRegistry))
+		}
+		publisher := usage.NewTallymanPublisher(ctx, options.Logger, options.Database, o.LicenseKeys, publisherOptions...)
 		err = publisher.Start()
 		if err != nil {
 			_ = closers.Close()
@@ -161,49 +158,23 @@ func (r *RootCmd) Server(_ func()) *serpent.Command {
 		usageCron.Start(ctx)
 		closers.Add(usageCron)
 
-		// Build the provider list and start AI Bridge daemons only when
-		// at least one of the bridge or proxy features is enabled.
-		bridgeEnabled := options.DeploymentValues.AI.BridgeConfig.Enabled.Value()
-		proxyEnabled := options.DeploymentValues.AI.BridgeProxyConfig.Enabled.Value()
-		if bridgeEnabled || proxyEnabled {
-			providers, err := buildProviders(options.DeploymentValues.AI.BridgeConfig)
+		// Usage generation is deliberately not license-gated; the
+		// publish_usage_data license flag only gates publishing to Tallyman.
+		usageGenerator := usage.NewGenerator(quartz.NewReal(), options.Logger.Named("usage-event-generator"), options.Database, *options.UsageInserter.Load())
+		usageGenerator.Start(ctx)
+		closers.Add(usageGenerator)
+
+		// In-memory AI Bridge Proxy daemon. The bridge daemon itself is
+		// started unconditionally by AGPL cli/server.go (chatd uses its
+		// in-memory roundtripper regardless of license); only the proxy
+		// daemon remains enterprise-gated by config.
+		if options.DeploymentValues.AI.BridgeProxyConfig.Enabled.Value() {
+			aiBridgeProxyCloser, err := newAIBridgeProxyDaemon(api)
 			if err != nil {
-				return nil, nil, xerrors.Errorf("build aibridge providers: %w", err)
+				_ = closers.Close()
+				return nil, nil, xerrors.Errorf("create aibridgeproxyd: %w", err)
 			}
-
-			// In-memory aibridge daemon.
-			// TODO(@deansheather): the lifecycle of the aibridged server is
-			// probably better managed by the enterprise API type itself. Managing
-			// it in the API type means we can avoid starting it up when the license
-			// is not entitled to the feature.
-			if bridgeEnabled {
-				aibridgeDaemon, err := newAIBridgeDaemon(api, providers)
-				if err != nil {
-					return nil, nil, xerrors.Errorf("create aibridged: %w", err)
-				}
-
-				api.RegisterInMemoryAIBridgedHTTPHandler(aibridgeDaemon)
-
-				// When running as an in-memory daemon, the HTTP handler is
-				// wired into the coderd API and therefore is subject to its
-				// context. Calling Close() on aibridged will NOT affect
-				// in-flight requests but those will be closed once the API
-				// server is itself shutdown.
-				closers.Add(aibridgeDaemon)
-			}
-
-			// In-memory AI Bridge Proxy daemon.
-			if proxyEnabled {
-				aiBridgeProxyServer, err := newAIBridgeProxyDaemon(api, providers)
-				if err != nil {
-					_ = closers.Close()
-					return nil, nil, xerrors.Errorf("create aibridgeproxyd: %w", err)
-				}
-				closers.Add(aiBridgeProxyServer)
-
-				// Register the handler so coderd can serve the proxy endpoints.
-				api.RegisterInMemoryAIBridgeProxydHTTPHandler(aiBridgeProxyServer.Handler())
-			}
+			closers.Add(aiBridgeProxyCloser)
 		}
 
 		return api.AGPL, closers, nil

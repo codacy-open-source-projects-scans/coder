@@ -85,9 +85,34 @@ import "github.com/coder/coder/v2/apiversion"
 //   - Added `UserSecretValue` message and `user_secrets` field to `PlanRequest`,
 //     carrying user secret values from provisioner daemons to provisioners
 //     during plan.
+//
+// API v1.18:
+//   - Removed `user_secrets` from `AcquiredJob.WorkspaceBuild` (field 12) and
+//     `PlanRequest` (field 7), along with the `UserSecretValue` message. The
+//     `coder_secret` Terraform integration is being removed; user secrets are
+//     still delivered to running workspaces via the agent manifest path, which
+//     is independent of this proto.
+//
+// API v1.19:
+//   - Removed `ai_tasks` (field 6) and `has_ai_tasks` (field 12) from
+//     provisionerd.proto `CompletedJob.WorkspaceBuild` and
+//     `CompletedJob.TemplateImport`.
+//   - Removed `ai_tasks` (field 8), `has_ai_tasks` (field 7), `ai_task_count`
+//     (field 6), `task_id` (field 22), `task_prompt` (field 23), and the
+//     `AITask` / `AITaskSidebarApp` messages from provisioner.proto. Coder
+//     Tasks is being removed.
+//
+// API v1.20:
+//   - Added `resource_address` (field 10) and `dependencies` (field 11) to
+//     `provisioner.Script`, with the `ScriptDependency` message and the
+//     `ScriptDependencyRequirement` enum. They carry each script's full
+//     Terraform address and its resolved `coder_script_order` prerequisites
+//     from the provisioner to coderd. `dependencies` is empty when the script
+//     has no prerequisites. `resource_address` is empty only for the legacy
+//     agent startup and shutdown scripts.
 const (
 	CurrentMajor = 1
-	CurrentMinor = 17
+	CurrentMinor = 20
 )
 
 // CurrentVersion is the current provisionerd API version.

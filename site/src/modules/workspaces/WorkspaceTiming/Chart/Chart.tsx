@@ -1,32 +1,31 @@
+import { cn } from "cn";
 import { ChevronRightIcon } from "lucide-react";
-import type { FC, HTMLProps } from "react";
 import React, { useEffect, useRef } from "react";
 import {
 	SearchField,
 	type SearchFieldProps,
 } from "#/components/SearchField/SearchField";
-import { cn } from "#/utils/cn";
 import type { BarColors } from "./Bar";
 
-export const Chart = (props: HTMLProps<HTMLDivElement>) => {
+export const Chart = (props: React.HTMLProps<HTMLDivElement>) => {
 	return (
 		<div
 			{...props}
 			className={cn("flex h-full flex-col", props.className)}
-			style={
-				{
-					"--header-height": "40px",
-					"--section-padding": "16px",
-					"--x-axis-rows-gap": "20px",
-					"--y-axis-width": "200px",
-					...props.style,
-				} as React.CSSProperties
-			}
+			style={{
+				"--header-height": "40px",
+				"--section-padding": "16px",
+				"--x-axis-rows-gap": "20px",
+				"--y-axis-width": "200px",
+				...props.style,
+			}}
 		/>
 	);
 };
 
-export const ChartContent: FC<HTMLProps<HTMLDivElement>> = (props) => {
+export const ChartContent: React.FC<React.HTMLProps<HTMLDivElement>> = (
+	props,
+) => {
 	const contentRef = useRef<HTMLDivElement>(null);
 
 	// Display a scroll mask when the content is scrollable and update its
@@ -67,13 +66,13 @@ export const ChartContent: FC<HTMLProps<HTMLDivElement>> = (props) => {
 			{props.children}
 			<div
 				aria-hidden="true"
-				className="pointer-events-none absolute inset-x-0 z-[1] h-[100px] transition-opacity duration-200 [bottom:calc(-1*var(--scroll-top,0px))] [opacity:var(--scroll-mask-opacity)] [background:linear-gradient(180deg,rgba(0,0,0,0)_0%,var(--surface-primary)_81.93%)]"
+				className="pointer-events-none absolute inset-x-0 z-1 h-[100px] transition-opacity duration-200 bottom-[calc(-1*var(--scroll-top,0px))] opacity-(--scroll-mask-opacity) [background:linear-gradient(180deg,rgba(0,0,0,0)_0%,var(--surface-primary)_81.93%)]"
 			/>
 		</div>
 	);
 };
 
-export const ChartToolbar = (props: HTMLProps<HTMLDivElement>) => {
+export const ChartToolbar = (props: React.HTMLProps<HTMLDivElement>) => {
 	return (
 		<div
 			{...props}
@@ -95,11 +94,11 @@ type ChartBreadcrumbsProps = {
 	breadcrumbs: ChartBreadcrumb[];
 };
 
-export const ChartBreadcrumbs: FC<ChartBreadcrumbsProps> = ({
+export const ChartBreadcrumbs: React.FC<ChartBreadcrumbsProps> = ({
 	breadcrumbs,
 }) => {
 	return (
-		<ul className="m-0 flex w-[var(--y-axis-width)] shrink-0 list-none items-center gap-1 p-[var(--section-padding)] leading-none">
+		<ul className="m-0 flex w-(--y-axis-width) shrink-0 list-none items-center gap-1 p-(--section-padding) leading-none">
 			{breadcrumbs.map((b, i) => {
 				const isLast = i === breadcrumbs.length - 1;
 				return (
@@ -147,9 +146,9 @@ type ChartLegendsProps = {
 	legends: ChartLegend[];
 };
 
-export const ChartLegends: FC<ChartLegendsProps> = ({ legends }) => {
+export const ChartLegends: React.FC<ChartLegendsProps> = ({ legends }) => {
 	return (
-		<ul className="m-0 flex list-none items-center gap-6 pr-[var(--section-padding)] p-0">
+		<ul className="m-0 flex list-none items-center gap-6 pr-(--section-padding) p-0">
 			{legends.map((l) => (
 				<li
 					key={l.label}

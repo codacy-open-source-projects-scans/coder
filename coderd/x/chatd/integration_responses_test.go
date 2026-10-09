@@ -2,7 +2,7 @@ package chatd_test
 
 import (
 	"context"
-	"encoding/json"
+	"database/sql"
 	"fmt"
 	"strings"
 	"sync"
@@ -14,8 +14,8 @@ import (
 
 	"github.com/coder/coder/v2/coderd/database"
 	"github.com/coder/coder/v2/coderd/database/dbtestutil"
+	dbpubsub "github.com/coder/coder/v2/coderd/database/pubsub"
 	"github.com/coder/coder/v2/coderd/x/chatd"
-	"github.com/coder/coder/v2/coderd/x/chatd/chatprompt"
 	"github.com/coder/coder/v2/coderd/x/chatd/chattest"
 	"github.com/coder/coder/v2/codersdk"
 	"github.com/coder/coder/v2/testutil"
@@ -63,9 +63,12 @@ func TestOpenAIResponsesNoStaleWebSearchReplay(t *testing.T) {
 		}
 	})
 
-	user, org, _ := seedChatDependenciesWithProvider(ctx, t, db, "openai", openAIURL)
-	model := insertOpenAIResponsesModelConfig(ctx, t, db, user.ID, false, true)
-	server := newActiveTestServer(t, db, ps)
+	user, org, _ := seedChatDependenciesWithProvider(t, db, "openai", openAIURL)
+	model := insertOpenAIResponsesModelConfig(t, db, user.ID, false, true)
+	factory := chattest.NewMockAIBridgeTransport(t, openAIURL)
+	server := newOpenAIResponsesTestServer(t, db, ps, func(cfg *chatd.Config) {
+		cfg.AIBridgeTransportFactory = chatAIGatewayTransportFactoryPointer(factory)
+	})
 
 	chat, err := server.CreateChat(ctx, chatd.CreateOptions{
 		OrganizationID: org.ID,
@@ -98,10 +101,54 @@ func TestOpenAIResponsesNoStaleWebSearchReplay(t *testing.T) {
 	followup := requests[1]
 	require.NotNil(t, followup.Store)
 	require.False(t, *followup.Store)
-	require.Nil(t, followup.PreviousResponseID)
 	require.NotEmpty(t, followup.Prompt)
 	requireNoResponsesProviderItemReplay(t, followup.Prompt, reasoningID, webSearchID)
 	require.NotContains(t, promptItemTypes(followup.Prompt), "web_search_call")
+}
+
+func TestOpenAIResponsesPersistsProviderResponseID(t *testing.T) {
+	t.Parallel()
+
+	db, ps := dbtestutil.NewDB(t)
+	ctx := testutil.Context(t, testutil.WaitLong)
+
+	openAIURL := chattest.NewOpenAI(t, func(req *chattest.OpenAIRequest) chattest.OpenAIResponse {
+		if !req.Stream {
+			return chattest.OpenAINonStreamingResponse("title")
+		}
+		resp := chattest.OpenAIStreamingResponse(chattest.OpenAITextChunks("answer")...)
+		resp.ResponseID = "resp_persisted"
+		return resp
+	})
+
+	user, org, _ := seedChatDependenciesWithProvider(t, db, "openai", openAIURL)
+	model := insertOpenAIResponsesModelConfig(t, db, user.ID, false, false)
+	factory := chattest.NewMockAIBridgeTransport(t, openAIURL)
+	server := newOpenAIResponsesTestServer(t, db, ps, func(cfg *chatd.Config) {
+		cfg.AIBridgeTransportFactory = chatAIGatewayTransportFactoryPointer(factory)
+	})
+
+	chat, err := server.CreateChat(ctx, chatd.CreateOptions{
+		OrganizationID: org.ID,
+		OwnerID:        user.ID,
+		Title:          uniqueResponsesTitle(t, "response-id"),
+		ModelConfigID:  model.ID,
+		InitialUserContent: []codersdk.ChatMessagePart{
+			codersdk.ChatMessageText("hello"),
+		},
+	})
+	require.NoError(t, err)
+	waitForChatProcessed(ctx, t, db, chat.ID, server)
+	requireResponsesChatWaiting(ctx, t, db, chat.ID)
+
+	messages, err := db.GetChatMessagesByChatID(ctx, database.GetChatMessagesByChatIDParams{ChatID: chat.ID})
+	require.NoError(t, err)
+	responseIDs := make(map[database.ChatMessageRole]sql.NullString)
+	for _, message := range messages {
+		responseIDs[message.Role] = message.ProviderResponseID
+	}
+	require.Equal(t, sql.NullString{String: "resp_persisted", Valid: true}, responseIDs[database.ChatMessageRoleAssistant])
+	require.False(t, responseIDs[database.ChatMessageRoleUser].Valid)
 }
 
 func TestOpenAIResponsesFullReplayPairsReasoningAndWebSearch(t *testing.T) {
@@ -145,10 +192,13 @@ func TestOpenAIResponsesFullReplayPairsReasoningAndWebSearch(t *testing.T) {
 		}
 	})
 
-	user, org, _ := seedChatDependenciesWithProvider(ctx, t, db, "openai", openAIURL)
-	firstModel := insertOpenAIResponsesModelConfig(ctx, t, db, user.ID, true, true)
-	secondModel := insertOpenAIResponsesModelConfig(ctx, t, db, user.ID, true, true)
-	server := newActiveTestServer(t, db, ps)
+	user, org, _ := seedChatDependenciesWithProvider(t, db, "openai", openAIURL)
+	firstModel := insertOpenAIResponsesModelConfig(t, db, user.ID, true, true)
+	secondModel := insertOpenAIResponsesModelConfig(t, db, user.ID, true, true)
+	factory := chattest.NewMockAIBridgeTransport(t, openAIURL)
+	server := newOpenAIResponsesTestServer(t, db, ps, func(cfg *chatd.Config) {
+		cfg.AIBridgeTransportFactory = chatAIGatewayTransportFactoryPointer(factory)
+	})
 
 	chat, err := server.CreateChat(ctx, chatd.CreateOptions{
 		OrganizationID: org.ID,
@@ -181,166 +231,13 @@ func TestOpenAIResponsesFullReplayPairsReasoningAndWebSearch(t *testing.T) {
 	followup := requests[1]
 	require.NotNil(t, followup.Store)
 	require.True(t, *followup.Store)
-	require.Nil(t, followup.PreviousResponseID)
 	require.NotEmpty(t, followup.Prompt)
 	requirePromptItemReferenceOrder(t, followup.Prompt, reasoningID, webSearchID)
 }
 
-func TestOpenAIResponsesChainModeSkipsWhenLocalCallPending(t *testing.T) {
-	t.Parallel()
-
-	db, ps := dbtestutil.NewDB(t)
-	ctx := testutil.Context(t, testutil.WaitLong)
-
-	var recorder responsesRequestRecorder
-	openAIURL := chattest.NewOpenAI(t, func(req *chattest.OpenAIRequest) chattest.OpenAIResponse {
-		if !req.Stream {
-			return chattest.OpenAINonStreamingResponse("title")
-		}
-		recorder.record(req)
-		resp := chattest.OpenAIStreamingResponse(
-			chattest.OpenAITextChunks("resolved after local call")...,
-		)
-		resp.ResponseID = "resp_local_pending_next"
-		return resp
-	})
-
-	user, org, _ := seedChatDependenciesWithProvider(ctx, t, db, "openai", openAIURL)
-	model := insertOpenAIResponsesModelConfig(ctx, t, db, user.ID, true, false)
-	chat := insertOpenAIResponsesChat(ctx, t, db, org.ID, user.ID, model.ID, "local-pending")
-
-	callID := fmt.Sprintf("call_local_%d", time.Now().UnixNano())
-	localCall := codersdk.ChatMessageToolCall(
-		callID,
-		"read_file",
-		json.RawMessage(`{"path":"README.md"}`),
-	)
-	insertOpenAIResponsesMessages(ctx, t, db, chat.ID, user.ID, model.ID,
-		persistedResponsesMessage{
-			role: database.ChatMessageRoleUser,
-			parts: []codersdk.ChatMessagePart{
-				codersdk.ChatMessageText("please inspect the README"),
-			},
-		},
-		persistedResponsesMessage{
-			role:               database.ChatMessageRoleAssistant,
-			parts:              []codersdk.ChatMessagePart{localCall},
-			providerResponseID: "resp_local_pending_prior",
-		},
-	)
-
-	server := newActiveTestServer(t, db, ps)
-	_, err := server.SendMessage(ctx, chatd.SendMessageOptions{
-		ChatID:        chat.ID,
-		CreatedBy:     user.ID,
-		ModelConfigID: model.ID,
-		Content: []codersdk.ChatMessagePart{
-			codersdk.ChatMessageText("continue after that tool call"),
-		},
-	})
-	require.NoError(t, err)
-	waitForChatProcessed(ctx, t, db, chat.ID, server)
-	requireResponsesChatWaiting(ctx, t, db, chat.ID)
-
-	requests := recorder.all()
-	require.Len(t, requests, 1)
-	request := requests[0]
-	require.NotNil(t, request.Store)
-	require.True(t, *request.Store)
-	require.Nil(t, request.PreviousResponseID)
-	require.NotEmpty(t, request.Prompt)
-	requirePromptItemWithTypeAndCallID(t, request.Prompt, "function_call", callID)
-	requirePromptItemWithTypeAndCallID(t, request.Prompt, "function_call_output", callID)
-}
-
-func TestOpenAIResponsesChainModeStillFiresForProviderExecutedOnly(t *testing.T) {
-	t.Parallel()
-
-	db, ps := dbtestutil.NewDB(t)
-	ctx := testutil.Context(t, testutil.WaitLong)
-
-	var recorder responsesRequestRecorder
-	openAIURL := chattest.NewOpenAI(t, func(req *chattest.OpenAIRequest) chattest.OpenAIResponse {
-		if !req.Stream {
-			return chattest.OpenAINonStreamingResponse("title")
-		}
-		recorder.record(req)
-		resp := chattest.OpenAIStreamingResponse(
-			chattest.OpenAITextChunks("chained answer")...,
-		)
-		resp.ResponseID = "resp_provider_only_next"
-		return resp
-	})
-
-	user, org, _ := seedChatDependenciesWithProvider(ctx, t, db, "openai", openAIURL)
-	model := insertOpenAIResponsesModelConfig(ctx, t, db, user.ID, true, true)
-	chat := insertOpenAIResponsesChat(ctx, t, db, org.ID, user.ID, model.ID, "provider-only")
-
-	const (
-		previousResponseID = "resp_provider_only_prior"
-		webSearchID        = "ws_provider_only_search"
-	)
-	webSearchCall := codersdk.ChatMessageToolCall(
-		webSearchID,
-		"web_search",
-		json.RawMessage(`{"query":"coder docs"}`),
-	)
-	webSearchCall.ProviderExecuted = true
-	webSearchResult := codersdk.ChatMessageToolResult(
-		webSearchID,
-		"web_search",
-		json.RawMessage(`{"status":"completed"}`),
-		false,
-		false,
-	)
-	webSearchResult.ProviderExecuted = true
-	insertOpenAIResponsesMessages(ctx, t, db, chat.ID, user.ID, model.ID,
-		persistedResponsesMessage{
-			role: database.ChatMessageRoleUser,
-			parts: []codersdk.ChatMessagePart{
-				codersdk.ChatMessageText("look up the docs"),
-			},
-		},
-		persistedResponsesMessage{
-			role: database.ChatMessageRoleAssistant,
-			parts: []codersdk.ChatMessagePart{
-				webSearchCall,
-				webSearchResult,
-			},
-			providerResponseID: previousResponseID,
-		},
-	)
-
-	server := newActiveTestServer(t, db, ps)
-	_, err := server.SendMessage(ctx, chatd.SendMessageOptions{
-		ChatID:        chat.ID,
-		CreatedBy:     user.ID,
-		ModelConfigID: model.ID,
-		Content: []codersdk.ChatMessagePart{
-			codersdk.ChatMessageText("what did it find"),
-		},
-	})
-	require.NoError(t, err)
-	waitForChatProcessed(ctx, t, db, chat.ID, server)
-	requireResponsesChatWaiting(ctx, t, db, chat.ID)
-
-	requests := recorder.all()
-	require.Len(t, requests, 1)
-	request := requests[0]
-	require.NotNil(t, request.Store)
-	require.True(t, *request.Store)
-	require.NotNil(t, request.PreviousResponseID)
-	require.Equal(t, previousResponseID, *request.PreviousResponseID)
-	require.NotEmpty(t, request.Prompt)
-	requireNoResponsesProviderItemReplay(t, request.Prompt, webSearchID)
-	require.NotContains(t, promptItemTypes(request.Prompt), "web_search_call")
-	require.NotContains(t, promptItemRoles(request.Prompt), "assistant")
-}
-
 type recordedResponsesRequest struct {
-	Prompt             []interface{}
-	Store              *bool
-	PreviousResponseID *string
+	Prompt []interface{}
+	Store  *bool
 }
 
 type responsesRequestRecorder struct {
@@ -357,15 +254,9 @@ func (r *responsesRequestRecorder) record(req *chattest.OpenAIRequest) int {
 		value := *req.Store
 		store = &value
 	}
-	var previousResponseID *string
-	if req.PreviousResponseID != nil {
-		value := *req.PreviousResponseID
-		previousResponseID = &value
-	}
 	r.requests = append(r.requests, recordedResponsesRequest{
-		Prompt:             append([]interface{}(nil), req.Prompt...),
-		Store:              store,
-		PreviousResponseID: previousResponseID,
+		Prompt: append([]interface{}(nil), req.Prompt...),
+		Store:  store,
 	})
 	return len(r.requests)
 }
@@ -376,14 +267,25 @@ func (r *responsesRequestRecorder) all() []recordedResponsesRequest {
 	return append([]recordedResponsesRequest(nil), r.requests...)
 }
 
-type persistedResponsesMessage struct {
-	role               database.ChatMessageRole
-	parts              []codersdk.ChatMessagePart
-	providerResponseID string
+func newOpenAIResponsesTestServer(
+	t *testing.T,
+	db database.Store,
+	ps dbpubsub.Pubsub,
+	overrides ...func(*chatd.Config),
+) *chatd.Server {
+	t.Helper()
+	allOverrides := append([]func(*chatd.Config){func(cfg *chatd.Config) {
+		// Let CreateChat and SendMessage publish their pending status
+		// before wake-driven processing starts. The responses tests are
+		// not exercising periodic polling, and PostgreSQL can otherwise
+		// deliver that stale pending notification after processChat
+		// subscribes to control events.
+		cfg.PendingChatAcquireInterval = testutil.WaitLong
+	}}, overrides...)
+	return newActiveTestServer(t, db, ps, allOverrides...)
 }
 
 func insertOpenAIResponsesModelConfig(
-	ctx context.Context,
 	t *testing.T,
 	db database.Store,
 	userID uuid.UUID,
@@ -392,7 +294,6 @@ func insertOpenAIResponsesModelConfig(
 ) database.ChatModelConfig {
 	t.Helper()
 	return insertChatModelConfigWithCallConfig(
-		ctx,
 		t,
 		db,
 		userID,
@@ -409,65 +310,6 @@ func insertOpenAIResponsesModelConfig(
 	)
 }
 
-func insertOpenAIResponsesChat(
-	ctx context.Context,
-	t *testing.T,
-	db database.Store,
-	organizationID uuid.UUID,
-	ownerID uuid.UUID,
-	modelConfigID uuid.UUID,
-	titlePrefix string,
-) database.Chat {
-	t.Helper()
-	chat, err := db.InsertChat(ctx, database.InsertChatParams{
-		OrganizationID:    organizationID,
-		OwnerID:           ownerID,
-		LastModelConfigID: modelConfigID,
-		Title:             uniqueResponsesTitle(t, titlePrefix),
-		Status:            database.ChatStatusWaiting,
-		MCPServerIDs:      []uuid.UUID{},
-		ClientType:        database.ChatClientTypeApi,
-	})
-	require.NoError(t, err)
-	return chat
-}
-
-func insertOpenAIResponsesMessages(
-	ctx context.Context,
-	t *testing.T,
-	db database.Store,
-	chatID uuid.UUID,
-	createdBy uuid.UUID,
-	modelConfigID uuid.UUID,
-	messages ...persistedResponsesMessage,
-) {
-	t.Helper()
-	params := database.InsertChatMessagesParams{ChatID: chatID}
-	for _, message := range messages {
-		content, err := chatprompt.MarshalParts(message.parts)
-		require.NoError(t, err)
-		params.CreatedBy = append(params.CreatedBy, createdBy)
-		params.ModelConfigID = append(params.ModelConfigID, modelConfigID)
-		params.Role = append(params.Role, message.role)
-		params.Content = append(params.Content, string(content.RawMessage))
-		params.ContentVersion = append(params.ContentVersion, chatprompt.CurrentContentVersion)
-		params.Visibility = append(params.Visibility, database.ChatMessageVisibilityBoth)
-		params.InputTokens = append(params.InputTokens, 0)
-		params.OutputTokens = append(params.OutputTokens, 0)
-		params.TotalTokens = append(params.TotalTokens, 0)
-		params.ReasoningTokens = append(params.ReasoningTokens, 0)
-		params.CacheCreationTokens = append(params.CacheCreationTokens, 0)
-		params.CacheReadTokens = append(params.CacheReadTokens, 0)
-		params.ContextLimit = append(params.ContextLimit, 0)
-		params.Compressed = append(params.Compressed, false)
-		params.TotalCostMicros = append(params.TotalCostMicros, 0)
-		params.RuntimeMs = append(params.RuntimeMs, 0)
-		params.ProviderResponseID = append(params.ProviderResponseID, message.providerResponseID)
-	}
-	_, err := db.InsertChatMessages(ctx, params)
-	require.NoError(t, err)
-}
-
 func requireResponsesChatWaiting(
 	ctx context.Context,
 	t *testing.T,
@@ -478,7 +320,7 @@ func requireResponsesChatWaiting(
 	chat, err := db.GetChatByID(ctx, chatID)
 	require.NoError(t, err)
 	if chat.Status == database.ChatStatusError {
-		require.FailNowf(t, "chat failed", "last_error=%q", chat.LastError.String)
+		require.FailNowf(t, "chat failed", "last_error=%q", chatLastErrorMessage(chat.LastError))
 	}
 	require.Equal(t, database.ChatStatusWaiting, chat.Status)
 }
@@ -502,47 +344,6 @@ func promptItemTypes(prompt []interface{}) []string {
 	return types
 }
 
-func promptItemRoles(prompt []interface{}) []string {
-	roles := make([]string, 0, len(prompt))
-	for _, item := range prompt {
-		itemMap, ok := item.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		if role := chattest.StringResponseField(itemMap, "role"); role != "" {
-			roles = append(roles, role)
-		}
-	}
-	return roles
-}
-
-func requirePromptItemWithTypeAndCallID(
-	t *testing.T,
-	prompt []interface{},
-	itemType string,
-	callID string,
-) map[string]interface{} {
-	t.Helper()
-	for _, item := range prompt {
-		itemMap, ok := item.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		if chattest.StringResponseField(itemMap, "type") == itemType &&
-			chattest.StringResponseField(itemMap, "call_id") == callID {
-			return itemMap
-		}
-	}
-	promptJSON, err := json.Marshal(prompt)
-	require.NoError(t, err)
-	require.FailNowf(t, "prompt item missing",
-		"missing type=%q call_id=%q in prompt %s", itemType, callID, promptJSON)
-	return nil
-}
-
-// requireNoResponsesProviderItemReplay rejects the explicit stale IDs and all
-// provider-managed Responses item IDs. Chain mode should rely on
-// previous_response_id, not replay rs_ or ws_ identifiers in prompt input.
 func requireNoResponsesProviderItemReplay(
 	t *testing.T,
 	prompt []interface{},

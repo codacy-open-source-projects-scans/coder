@@ -1,28 +1,40 @@
+import { cn } from "cn";
 import { ArrowLeftIcon, InfoIcon } from "lucide-react";
-import type { FC, PropsWithChildren } from "react";
+import { useState } from "react";
 import type {
 	AIBridgeSessionThreadsResponse,
 	AIBridgeThread,
 } from "#/api/typesGenerated";
 import { Button } from "#/components/Button/Button";
 import { Loader } from "#/components/Loader/Loader";
-import { PaywallAIGovernance } from "#/components/Paywall/PaywallAIGovernance";
+import { SearchField } from "#/components/SearchField/SearchField";
 import {
 	Tooltip,
 	TooltipContent,
 	TooltipProvider,
 	TooltipTrigger,
 } from "#/components/Tooltip/Tooltip";
+import { useDebouncedValue } from "#/hooks/debounce";
+import { PremiumPaywallAIGovernance } from "#/modules/paywall/PremiumPaywallAIGovernance";
 import { AIBridgeSetupAlert } from "../AIBridgeSetupAlert";
 import { SessionSummaryTable } from "./SessionSummaryTable";
 import { SessionTimeline } from "./SessionTimeline/SessionTimeline";
 import { SessionTimelineSkeleton } from "./SessionTimeline/SessionTimelineSkeleton";
+import { countSessionSearchMatches } from "./SessionTimeline/sessionSearch";
 
-const SessionSummaryTooltip: FC<PropsWithChildren> = ({ children }) => (
+const SessionSummaryTooltip: React.FC<React.PropsWithChildren> = ({
+	children,
+}) => (
 	<TooltipProvider>
 		<Tooltip>
 			<TooltipTrigger asChild>
-				<div className="flex-shrink-0 flex items-center">{children}</div>
+				<button
+					type="button"
+					aria-label="About sessions"
+					className="m-0 ml-2 shrink-0 flex items-center border-0 bg-transparent p-0 text-inherit rounded-sm focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-content-link"
+				>
+					{children}
+				</button>
 			</TooltipTrigger>
 			<TooltipContent
 				side="top"
@@ -38,7 +50,7 @@ const SessionSummaryTooltip: FC<PropsWithChildren> = ({ children }) => (
 	</TooltipProvider>
 );
 
-interface SessionThreadsPageViewProps {
+type SessionThreadsPageViewProps = {
 	session: AIBridgeSessionThreadsResponse | undefined;
 	threads: readonly AIBridgeThread[];
 	loading: boolean;
@@ -48,9 +60,9 @@ interface SessionThreadsPageViewProps {
 	isAISessionsEnabled: boolean;
 	isAISessionsEntitled: boolean;
 	onBackClicked: () => void;
-}
+};
 
-export const SessionThreadsPageView: FC<SessionThreadsPageViewProps> = ({
+export const SessionThreadsPageView: React.FC<SessionThreadsPageViewProps> = ({
 	session,
 	threads,
 	loading,
@@ -61,8 +73,17 @@ export const SessionThreadsPageView: FC<SessionThreadsPageViewProps> = ({
 	isAISessionsEntitled,
 	onBackClicked,
 }) => {
+	const [searchQuery, setSearchQuery] = useState("");
+	// Debounce so typing does not refilter the timeline on every keystroke.
+	const debouncedQuery = useDebouncedValue(searchQuery, 500);
+
 	if (!isAISessionsEntitled) {
-		return <PaywallAIGovernance />;
+		return (
+			<PremiumPaywallAIGovernance
+				variant="sessions"
+				source="aibridge_session_threads"
+			/>
+		);
 	}
 
 	if (!isAISessionsEnabled) {
@@ -75,14 +96,31 @@ export const SessionThreadsPageView: FC<SessionThreadsPageViewProps> = ({
 		0,
 	);
 
+	// The API returns only the single most contacted host, alongside the total
+	// distinct domain count that drives the "+N more" overflow.
+	const topDomain = session?.network_top_domains?.[0];
+
+	const networkCalls = session?.network_call_logs ?? [];
+
+	const isSearching = debouncedQuery.trim() !== "";
+
+	const searchMatches = countSessionSearchMatches(
+		threads,
+		networkCalls,
+		debouncedQuery,
+	);
+	const searchMatchLabel = `${searchMatches.toLocaleString("en-US")} ${
+		searchMatches === 1 ? "match" : "matches"
+	}`;
+
 	return (
 		<>
-			<nav className="mb-6">
+			<nav className="mb-6 flex flex-col md:flex-row md:items-start justify-between gap-4">
 				<Button
 					asChild
 					variant="outline"
 					size="lg"
-					title="Back to AI Bridge sessions list"
+					title="Back to AI Gateway sessions list"
 					onClick={onBackClicked}
 				>
 					<span>
@@ -90,13 +128,43 @@ export const SessionThreadsPageView: FC<SessionThreadsPageViewProps> = ({
 						Back
 					</span>
 				</Button>
+				{session && (
+					<div className="flex flex-col items-stretch md:items-end gap-1 md:w-[28rem]">
+						<SearchField
+							value={searchQuery}
+							onChange={setSearchQuery}
+							placeholder="Search..."
+							aria-label="Search session events"
+						/>
+						<p
+							aria-hidden
+							data-testid="search-match-count"
+							className={cn(
+								"m-0 text-sm font-normal text-content-secondary text-right",
+								!isSearching && "opacity-0",
+							)}
+						>
+							{isSearching ? (
+								<>
+									<strong>{searchMatches.toLocaleString("en-US")}</strong>{" "}
+									{searchMatches === 1 ? "match" : "matches"}
+								</>
+							) : (
+								"\u00a0"
+							)}
+						</p>
+						<span className="sr-only" role="status">
+							{isSearching ? searchMatchLabel : ""}
+						</span>
+					</div>
+				)}
 			</nav>
 			<div className="flex flex-col md:flex-row md:items-start gap-6">
 				<aside className="md:w-80 md:shrink-0 px-3 py-2.5 border border-solid rounded-md flex flex-col gap-1">
 					<h2 className="text-sm font-semibold flex items-center m-0">
 						Session summary
 						<SessionSummaryTooltip>
-							<InfoIcon className="ml-2 text-content-secondary size-icon-xs" />
+							<InfoIcon className="text-content-secondary size-icon-xs" />
 						</SessionSummaryTooltip>
 					</h2>
 					{loading && <Loader className="my-4" />}
@@ -115,6 +183,13 @@ export const SessionThreadsPageView: FC<SessionThreadsPageViewProps> = ({
 							threadCount={threads.length}
 							toolCallCount={toolCallCount}
 							tokenUsageMetadata={session.token_usage_summary.metadata}
+							networkCalls={session.network_calls}
+							networkDomains={
+								topDomain && {
+									topDomain,
+									totalCount: session.network_domain_count ?? 1,
+								}
+							}
 						/>
 					)}
 				</aside>
@@ -123,6 +198,9 @@ export const SessionThreadsPageView: FC<SessionThreadsPageViewProps> = ({
 						<SessionTimeline
 							initiator={session.initiator}
 							threads={threads}
+							networkCallSummary={session.network_calls}
+							networkCalls={networkCalls}
+							searchQuery={debouncedQuery}
 							hasNextPage={hasNextPage}
 							isFetchingNextPage={isFetchingNextPage}
 							onFetchNextPage={onFetchNextPage}

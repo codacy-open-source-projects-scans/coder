@@ -1,14 +1,22 @@
+import { cn } from "cn";
 import {
-	BookOpenIcon,
+	ActivityIcon,
+	BadgeQuestionMarkIcon,
 	BotIcon,
-	ClipboardListIcon,
-	FileIcon,
-	FilePenIcon,
+	CompassIcon,
+	FilePenLineIcon,
+	FileTextIcon,
+	LightbulbIcon,
+	type LucideIcon,
 	MonitorIcon,
-	PlayIcon,
-	PlusCircleIcon,
+	PowerIcon,
+	PowerOffIcon,
+	RouteIcon,
+	SearchIcon,
+	ServerIcon,
 	TerminalIcon,
 	WrenchIcon,
+	ZapIcon,
 } from "lucide-react";
 import type React from "react";
 import { useState } from "react";
@@ -18,23 +26,48 @@ import {
 	TooltipContent,
 	TooltipTrigger,
 } from "#/components/Tooltip/Tooltip";
-import { cn } from "#/utils/cn";
-import {
-	isSubagentToolName,
-	type SubagentIconKind,
-} from "./subagentDescriptor";
+
+export const toolIcons: Partial<Record<string, LucideIcon>> = {
+	execute: TerminalIcon,
+	process_output: ActivityIcon,
+	process_list: TerminalIcon,
+	process_signal: TerminalIcon,
+	read_file: FileTextIcon,
+	read_skill: FileTextIcon,
+	write_file: FilePenLineIcon,
+	edit_files: FilePenLineIcon,
+	list_templates: ServerIcon,
+	read_template: ServerIcon,
+	create_workspace: ServerIcon,
+	start_workspace: PowerIcon,
+	stop_workspace: PowerOffIcon,
+	chat_cleared: BotIcon,
+	chat_summarized: BotIcon,
+	list_agents: BotIcon,
+	list_subagent_models: BotIcon,
+	thinking: LightbulbIcon,
+	propose_plan: RouteIcon,
+	ask_user_question: BadgeQuestionMarkIcon,
+	advisor: CompassIcon,
+	computer: MonitorIcon,
+	find_tools: SearchIcon,
+	manage_automations: ZapIcon,
+};
 
 export const ToolIcon: React.FC<{
 	name: string;
-	isError: boolean;
 	iconUrl?: string;
 	isRunning?: boolean;
 	serverName?: string;
-	subagentIconKind?: SubagentIconKind;
-}> = ({ name, iconUrl, isRunning, serverName, subagentIconKind }) => {
+}> = ({ name, iconUrl, isRunning, serverName }) => {
 	const [imgError, setImgError] = useState(false);
 	const color = "text-current";
-	const base = cn("h-4 w-4 shrink-0", color, isRunning && "grayscale");
+	const base = cn(
+		"size-4 shrink-0",
+		color,
+		"stroke-[1.5]",
+		isRunning && "grayscale",
+	);
 
 	// If an MCP icon URL is provided and hasn't failed, render it.
 	// Strip colour so external icons match the monochrome lucide
@@ -43,12 +76,12 @@ export const ToolIcon: React.FC<{
 	// content-secondary (light ≈ 34% lightness, dark ≈ 65%).
 	if (iconUrl && !imgError) {
 		const img = (
-			<div className="h-4 w-4 shrink-0 overflow-hidden">
+			<div className="size-4 shrink-0 overflow-hidden">
 				<ExternalImage
 					src={iconUrl}
 					alt={`${name} icon`}
 					className={cn(
-						"block h-4 w-4",
+						"block size-4",
 						// Monochrome: brightness-0 strips colour to black,
 						// dark:invert flips to white for dark backgrounds,
 						// opacity tuned per-theme to match content-secondary
@@ -72,48 +105,6 @@ export const ToolIcon: React.FC<{
 		return img;
 	}
 
-	if (isSubagentToolName(name)) {
-		// This name-based fallback only exists for legacy callers that do
-		// not pass a descriptor. The descriptor path should provide
-		// subagentIconKind for new subagent types instead of extending it.
-		const iconKind =
-			subagentIconKind ||
-			(name === "spawn_computer_use_agent" ? "monitor" : "bot");
-		return iconKind === "monitor" ? (
-			<MonitorIcon className={base} />
-		) : (
-			<BotIcon className={base} />
-		);
-	}
-
-	switch (name) {
-		case "execute":
-		case "process_output":
-		case "process_list":
-		case "process_signal":
-			return <TerminalIcon className={base} />;
-		case "read_file":
-		case "list_templates":
-		case "read_template":
-			return <FileIcon className={base} />;
-		case "write_file":
-		case "edit_files":
-			return <FilePenIcon className={base} />;
-		case "create_workspace":
-			return <PlusCircleIcon className={base} />;
-		case "chat_summarized":
-			return <BotIcon className={base} />;
-		case "propose_plan":
-			return <ClipboardListIcon className={base} />;
-		case "computer":
-			return <MonitorIcon className={base} />;
-		case "read_skill":
-		case "read_skill_file":
-			return <BookOpenIcon className={base} />;
-		case "start_workspace":
-			return <PlayIcon className={base} />;
-
-		default:
-			return <WrenchIcon className={base} />;
-	}
+	const Icon = toolIcons[name] ?? WrenchIcon;
+	return <Icon className={base} />;
 };

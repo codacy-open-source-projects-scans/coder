@@ -1,4 +1,3 @@
-import type { FC } from "react";
 import { API } from "#/api/api";
 import type { Organization } from "#/api/typesGenerated";
 import { Avatar } from "#/components/Avatar/Avatar";
@@ -6,6 +5,7 @@ import {
 	Filter,
 	MenuSkeleton,
 	type UseFilterResult,
+	useFilter,
 } from "#/components/Filter/Filter";
 import { useFilterMenu } from "#/components/Filter/menu";
 import {
@@ -16,17 +16,61 @@ import {
 	DEFAULT_USER_FILTER_WIDTH,
 	type UserFilterMenu,
 	UserMenu,
+	useUserFilterMenu,
 } from "#/components/Filter/UserFilter";
+import { useAuthenticated } from "#/hooks/useAuthenticated";
 import { useDashboard } from "#/modules/dashboard/useDashboard";
 
-interface TemplatesFilterProps {
+export const CLASSIC_PARAMETER_FLOW_FILTER = "compatibility_mode:true";
+
+export type TemplateFilterState = {
+	filter: UseFilterResult;
+	menus: {
+		user?: ReturnType<typeof useUserFilterMenu>;
+	};
+};
+
+type UseTemplatesFilterOptions = {
+	searchParams: URLSearchParams;
+	onSearchParamsChange: (params: URLSearchParams) => void;
+	enabled?: boolean;
+};
+
+export const useTemplatesFilter = ({
+	searchParams,
+	onSearchParamsChange,
+	enabled = true,
+}: UseTemplatesFilterOptions): TemplateFilterState => {
+	const filter = useFilter({
+		searchParams,
+		onSearchParamsChange,
+	});
+
+	const { permissions } = useAuthenticated();
+	const canFilterByUser = permissions.viewAllUsers;
+	const userMenu = useUserFilterMenu({
+		value: filter.values.author,
+		onChange: (option) =>
+			filter.update({ ...filter.values, author: option?.value }),
+		enabled: enabled && canFilterByUser,
+	});
+
+	return {
+		filter,
+		menus: {
+			user: canFilterByUser ? userMenu : undefined,
+		},
+	};
+};
+
+type TemplatesFilterProps = {
 	filter: UseFilterResult;
 	error?: unknown;
 
 	userMenu?: UserFilterMenu;
-}
+};
 
-export const TemplatesFilter: FC<TemplatesFilterProps> = ({
+export const TemplatesFilter: React.FC<TemplatesFilterProps> = ({
 	filter,
 	error,
 	userMenu,
@@ -58,9 +102,13 @@ export const TemplatesFilter: FC<TemplatesFilterProps> = ({
 				{ query: "", name: "All templates" },
 				{ query: "author:me", name: "Templates you authored" },
 				{ query: "deprecated:true", name: "Deprecated templates" },
+				{
+					query: CLASSIC_PARAMETER_FLOW_FILTER,
+					name: "Templates using compatibility mode",
+				},
 			]}
 			// TODO: Add docs for this
-			// learnMoreLink={docs("/templates#template-filtering")}
+			// learnMoreLink={docs("/admin/templates#template-filtering")}
 			isLoading={false}
 			filter={filter}
 			error={error}

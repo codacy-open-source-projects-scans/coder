@@ -5,13 +5,59 @@ import (
 	"os"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
 	"github.com/coder/coder/v2/coderd/coderdtest"
-	"github.com/coder/coder/v2/coderd/util/ptr"
 	"github.com/coder/coder/v2/codersdk"
 	"github.com/coder/coder/v2/testutil"
 )
+
+func createIntegrationAIProvider(
+	ctx context.Context,
+	t testing.TB,
+	client *codersdk.ExperimentalClient,
+	providerType codersdk.AIProviderType,
+	apiKey string,
+	baseURL string,
+) codersdk.AIProvider {
+	t.Helper()
+	if baseURL == "" {
+		baseURL = defaultIntegrationAIProviderBaseURL(providerType)
+	}
+	provider, err := client.CreateAIProvider(ctx, codersdk.CreateAIProviderRequest{
+		Type:        providerType,
+		Name:        string(providerType) + "-" + uuid.NewString(),
+		DisplayName: aiProviderDisplayName(providerType),
+		Enabled:     true,
+		BaseURL:     baseURL,
+		APIKeys:     []string{apiKey},
+	})
+	require.NoError(t, err)
+	return provider
+}
+
+func defaultIntegrationAIProviderBaseURL(providerType codersdk.AIProviderType) string {
+	switch providerType {
+	case codersdk.AIProviderTypeAnthropic:
+		return "https://api.anthropic.com"
+	case codersdk.AIProviderTypeOpenAI:
+		return "https://api.openai.com/v1"
+	default:
+		return "https://api.example.com"
+	}
+}
+
+func aiProviderDisplayName(providerType codersdk.AIProviderType) string {
+	switch providerType {
+	case codersdk.AIProviderTypeAnthropic:
+		return "Anthropic"
+	case codersdk.AIProviderTypeOpenAI:
+		return "OpenAI"
+	default:
+		return string(providerType)
+	}
+}
 
 // TestAnthropicWebSearchRoundTrip is an integration test that verifies
 // provider-executed tool results (web_search) survive the full
@@ -35,42 +81,37 @@ func TestAnthropicWebSearchRoundTrip(t *testing.T) {
 
 	ctx := testutil.Context(t, testutil.WaitSuperLong)
 
-	// Stand up a full coderd with the agents experiment.
+	// Stand up a full coderd.
 	deploymentValues := coderdtest.DeploymentValues(t)
-	deploymentValues.Experiments = []string{string(codersdk.ExperimentAgents)}
 	client := coderdtest.New(t, &coderdtest.Options{
 		DeploymentValues: deploymentValues,
 	})
 	user := coderdtest.CreateFirstUser(t, client)
 	expClient := codersdk.NewExperimentalClient(client)
 
-	// Configure an Anthropic provider with the real API key.
-	_, err := expClient.CreateChatProvider(ctx, codersdk.CreateChatProviderConfigRequest{
-		Provider: "anthropic",
-		APIKey:   apiKey,
-		BaseURL:  baseURL,
-	})
-	require.NoError(t, err)
+	provider := createIntegrationAIProvider(
+		ctx, t, expClient, codersdk.AIProviderTypeAnthropic, apiKey, baseURL,
+	)
 
 	// Create a model config that enables web_search.
 	contextLimit := int64(200000)
 	isDefault := true
-	_, err = expClient.CreateChatModelConfig(ctx, codersdk.CreateChatModelConfigRequest{
-		Provider:     "anthropic",
+	_, err := expClient.CreateChatModel(ctx, user.OrganizationID, codersdk.CreateChatModelRequest{
+		AIProviderID: &provider.ID,
 		Model:        "claude-sonnet-4-20250514",
 		ContextLimit: &contextLimit,
 		IsDefault:    &isDefault,
 		ModelConfig: &codersdk.ChatModelCallConfig{
 			ProviderOptions: &codersdk.ChatModelProviderOptions{
 				Anthropic: &codersdk.ChatModelAnthropicProviderOptions{
-					WebSearchEnabled: ptr.Ref(true),
+					WebSearchEnabled: new(true),
 				},
 			},
 		},
 	})
 	require.NoError(t, err)
 
-	// --- Step 1: Send a message that triggers web_search ---
+	// Step 1: Send a message that triggers web_search.
 	t.Log("Creating chat with web search query...")
 	chat, err := expClient.CreateChat(ctx, codersdk.CreateChatRequest{
 		OrganizationID: user.OrganizationID,
@@ -129,7 +170,7 @@ func TestAnthropicWebSearchRoundTrip(t *testing.T) {
 		}
 	}
 
-	// --- Step 2: Send a follow-up message ---
+	// Step 2: Send a follow-up message.
 	// This is the critical test: if PE tool results were lost during
 	// persistence, the reconstructed conversation will be rejected
 	// by Anthropic because server_tool_use has no matching
@@ -201,8 +242,7 @@ func waitForChatDone(
 				if event.Status != nil {
 					t.Logf("[%s] status → %s", label, event.Status.Status)
 					switch event.Status.Status {
-					case codersdk.ChatStatusWaiting,
-						codersdk.ChatStatusCompleted:
+					case codersdk.ChatStatusWaiting:
 						return
 					case codersdk.ChatStatusError:
 						require.FailNow(t, label+" ended with error status")
@@ -296,22 +336,17 @@ func TestOpenAIReasoningRoundTrip(t *testing.T) {
 
 	ctx := testutil.Context(t, testutil.WaitSuperLong)
 
-	// Stand up a full coderd with the agents experiment.
+	// Stand up a full coderd.
 	deploymentValues := coderdtest.DeploymentValues(t)
-	deploymentValues.Experiments = []string{string(codersdk.ExperimentAgents)}
 	client := coderdtest.New(t, &coderdtest.Options{
 		DeploymentValues: deploymentValues,
 	})
 	user := coderdtest.CreateFirstUser(t, client)
 	expClient := codersdk.NewExperimentalClient(client)
 
-	// Configure an OpenAI provider with the real API key.
-	_, err := expClient.CreateChatProvider(ctx, codersdk.CreateChatProviderConfigRequest{
-		Provider: "openai",
-		APIKey:   apiKey,
-		BaseURL:  baseURL,
-	})
-	require.NoError(t, err)
+	provider := createIntegrationAIProvider(
+		ctx, t, expClient, codersdk.AIProviderTypeOpenAI, apiKey, baseURL,
+	)
 
 	// Create a model config for a reasoning model with Store: true
 	// (the default). Using o4-mini because it always produces
@@ -319,15 +354,15 @@ func TestOpenAIReasoningRoundTrip(t *testing.T) {
 	contextLimit := int64(200000)
 	isDefault := true
 	reasoningSummary := "auto"
-	_, err = expClient.CreateChatModelConfig(ctx, codersdk.CreateChatModelConfigRequest{
-		Provider:     "openai",
+	_, err := expClient.CreateChatModel(ctx, user.OrganizationID, codersdk.CreateChatModelRequest{
+		AIProviderID: &provider.ID,
 		Model:        "o4-mini",
 		ContextLimit: &contextLimit,
 		IsDefault:    &isDefault,
 		ModelConfig: &codersdk.ChatModelCallConfig{
 			ProviderOptions: &codersdk.ChatModelProviderOptions{
 				OpenAI: &codersdk.ChatModelOpenAIProviderOptions{
-					Store:            ptr.Ref(true),
+					Store:            new(true),
 					ReasoningSummary: &reasoningSummary,
 				},
 			},
@@ -335,7 +370,7 @@ func TestOpenAIReasoningRoundTrip(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// --- Step 1: Send a message that triggers reasoning ---
+	// Step 1: Send a message that triggers reasoning.
 	t.Log("Creating chat with reasoning query...")
 	chat, err := expClient.CreateChat(ctx, codersdk.CreateChatRequest{
 		OrganizationID: user.OrganizationID,
@@ -379,7 +414,7 @@ func TestOpenAIReasoningRoundTrip(t *testing.T) {
 	require.Contains(t, partTypes, codersdk.ChatMessagePartTypeText,
 		"assistant message should contain a text part")
 
-	// --- Step 2: Send a follow-up message ---
+	// Step 2: Send a follow-up message.
 	// This is the critical test: if reasoning items are sent back
 	// without their required following item, the API will reject
 	// the request with:
@@ -451,37 +486,32 @@ func TestOpenAIReasoningRoundTripStoreFalse(t *testing.T) {
 
 	ctx := testutil.Context(t, testutil.WaitSuperLong)
 
-	// Stand up a full coderd with the agents experiment.
+	// Stand up a full coderd.
 	deploymentValues := coderdtest.DeploymentValues(t)
-	deploymentValues.Experiments = []string{string(codersdk.ExperimentAgents)}
 	client := coderdtest.New(t, &coderdtest.Options{
 		DeploymentValues: deploymentValues,
 	})
 	user := coderdtest.CreateFirstUser(t, client)
 	expClient := codersdk.NewExperimentalClient(client)
 
-	// Configure an OpenAI provider with the real API key.
-	_, err := expClient.CreateChatProvider(ctx, codersdk.CreateChatProviderConfigRequest{
-		Provider: "openai",
-		APIKey:   apiKey,
-		BaseURL:  baseURL,
-	})
-	require.NoError(t, err)
+	provider := createIntegrationAIProvider(
+		ctx, t, expClient, codersdk.AIProviderTypeOpenAI, apiKey, baseURL,
+	)
 
 	// Create a model config for a reasoning model with Store: false.
 	// Using o4-mini because it always produces reasoning items.
 	contextLimit := int64(200000)
 	isDefault := true
 	reasoningSummary := "auto"
-	_, err = expClient.CreateChatModelConfig(ctx, codersdk.CreateChatModelConfigRequest{
-		Provider:     "openai",
+	_, err := expClient.CreateChatModel(ctx, user.OrganizationID, codersdk.CreateChatModelRequest{
+		AIProviderID: &provider.ID,
 		Model:        "o4-mini",
 		ContextLimit: &contextLimit,
 		IsDefault:    &isDefault,
 		ModelConfig: &codersdk.ChatModelCallConfig{
 			ProviderOptions: &codersdk.ChatModelProviderOptions{
 				OpenAI: &codersdk.ChatModelOpenAIProviderOptions{
-					Store:            ptr.Ref(false),
+					Store:            new(false),
 					ReasoningSummary: &reasoningSummary,
 				},
 			},
@@ -489,7 +519,7 @@ func TestOpenAIReasoningRoundTripStoreFalse(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// --- Step 1: Send a message that triggers reasoning ---
+	// Step 1: Send a message that triggers reasoning.
 	t.Log("Creating chat with reasoning query...")
 	chat, err := expClient.CreateChat(ctx, codersdk.CreateChatRequest{
 		OrganizationID: user.OrganizationID,
@@ -533,7 +563,7 @@ func TestOpenAIReasoningRoundTripStoreFalse(t *testing.T) {
 	require.Contains(t, partTypes, codersdk.ChatMessagePartTypeText,
 		"assistant message should contain a text part")
 
-	// --- Step 2: Send a follow-up message ---
+	// Step 2: Send a follow-up message.
 	// This is the critical test: when Store is false, item IDs are
 	// ephemeral and cannot be looked up from OpenAI later.
 	t.Log("Sending follow-up message...")

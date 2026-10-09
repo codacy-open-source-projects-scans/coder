@@ -1,7 +1,7 @@
-import CircularProgress from "@mui/material/CircularProgress";
+import { cn } from "cn";
 import kebabCase from "lodash/fp/kebabCase";
 import { BellOffIcon, RotateCcwIcon } from "lucide-react";
-import { type FC, Suspense } from "react";
+import { Suspense } from "react";
 import { useMutation, useQuery, useQueryClient } from "react-query";
 import { NavLink, Outlet } from "react-router";
 import { health, refreshHealth } from "#/api/queries/debug";
@@ -9,13 +9,13 @@ import type { HealthSeverity } from "#/api/typesGenerated";
 import { ErrorAlert } from "#/components/Alert/ErrorAlert";
 import { Button } from "#/components/Button/Button";
 import { Loader } from "#/components/Loader/Loader";
+import { Spinner } from "#/components/Spinner/Spinner";
 import {
 	Tooltip,
 	TooltipContent,
 	TooltipTrigger,
 } from "#/components/Tooltip/Tooltip";
 import { DashboardFullPage } from "#/modules/dashboard/DashboardLayout";
-import { cn } from "#/utils/cn";
 import { createDayString } from "#/utils/createDayString";
 import { pageTitle } from "#/utils/page";
 import { HealthIcon } from "./Content";
@@ -29,7 +29,7 @@ const linkStyles = {
 	active: "bg-surface-secondary text-content-primary",
 };
 
-export const HealthLayout: FC = () => {
+export const HealthLayout: React.FC = () => {
 	const queryClient = useQueryClient();
 	const {
 		data: healthStatus,
@@ -92,7 +92,11 @@ export const HealthLayout: FC = () => {
 												}}
 											>
 												{isRefreshing ? (
-													<CircularProgress size={16} />
+													<Spinner
+														size="sm"
+														loading
+														className="text-content-secondary"
+													/>
 												) : (
 													<RotateCcwIcon className="size-5" />
 												)}
@@ -122,7 +126,7 @@ export const HealthLayout: FC = () => {
 							<div className="flex flex-col">
 								<span className="font-medium">Last check</span>
 								<span
-									data-chromatic="ignore"
+									data-pixel="ignore"
 									className="text-content-secondary line-height-[150%]"
 								>
 									{createDayString(healthStatus.time)}
@@ -132,7 +136,7 @@ export const HealthLayout: FC = () => {
 							<div className="flex flex-col">
 								<span className="font-medium">Version</span>
 								<span
-									data-chromatic="ignore"
+									data-pixel="ignore"
 									className="text-content-secondary line-height-[150%]"
 								>
 									{healthStatus.coder_version}

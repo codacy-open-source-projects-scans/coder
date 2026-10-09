@@ -13,6 +13,7 @@
 import { renderHook } from "@testing-library/react";
 import { act } from "react";
 import { toast } from "sonner";
+import { createDeferred } from "#/testHelpers/deferred";
 import {
 	COPY_FAILED_MESSAGE,
 	HTTP_FALLBACK_DATA_ID,
@@ -157,6 +158,8 @@ describe.each(secureContextValues)("useClipboard - secure: %j", (isSecure) => {
 			clipboard: mockClipboard,
 		}));
 
+		vi.stubGlobal("isSecureContext", isSecure);
+
 		vi.spyOn(console, "error").mockImplementation((errorValue, ...rest) => {
 			const canIgnore =
 				errorValue instanceof Error &&
@@ -172,6 +175,7 @@ describe.each(secureContextValues)("useClipboard - secure: %j", (isSecure) => {
 		vi.runAllTimers();
 		vi.useRealTimers();
 		vi.resetAllMocks();
+		vi.unstubAllGlobals();
 		global.document.execCommand = originalExecCommand;
 
 		// Still have to reset the mock clipboard state because the same mock values
@@ -211,6 +215,63 @@ describe.each(secureContextValues)("useClipboard - secure: %j", (isSecure) => {
 		await assertClipboardUpdateLifecycle(result, textToCopy);
 		expect(result.current.showCopiedSuccess).toBe(false);
 	});
+
+	it("Does not schedule a success timer when a pending copy finishes after unmount", async () => {
+		const write = createDeferred<undefined>();
+		vi.spyOn(mockClipboard, "writeText").mockReturnValueOnce(write.promise);
+		const { result, unmount } = renderUseClipboard();
+		const copy = result.current.copyToClipboard("cats");
+
+		unmount();
+		await act(async () => {
+			write.resolve(undefined);
+			await copy;
+		});
+
+		expect(vi.getTimerCount()).toBe(0);
+	});
+
+	it.each([false, true])(
+		"Finishes the fallback after unmount without leaking timers (failure: %s)",
+		async (shouldFail) => {
+			const write = createDeferred<undefined>();
+			vi.spyOn(mockClipboard, "writeText").mockReturnValueOnce(write.promise);
+			const onError = vi.fn();
+			const { result, unmount } = renderUseClipboard({ onError });
+			setSimulateFailure(shouldFail);
+			const copy = result.current.copyToClipboard("cats");
+
+			unmount();
+			await act(async () => {
+				write.reject(new Error("Clipboard unavailable"));
+				await copy;
+			});
+
+			expect(getClipboardText()).toBe(shouldFail ? "" : "cats");
+			expect(onError).toHaveBeenCalledTimes(shouldFail ? 1 : 0);
+			// Flush jsdom's zero-delay select events from the fallback input.
+			act(() => vi.advanceTimersByTime(0));
+			expect(vi.getTimerCount()).toBe(0);
+		},
+	);
+
+	it.each(["cats", "dogs"])(
+		"Restarts feedback when copying %s after cats and clears its timer on unmount",
+		async (text) => {
+			const { result, unmount } = renderUseClipboard();
+			await act(() => result.current.copyToClipboard("cats"));
+			act(() => vi.advanceTimersByTime(500));
+			await act(() => result.current.copyToClipboard(text));
+
+			act(() => vi.advanceTimersByTime(500));
+			expect(result.current.showCopiedSuccess).toBe(true);
+			expect(getClipboardText()).toBe(text);
+			expect(vi.getTimerCount()).toBe(1);
+
+			unmount();
+			expect(vi.getTimerCount()).toBe(0);
+		},
+	);
 
 	it("Should notify the user of an error using the provided callback", async () => {
 		const textToCopy = "birds";
@@ -297,6 +358,43 @@ describe.each(secureContextValues)("useClipboard - secure: %j", (isSecure) => {
 		setSimulateFailure(false);
 		await act(() => result.current.copyToClipboard("dummy-text-2"));
 		expect(result.current.copyToClipboard).toBe(initialCopy);
+	});
+
+	it("Reads back text that was copied through the hook", async () => {
+		const textToCopy = "wolves";
+		const { result } = renderUseClipboard();
+		await assertClipboardUpdateLifecycle(result, textToCopy);
+
+		const readText = await act(() => result.current.readFromClipboard());
+		expect(readText).toEqual(textToCopy);
+	});
+
+	it("Surfaces read failures in secure contexts and falls back to the cached value otherwise", async () => {
+		const textToCopy = "otters";
+		const { result } = renderUseClipboard();
+		await assertClipboardUpdateLifecycle(result, textToCopy);
+
+		if (isSecure) {
+			// A failed or denied read must surface instead of silently pasting a
+			// stale cached selection.
+			setSimulateFailure(true);
+			await expect(
+				act(async () => {
+					await result.current.readFromClipboard();
+				}),
+			).rejects.toThrow();
+		} else {
+			// Insecure contexts cannot read the system clipboard, so paste falls
+			// back to the last value copied within Coder.
+			const readText = await act(() => result.current.readFromClipboard());
+			expect(readText).toEqual(textToCopy);
+		}
+	});
+
+	it("Returns an empty string when nothing has been copied yet", async () => {
+		const { result } = renderUseClipboard();
+		const readText = await act(() => result.current.readFromClipboard());
+		expect(readText).toEqual("");
 	});
 
 	it("Always uses the most up-to-date onError prop", async () => {

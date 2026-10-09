@@ -19,9 +19,9 @@ const (
 	calendarStartMarker = "<!-- RELEASE_CALENDAR_START -->"
 	calendarEndMarker   = "<!-- RELEASE_CALENDAR_END -->"
 
-	releasesFile     = "docs/install/releases/index.md"
-	kubernetesFile   = "docs/install/kubernetes.md"
-	rancherFile      = "docs/install/rancher.md"
+	releasesFile     = "docs/reference/releases.md"
+	kubernetesFile   = "docs/install/server/kubernetes/index.md"
+	rancherFile      = "docs/install/server/rancher.md"
 	changelogURLFmt  = "https://coder.com/changelog/coder-%d-%d"
 	releaseTagURLFmt = "https://github.com/coder/coder/releases/tag/%s"
 )
@@ -171,7 +171,7 @@ func updateCalendar(
 	for i, r := range rows {
 		if r.Major == newVer.Major && r.Minor == newVer.Minor {
 			rows[i].LatestRelease = fmt.Sprintf(
-				"[v%s](%s)",
+				"[%s](%s)",
 				newVer.String(),
 				fmt.Sprintf(releaseTagURLFmt, newVer.String()),
 			)

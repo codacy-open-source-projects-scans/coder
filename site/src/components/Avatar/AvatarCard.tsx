@@ -1,23 +1,19 @@
-import { type CSSObject, useTheme } from "@emotion/react";
-import type { FC, ReactNode } from "react";
+import { cn } from "cn";
 import { Avatar } from "#/components/Avatar/Avatar";
-import { cn } from "#/utils/cn";
 
 type AvatarCardProps = {
 	header: string;
 	imgUrl: string;
-	subtitle?: ReactNode;
+	subtitle?: React.ReactNode;
 	maxWidth?: number | "none";
 };
 
-export const AvatarCard: FC<AvatarCardProps> = ({
+export const AvatarCard: React.FC<AvatarCardProps> = ({
 	header,
 	imgUrl,
 	subtitle,
 	maxWidth = "none",
 }) => {
-	const theme = useTheme();
-
 	return (
 		<div
 			className={cn(
@@ -44,12 +40,7 @@ export const AvatarCard: FC<AvatarCardProps> = ({
 				</h3>
 
 				{subtitle && (
-					<div
-						css={[
-							theme.typography.body2 as CSSObject,
-							{ color: theme.palette.text.secondary },
-						]}
-					>
+					<div className="text-sm leading-relaxed text-content-secondary">
 						{subtitle}
 					</div>
 				)}

@@ -17,12 +17,13 @@ const (
 	// trace attribute key constants
 	RequestPath = "request_path"
 
-	InterceptionID = "interception_id"
-	InitiatorID    = "user_id"
-	Provider       = "provider"
-	Model          = "model"
-	Streaming      = "streaming"
-	IsBedrock      = "aws_bedrock"
+	InterceptionID  = "interception_id"
+	InitiatorID     = "user_id"
+	Provider        = "provider"
+	Model           = "model"
+	Streaming       = "streaming"
+	IsBedrock       = "aws_bedrock"
+	BedrockProtocol = "aws_bedrock_protocol"
 
 	PassthroughURL         = "passthrough_url"
 	PassthroughUpstreamURL = "passthrough_upstream_url"
@@ -75,13 +76,4 @@ func InterceptionAttributesFromContext(ctx context.Context) []attribute.KeyValue
 
 func WithRequestBridgeAttributesInContext(ctx context.Context, traceAttrs []attribute.KeyValue) context.Context {
 	return context.WithValue(ctx, traceRequestBridgeAttrsContextKey{}, traceAttrs)
-}
-
-func RequestBridgeAttributesFromContext(ctx context.Context) []attribute.KeyValue {
-	attrs, ok := ctx.Value(traceRequestBridgeAttrsContextKey{}).([]attribute.KeyValue)
-	if !ok {
-		return nil
-	}
-
-	return attrs
 }

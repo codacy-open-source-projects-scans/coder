@@ -1,4 +1,5 @@
-import { type FC, type ReactNode, useState } from "react";
+import { cn } from "cn";
+import { useState } from "react";
 import { keepPreviousData, useQuery } from "react-query";
 import { organizationMembers } from "#/api/queries/organizations";
 import { users } from "#/api/queries/users";
@@ -14,7 +15,6 @@ import { Checkbox } from "#/components/Checkbox/Checkbox";
 import { EmptyState } from "#/components/EmptyState/EmptyState";
 import { SearchField } from "#/components/SearchField/SearchField";
 import { useDebouncedFunction } from "#/hooks/debounce";
-import { cn } from "#/utils/cn";
 import { prepareQuery } from "#/utils/filters";
 
 const DEBOUNCE_MS = 750;
@@ -32,14 +32,14 @@ type UserAutocompleteProps = CommonMultiSelectProps<User> & {
 	filter: string;
 };
 
-export const MultiUserSelect: FC<UserAutocompleteProps> = ({
+export const MultiUserSelect: React.FC<UserAutocompleteProps> = ({
 	filter,
 	setFilter,
 	...props
 }) => {
 	const usersQuery = useQuery({
 		...users({
-			q: prepareQuery(encodeURI(filter ?? "")),
+			q: prepareQuery(filter ?? ""),
 			limit: 25,
 		}),
 		placeholderData: keepPreviousData,
@@ -60,7 +60,7 @@ type MemberAutocompleteProps =
 		organizationId: string;
 	};
 
-export const MultiMemberSelect: FC<MemberAutocompleteProps> = ({
+export const MultiMemberSelect: React.FC<MemberAutocompleteProps> = ({
 	filter,
 	organizationId,
 	setFilter,
@@ -68,7 +68,7 @@ export const MultiMemberSelect: FC<MemberAutocompleteProps> = ({
 }) => {
 	const membersQuery = useQuery({
 		...organizationMembers(organizationId, {
-			q: prepareQuery(encodeURI(filter ?? "")),
+			q: prepareQuery(filter ?? ""),
 			limit: 25,
 		}),
 		placeholderData: keepPreviousData,
@@ -80,6 +80,77 @@ export const MultiMemberSelect: FC<MemberAutocompleteProps> = ({
 			users={membersQuery.data?.members}
 			{...props}
 		/>
+	);
+};
+
+type UsersTableProps<T extends SelectedUser> = {
+	error: unknown;
+	onChange: (user: T, checked: boolean) => void;
+	selected: readonly T[];
+	users: readonly T[] | undefined;
+};
+
+const UsersTable = <T extends SelectedUser>({
+	error,
+	onChange,
+	selected,
+	users,
+}: UsersTableProps<T>) => {
+	if (error) {
+		return (
+			<div className="p-3">
+				<ErrorAlert error={error} />
+			</div>
+		);
+	}
+
+	if (!users) {
+		return <TableLoader />;
+	}
+
+	if (users.length === 0) {
+		return (
+			<div className="p-3">
+				<EmptyState message="No users found" isCompact />
+			</div>
+		);
+	}
+
+	return (
+		<div className="flex flex-col">
+			{users.map((user, index) => {
+				const checked = selected.some((u) => userMatches(u, user));
+				return (
+					<UserRow
+						key={user.username}
+						user={user}
+						checked={checked}
+						isFirst={index === 0}
+						isLast={index === users.length - 1}
+						onChange={onChange}
+					>
+						<div className="flex items-center gap-3">
+							<Checkbox
+								data-testid={`checkbox-${user.username}`}
+								checked={checked}
+								onClick={(e) => {
+									e.stopPropagation();
+								}}
+								onCheckedChange={(checked) => {
+									onChange(user, Boolean(checked));
+								}}
+								aria-label={`Select user ${user.username}`}
+							/>
+							<AvatarData
+								title={user.username}
+								subtitle={user.email}
+								src={user.avatar_url}
+							/>
+						</div>
+					</UserRow>
+				);
+			})}
+		</div>
 	);
 };
 
@@ -146,78 +217,7 @@ const InnerMultiSelect = <T extends SelectedUser>({
 	);
 };
 
-type UsersTable<T extends SelectedUser> = {
-	error: unknown;
-	onChange: (user: T, checked: boolean) => void;
-	selected: readonly T[];
-	users: readonly T[] | undefined;
-};
-
-const UsersTable = <T extends SelectedUser>({
-	error,
-	onChange,
-	selected,
-	users,
-}: UsersTable<T>) => {
-	if (error) {
-		return (
-			<div className="p-3">
-				<ErrorAlert error={error} />
-			</div>
-		);
-	}
-
-	if (!users) {
-		return <TableLoader />;
-	}
-
-	if (users.length === 0) {
-		return (
-			<div className="p-3">
-				<EmptyState message="No users found" isCompact />
-			</div>
-		);
-	}
-
-	return (
-		<div className="flex flex-col">
-			{users.map((user, index) => {
-				const checked = selected.some((u) => userMatches(u, user));
-				return (
-					<UserRow
-						key={user.username}
-						user={user}
-						checked={checked}
-						isFirst={index === 0}
-						isLast={index === users.length - 1}
-						onChange={onChange}
-					>
-						<div className="flex items-center gap-3">
-							<Checkbox
-								data-testid={`checkbox-${user.username}`}
-								checked={checked}
-								onClick={(e) => {
-									e.stopPropagation();
-								}}
-								onCheckedChange={(checked) => {
-									onChange(user, Boolean(checked));
-								}}
-								aria-label={`Select user ${user.username}`}
-							/>
-							<AvatarData
-								title={user.username}
-								subtitle={user.email}
-								src={user.avatar_url}
-							/>
-						</div>
-					</UserRow>
-				);
-			})}
-		</div>
-	);
-};
-
-const TableLoader: FC = () => {
+const TableLoader: React.FC = () => {
 	const skeletonRows = Array.from({ length: 6 }, (_, index) => index);
 
 	return (
@@ -234,14 +234,14 @@ const TableLoader: FC = () => {
 	);
 };
 
-interface UserRowProps<T extends SelectedUser> {
+type UserRowProps<T extends SelectedUser> = {
 	checked: boolean;
-	children?: ReactNode;
+	children?: React.ReactNode;
 	isFirst: boolean;
 	isLast: boolean;
 	onChange: (user: T, checked: boolean) => void;
 	user: T;
-}
+};
 
 const UserRow = <T extends SelectedUser>({
 	checked,
@@ -257,9 +257,9 @@ const UserRow = <T extends SelectedUser>({
 			tabIndex={-1}
 			className={cn(
 				"cursor-pointer",
-				"hover:[&>div]:ring-1 hover:[&>div]:ring-inset hover:[&>div]:ring-border-secondary",
+				"[&>div]:hover:ring-1 [&>div]:hover:ring-inset [&>div]:hover:ring-border-secondary",
 				checked
-					? "[&>div]:bg-surface-secondary hover:[&>div]:bg-surface-secondary"
+					? "[&>div]:bg-surface-secondary [&>div]:hover:bg-surface-secondary"
 					: undefined,
 			)}
 			onClick={() => onChange(user, !checked)}

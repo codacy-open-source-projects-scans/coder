@@ -37,12 +37,13 @@ import (
 var errMatchAny = xerrors.New("match any error")
 
 var skipMethods = map[string]string{
-	"InTx":           "Not relevant",
-	"Ping":           "Not relevant",
-	"PGLocks":        "Not relevant",
-	"Wrappers":       "Not relevant",
-	"AcquireLock":    "Not relevant",
-	"TryAcquireLock": "Not relevant",
+	"InTx":                      "Not relevant",
+	"Ping":                      "Not relevant",
+	"PGLocks":                   "Not relevant",
+	"Wrappers":                  "Not relevant",
+	"AcquireLock":               "Not relevant",
+	"TryAcquireLock":            "Not relevant",
+	"SetTransactionLockTimeout": "Not relevant",
 }
 
 // TestMethodTestSuite runs MethodTestSuite.
@@ -192,6 +193,10 @@ func (s *MethodTestSuite) SubtestWithDB(db database.Store, testCaseF func(db dat
 		testName := s.T().Name()
 		names := strings.Split(testName, "/")
 		methodName := names[len(names)-1]
+		// Repeated subtests get "#NN" suffixes; count them under the base method.
+		if baseMethodName, _, ok := strings.Cut(methodName, "#"); ok {
+			methodName = baseMethodName
+		}
 		s.methodAccounting[methodName]++
 
 		fakeAuthorizer := &coderdtest.FakeAuthorizer{}

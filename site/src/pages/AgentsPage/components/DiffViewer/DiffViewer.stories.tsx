@@ -1,9 +1,11 @@
 import type { DiffLineAnnotation, SelectedLineRange } from "@pierre/diffs";
-import { parsePatchFiles } from "@pierre/diffs";
+import { FileDiff } from "@pierre/diffs/react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, fn, waitFor } from "storybook/test";
+import { useState } from "react";
+import { fn, userEvent, waitFor, within } from "storybook/test";
 import type { DiffStyle } from "../DiffViewer/DiffViewer";
 import { DiffViewer } from "../DiffViewer/DiffViewer";
+import { parseDiffString } from "../DiffViewer/parseDiff";
 import { InlinePromptInput } from "../DiffViewer/RemoteDiffPanel";
 import { generateLargeDiff } from "./testHelpers";
 
@@ -32,7 +34,7 @@ const sampleDiff = [
 "+  return app;",
 " }",
 ].join("\n");
-const parsedFiles = parsePatchFiles(sampleDiff).flatMap((p) => p.files);
+const parsedFiles = parseDiffString(sampleDiff);
 const firstFileName = parsedFiles[0]?.name ?? "";
 
 const meta: Meta<typeof DiffViewer> = {
@@ -41,8 +43,12 @@ const meta: Meta<typeof DiffViewer> = {
 	args: {
 		parsedFiles,
 		diffStyle: "unified" satisfies DiffStyle,
+		isExpanded: false,
 		onLineNumberClick: fn(),
 		onLineSelected: fn(),
+		onLineSelectionChange: fn(),
+		getLineAnnotations: () => [],
+		getSelectedLines: () => null,
 		onScrollToFileComplete: fn(),
 	},
 	decorators: [
@@ -118,7 +124,7 @@ const multiHunkDiff = [
 "+  metrics.record(\"server.start\");",
 " });",
 ].join("\n");
-const multiHunkFiles = parsePatchFiles(multiHunkDiff).flatMap((p) => p.files);
+const multiHunkFiles = parseDiffString(multiHunkDiff);
 
 export const WithMidFileSeparator: Story = {
 	args: {
@@ -169,7 +175,7 @@ const changeDiff = [
 "   debug: false,",
 " };",
 ].join("\n");
-const changeFiles = parsePatchFiles(changeDiff).flatMap((p) => p.files);
+const changeFiles = parseDiffString(changeDiff);
 const changeFileName = changeFiles[0]?.name ?? "";
 
 // Regression test: in split view, selecting from one side to the
@@ -208,14 +214,6 @@ export const CrossSideAnnotation: Story = {
 			<InlinePromptInput onSubmit={fn()} onCancel={fn()} />
 		),
 	},
-	play: async ({ canvasElement }) => {
-		// The annotation renders via a slot in the light DOM of the
-		// web component, so we can find the textarea directly.
-		await waitFor(() => {
-			const textarea = canvasElement.querySelector("textarea");
-			expect(textarea).not.toBeNull();
-		});
-	},
 };
 
 // Same regression scenario in unified view to ensure the
@@ -225,7 +223,6 @@ export const CrossSideAnnotationUnified: Story = {
 		...CrossSideAnnotation.args,
 		diffStyle: "unified",
 	},
-	play: CrossSideAnnotation.play,
 };
 
 // -------------------------------------------------------------------
@@ -233,17 +230,6 @@ export const CrossSideAnnotationUnified: Story = {
 // -------------------------------------------------------------------
 
 // Play function shared by all annotation edge-case stories.
-const expectAnnotationTextarea = async ({
-	canvasElement,
-}: {
-	canvasElement: HTMLElement;
-}) => {
-	await waitFor(() => {
-		const textarea = canvasElement.querySelector("textarea");
-		expect(textarea).not.toBeNull();
-	});
-};
-
 // Diff where deletion and addition line numbers are wildly
 // different (hunk header: @@ -508,4 +218,4 @@). Deletion
 // lines are 509-510, addition lines are 219-220.
@@ -262,9 +248,7 @@ const mismatchedLinesDiff = [
 "   cleanup();",
 " }",
 ].join("\n");
-const mismatchedFiles = parsePatchFiles(mismatchedLinesDiff).flatMap(
-	(p) => p.files,
-);
+const mismatchedFiles = parseDiffString(mismatchedLinesDiff);
 const mismatchedFileName = mismatchedFiles[0]?.name ?? "";
 
 // Cross-side selection where deletion line 509 maps to addition
@@ -301,7 +285,6 @@ export const CrossSideMismatchedLineNumbers: Story = {
 			<InlinePromptInput onSubmit={fn()} onCancel={fn()} />
 		),
 	},
-	play: expectAnnotationTextarea,
 };
 
 // Same mismatched-line-number scenario in unified view.
@@ -310,7 +293,6 @@ export const CrossSideMismatchedLineNumbersUnified: Story = {
 		...CrossSideMismatchedLineNumbers.args,
 		diffStyle: "unified",
 	},
-	play: expectAnnotationTextarea,
 };
 
 // Backward same-side selection (start > end). The user clicks
@@ -332,9 +314,7 @@ const backwardSelectionDiff = [
 " ",
 " export function main() {",
 ].join("\n");
-const backwardFiles = parsePatchFiles(backwardSelectionDiff).flatMap(
-	(p) => p.files,
-);
+const backwardFiles = parseDiffString(backwardSelectionDiff);
 const backwardFileName = backwardFiles[0]?.name ?? "";
 
 // Backward selection: start=9 > end=5 on the same side.
@@ -365,7 +345,6 @@ export const BackwardSameSideSelection: Story = {
 			<InlinePromptInput onSubmit={fn()} onCancel={fn()} />
 		),
 	},
-	play: expectAnnotationTextarea,
 };
 
 // Cross-side selection going additions -> deletions (the
@@ -401,7 +380,6 @@ export const CrossSideAdditionsToDeletions: Story = {
 			<InlinePromptInput onSubmit={fn()} onCancel={fn()} />
 		),
 	},
-	play: expectAnnotationTextarea,
 };
 
 // Rename diff with long file paths to verify that:
@@ -410,20 +388,20 @@ export const CrossSideAdditionsToDeletions: Story = {
 // 3. File names truncate with ellipsis
 // biome-ignore format: raw diff string must preserve exact whitespace
 const renameDiff = [
-"diff --git a/site/src/pages/AgentsPage/components/LimitsTab/DefaultLimitSection.tsx b/site/src/pages/AgentsPage/components/UsageLimitsTab/DefaultLimitSection.tsx",
+"diff --git a/site/src/pages/AgentsPage/components/LimitsTab/DefaultLimitSection.tsx b/site/src/pages/AgentsPage/components/SpendingTab/DefaultLimitSection.tsx",
 "similarity index 95%",
 "rename from site/src/pages/AgentsPage/components/LimitsTab/DefaultLimitSection.tsx",
-"rename to site/src/pages/AgentsPage/components/UsageLimitsTab/DefaultLimitSection.tsx",
+"rename to site/src/pages/AgentsPage/components/SpendingTab/DefaultLimitSection.tsx",
 "index abc1234..def5678 100644",
 "--- a/site/src/pages/AgentsPage/components/LimitsTab/DefaultLimitSection.tsx",
-"+++ b/site/src/pages/AgentsPage/components/UsageLimitsTab/DefaultLimitSection.tsx",
+"+++ b/site/src/pages/AgentsPage/components/SpendingTab/DefaultLimitSection.tsx",
 "@@ -1,3 +1,3 @@",
 " export function DefaultLimitSection() {",
 "-  return null;",
 "+  return <div />;",
 " }",
 ].join("\n");
-const renameFiles = parsePatchFiles(renameDiff).flatMap((p) => p.files);
+const renameFiles = parseDiffString(renameDiff);
 
 export const RenameWithLongPaths: Story = {
 	args: {
@@ -433,9 +411,7 @@ export const RenameWithLongPaths: Story = {
 
 export const LargeDiff: Story = {
 	args: {
-		parsedFiles: parsePatchFiles(generateLargeDiff(40, 60)).flatMap(
-			(p) => p.files,
-		),
+		parsedFiles: parseDiffString(generateLargeDiff(40, 60)),
 		isExpanded: true,
 	},
 	decorators: [
@@ -445,43 +421,84 @@ export const LargeDiff: Story = {
 			</div>
 		),
 	],
+};
+
+// In production, before content-derived keys, the second render could hit
+// the worker-pool AST cached for the first body and throw "deletionLine and
+// additionLine are null". The storybook worker timing cannot reproduce that
+// collision window, so this story smoke-tests the re-render path instead:
+// the second body renders and no error box appears.
+const reparseFirstBody = [
+	"--- a/src/hot.ts",
+	"+++ b/src/hot.ts",
+	"@@ -1,2 +1,2 @@",
+	" export const keep = true;",
+	"-const v = 1;",
+	"+const v = 2;",
+].join("\n");
+const reparseSecondBody = [
+	"--- a/src/hot.ts",
+	"+++ b/src/hot.ts",
+	"@@ -1,2 +1,5 @@",
+	" export const keep = true;",
+	"-const v = 1;",
+	"+const v = 3;",
+	"+const a = 1;",
+	"+const b = 2;",
+	"+const c = 3;",
+].join("\n");
+
+// FileDiff renders hunks synchronously enough for play tests; CodeView
+// virtualizes and never paints lines in this environment.
+const ReparseSamePath: React.FC = () => {
+	const [body, setBody] = useState(reparseFirstBody);
+	const file = parseDiffString(body)[0];
+	return (
+		<div style={{ height: 400, width: 600 }}>
+			<button type="button" onClick={() => setBody(reparseSecondBody)}>
+				next body
+			</button>
+			{file && (
+				<FileDiff
+					fileDiff={file}
+					options={{
+						diffStyle: "unified",
+						theme: "github-dark-high-contrast",
+						themeType: "dark",
+					}}
+				/>
+			)}
+		</div>
+	);
+};
+
+/**
+ * Resolve once a given diff body has rendered inside the shadow root that
+ * Pixel's DOM-idle check cannot observe.
+ */
+const waitForDiffBody = (canvasElement: HTMLElement, text: string) =>
+	waitFor(() => {
+		const rendered = Array.from(
+			canvasElement.querySelectorAll("diffs-container"),
+		).some((host) => host.shadowRoot?.textContent?.includes(text));
+		if (!rendered) {
+			throw new Error(`Diff body has not rendered yet: ${text}`);
+		}
+	});
+
+export const ReparseSamePathAfterEdit: StoryObj = {
+	render: () => <ReparseSamePath />,
 	play: async ({ canvasElement }) => {
-		// Wait for the file tree sidebar to render, proving that
-		// isExpanded activates the tree + observer code path.
-		await waitFor(() => {
-			const nav = canvasElement.querySelector("nav");
-			expect(nav).not.toBeNull();
-		});
+		// The regression is a reparse: the first parse must commit before the
+		// swap, or body 2 renders as a fresh parse and the bug is not exercised.
+		await waitForDiffBody(canvasElement, "const v = 2");
 
-		// Find the diff content viewport (the one containing file
-		// sections) rather than the file-tree sidebar viewport.
-		const fileSection = canvasElement.querySelector("[data-file-name]");
-		const viewport = fileSection?.closest<HTMLElement>(
-			"[data-radix-scroll-area-viewport]",
+		await userEvent.click(
+			within(canvasElement).getByRole("button", { name: "next body" }),
 		);
-		if (!viewport) throw new Error("diff viewport not found");
 
-		// Capture the initial active file (whichever the observer picked
-		// up at mount), then scroll and verify it changed.
-		let initialFile: string | undefined;
-		await waitFor(() => {
-			const btn = canvasElement.querySelector<HTMLElement>(
-				'nav button[aria-current="true"]',
-			);
-			expect(btn).not.toBeNull();
-			initialFile = btn!.title;
-		});
-
-		// Scroll to roughly the middle of the diff content.
-		viewport.scrollTop = viewport.scrollHeight / 2;
-
-		// The observer should fire and highlight a different file.
-		await waitFor(() => {
-			const btn = canvasElement.querySelector<HTMLElement>(
-				'nav button[aria-current="true"]',
-			);
-			expect(btn).not.toBeNull();
-			expect(btn!.title).not.toBe(initialFile);
-		});
+		// Shadow-root renders are invisible to the stability wait, so wait for
+		// the reparsed body.
+		await waitForDiffBody(canvasElement, "const v = 3");
 	},
 };

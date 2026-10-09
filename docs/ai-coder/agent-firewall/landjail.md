@@ -1,4 +1,10 @@
-# landjail Jail Type
+---
+title: landjail jail type
+---
+
+> [!NOTE]
+> Agent Firewall is part of [AI Governance](../ai-governance.md), which is
+> included with a Premium license.
 
 landjail is Agent Firewall's alternative jail type that uses Landlock V4 for
 network isolation.

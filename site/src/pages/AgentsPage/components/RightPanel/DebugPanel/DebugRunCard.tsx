@@ -1,19 +1,27 @@
-import { ChevronDownIcon } from "lucide-react";
-import { type FC, useState } from "react";
+import { cn } from "cn";
+import { ChevronDownIcon, DownloadIcon } from "lucide-react";
+import { useId, useState } from "react";
 import { useQuery } from "react-query";
-import { getErrorMessage } from "#/api/errors";
+import { toast } from "sonner";
+import { getErrorDetail, getErrorMessage } from "#/api/errors";
 import { chatDebugRun } from "#/api/queries/chats";
 import type { ChatDebugRunSummary } from "#/api/typesGenerated";
 import { Alert } from "#/components/Alert/Alert";
 import { Badge } from "#/components/Badge/Badge";
+import { Button } from "#/components/Button/Button";
 import {
 	Collapsible,
 	CollapsibleContent,
 	CollapsibleTrigger,
 } from "#/components/Collapsible/Collapsible";
 import { Spinner } from "#/components/Spinner/Spinner";
-import { cn } from "#/utils/cn";
 import { DebugStepCard } from "./DebugStepCard";
+import {
+	buildDebugExportBlob,
+	buildRunDebugExport,
+	type DownloadDebugFile,
+	debugExportFilename,
+} from "./debugExport";
 import {
 	clampContent,
 	coerceRunSummary,
@@ -25,11 +33,12 @@ import {
 	isActiveStatus,
 } from "./debugPanelUtils";
 
-interface DebugRunCardProps {
+type DebugRunCardProps = {
 	run: ChatDebugRunSummary;
 	chatId: string;
 	isVisible: boolean;
-}
+	download: DownloadDebugFile;
+};
 
 // Max characters shown in the run header label before truncation.
 const RUN_LABEL_CLAMP_CHARS = 80;
@@ -39,12 +48,26 @@ const getDurationLabel = (startedAt: string, finishedAt?: string): string => {
 	return durationMs !== null ? compactDuration(durationMs) : "-";
 };
 
-export const DebugRunCard: FC<DebugRunCardProps> = ({
+const getMCPOutcomeBadgeVariant = (outcome: string) => {
+	switch (outcome) {
+		case "connected":
+			return "green";
+		case "no_tools":
+			return "default";
+		default:
+			return "destructive";
+	}
+};
+
+export const DebugRunCard: React.FC<DebugRunCardProps> = ({
 	run,
 	chatId,
 	isVisible,
+	download,
 }) => {
 	const [isExpanded, setIsExpanded] = useState(false);
+	const [isExporting, setIsExporting] = useState(false);
+	const mcpConnectHeadingId = useId();
 	const runDetailQuery = useQuery({
 		...chatDebugRun(chatId, run.id),
 		enabled: isVisible && isExpanded,
@@ -73,7 +96,16 @@ export const DebugRunCard: FC<DebugRunCardProps> = ({
 	// Step count from detail or summary.
 	const stepCount = steps.length > 0 ? steps.length : summaryVm.stepCount;
 	const durationLabel = getDurationLabel(run.started_at, run.finished_at);
+	// Non-chat-turn runs (title generation, quickgen, compaction)
+	// usually carry a first_message label that hides the kind, so
+	// surface the kind in the metadata; otherwise a failed title
+	// generation is indistinguishable from a failed chat turn.
+	const kindLabel =
+		run.kind !== "chat_turn" && summaryVm.primaryLabel.trim()
+			? getRunKindLabel(run.kind)
+			: undefined;
 	const metadataItems = [
+		kindLabel,
 		modelLabel || undefined,
 		stepCount !== undefined && stepCount > 0
 			? `${stepCount} ${stepCount === 1 ? "step" : "steps"}`
@@ -93,9 +125,36 @@ export const DebugRunCard: FC<DebugRunCardProps> = ({
 		: run.status;
 	const running = isActiveStatus(effectiveStatus);
 
+	const exportDebugRun = async () => {
+		if (!runDetailQuery.data) {
+			return;
+		}
+		try {
+			const exportedAt = new Date();
+			const payload = buildRunDebugExport(
+				chatId,
+				runDetailQuery.data,
+				exportedAt,
+			);
+			await download(
+				buildDebugExportBlob(payload),
+				debugExportFilename({
+					chatId,
+					runId: run.id,
+					exportedAt,
+				}),
+			);
+		} catch (error) {
+			console.error(error);
+			toast.error("Failed to export debug run.", {
+				description: getErrorDetail(error),
+			});
+		}
+	};
+
 	return (
 		<Collapsible open={isExpanded} onOpenChange={setIsExpanded}>
-			<div className="overflow-hidden rounded-lg border border-solid border-border-default/40">
+			<div className="overflow-hidden rounded-lg border border-solid border-border/40">
 				<CollapsibleTrigger asChild>
 					<button
 						type="button"
@@ -161,13 +220,94 @@ export const DebugRunCard: FC<DebugRunCardProps> = ({
 									</p>
 								</Alert>
 							) : null}
+							{summaryVm.mcpConnect.length > 0 ? (
+								<section
+									aria-labelledby={mcpConnectHeadingId}
+									className="rounded-md border border-solid border-border/40 px-2.5 py-1.5"
+								>
+									<h4
+										id={mcpConnectHeadingId}
+										className="m-0 text-xs font-medium text-content-secondary"
+									>
+										MCP server connections
+									</h4>
+									<ul className="m-0 list-none space-y-1 p-0 pt-1.5">
+										{summaryVm.mcpConnect.map((server, index) => (
+											<li
+												key={`${server.slug}-${index}`}
+												className="flex min-w-0 items-center gap-2 text-xs"
+											>
+												<span className="shrink-0 font-medium text-content-primary">
+													{server.slug}
+												</span>
+												<Badge
+													size="sm"
+													variant={getMCPOutcomeBadgeVariant(server.outcome)}
+													className="shrink-0"
+												>
+													{server.outcome}
+												</Badge>
+												{server.durationMs !== undefined ? (
+													<span className="shrink-0 text-content-secondary">
+														{compactDuration(server.durationMs)}
+													</span>
+												) : null}
+												{server.toolCount !== undefined &&
+												server.toolCount > 0 ? (
+													<span className="shrink-0 text-content-secondary">
+														{server.toolCount}{" "}
+														{server.toolCount === 1 ? "tool" : "tools"}
+													</span>
+												) : null}
+												{server.error ? (
+													<span
+														className="min-w-0 truncate text-content-secondary"
+														title={server.error}
+													>
+														{server.error}
+													</span>
+												) : null}
+											</li>
+										))}
+									</ul>
+									{summaryVm.mcpConnectDropped > 0 ? (
+										<p className="m-0 pt-1.5 text-xs text-content-secondary">
+											{summaryVm.mcpConnectDropped} earlier connection{" "}
+											{summaryVm.mcpConnectDropped === 1 ? "sample" : "samples"}{" "}
+											omitted
+										</p>
+									) : null}
+								</section>
+							) : null}
 							{steps.map((step) => (
-								<DebugStepCard key={step.id} step={step} defaultOpen={false} />
+								<DebugStepCard key={step.id} step={step} />
 							))}
 							{steps.length === 0 ? (
 								<p className="text-sm text-content-secondary">
 									No steps recorded.
 								</p>
+							) : null}
+							{runDetailQuery.data ? (
+								<div className="flex justify-end pt-1">
+									<Button
+										variant="outline"
+										size="sm"
+										disabled={isExporting}
+										onClick={() => {
+											setIsExporting(true);
+											void exportDebugRun().finally(() =>
+												setIsExporting(false),
+											);
+										}}
+									>
+										{isExporting ? (
+											<Spinner size="sm" loading />
+										) : (
+											<DownloadIcon className="size-4" />
+										)}
+										Export this run
+									</Button>
+								</div>
 							) : null}
 						</div>
 					)}

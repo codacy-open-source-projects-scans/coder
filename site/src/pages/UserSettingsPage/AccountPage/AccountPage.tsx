@@ -1,14 +1,17 @@
-import type { FC } from "react";
 import { useQuery } from "react-query";
 import { groupsForUser } from "#/api/queries/groups";
+import {
+	SettingsHeader,
+	SettingsHeaderDescription,
+	SettingsHeaderTitle,
+} from "#/components/SettingsHeader/SettingsHeader";
 import { useAuthContext } from "#/contexts/auth/AuthProvider";
 import { useAuthenticated } from "#/hooks/useAuthenticated";
 import { useDashboard } from "#/modules/dashboard/useDashboard";
-import { Section } from "../Section";
 import { AccountForm } from "./AccountForm";
 import { AccountUserGroups } from "./AccountUserGroups";
 
-const AccountPage: FC = () => {
+const AccountPage: React.FC = () => {
 	const { permissions, user: me } = useAuthenticated();
 	const { updateProfile, updateProfileError, isUpdatingProfile } =
 		useAuthContext();
@@ -22,16 +25,26 @@ const AccountPage: FC = () => {
 
 	return (
 		<div className="flex flex-col gap-12">
-			<Section title="Account" description="Update your account info">
+			<div>
+				<SettingsHeader>
+					<SettingsHeaderTitle>Account</SettingsHeaderTitle>
+					<SettingsHeaderDescription>
+						Update your account info.
+					</SettingsHeaderDescription>
+				</SettingsHeader>
 				<AccountForm
 					editable={permissions?.updateUsers ?? false}
 					email={me.email}
 					updateProfileError={updateProfileError}
 					isLoading={isUpdatingProfile}
-					initialValues={{ username: me.username, name: me.name ?? "" }}
+					initialValues={{
+						username: me.username,
+						name: me.name ?? "",
+						avatar_url: me.avatar_url ?? "",
+					}}
 					onSubmit={updateProfile}
 				/>
-			</Section>
+			</div>
 
 			{hasGroupsFeature && (
 				<AccountUserGroups

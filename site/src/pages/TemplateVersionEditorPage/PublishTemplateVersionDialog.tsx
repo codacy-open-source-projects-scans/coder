@@ -1,27 +1,22 @@
-import Checkbox from "@mui/material/Checkbox";
-import FormControlLabel from "@mui/material/FormControlLabel";
-import TextField from "@mui/material/TextField";
+import { cn } from "cn";
 import { useFormik } from "formik";
-import type { FC } from "react";
 import * as Yup from "yup";
-import { EnterpriseBadge } from "#/components/Badges/Badges";
-import { ConfirmDialog } from "#/components/Dialogs/ConfirmDialog/ConfirmDialog";
-import type { DialogProps } from "#/components/Dialogs/Dialog";
+import { EnterpriseBadge } from "#/components/Badge/PresetBadges";
+import { Checkbox } from "#/components/Checkbox/Checkbox";
+import { ConfirmDialog } from "#/components/Dialog/ConfirmDialog/ConfirmDialog";
 import { FormFields } from "#/components/Form/Form";
-import {
-	HelpPopover,
-	HelpPopoverContent,
-	HelpPopoverIconTrigger,
-	HelpPopoverLink,
-	HelpPopoverLinksGroup,
-	HelpPopoverText,
-	HelpPopoverTitle,
-} from "#/components/HelpPopover/HelpPopover";
+import { FormField } from "#/components/FormField/FormField";
+import { InfoTooltip } from "#/components/InfoTooltip/InfoTooltip";
+import { Label } from "#/components/Label/Label";
+import { Link } from "#/components/Link/Link";
+import { Textarea } from "#/components/Textarea/Textarea";
+import { TooltipMessage, TooltipTitle } from "#/components/Tooltip/Tooltip";
 import type { PublishVersionData } from "#/pages/TemplateVersionEditorPage/types";
 import { docs } from "#/utils/docs";
 import { getFormHelpers } from "#/utils/formUtils";
 
-type PublishTemplateVersionDialogProps = DialogProps & {
+type PublishTemplateVersionDialogProps = {
+	open: boolean;
 	defaultName: string;
 	isPublishing: boolean;
 	publishingError?: unknown;
@@ -29,15 +24,15 @@ type PublishTemplateVersionDialogProps = DialogProps & {
 	onConfirm: (data: PublishVersionData) => void;
 };
 
-export const PublishTemplateVersionDialog: FC<
+export const PublishTemplateVersionDialog: React.FC<
 	PublishTemplateVersionDialogProps
 > = ({
+	open,
 	onConfirm,
 	isPublishing,
 	onClose,
 	defaultName,
 	publishingError,
-	...dialogProps
 }) => {
 	const form = useFormik({
 		initialValues: {
@@ -53,6 +48,8 @@ export const PublishTemplateVersionDialog: FC<
 		onSubmit: onConfirm,
 	});
 	const getFieldHelpers = getFormHelpers(form, publishingError);
+	const messageField = getFieldHelpers("message");
+	const messageErrorId = `${messageField.id}-error`;
 	const handleClose = () => {
 		form.resetForm();
 		onClose();
@@ -60,7 +57,7 @@ export const PublishTemplateVersionDialog: FC<
 
 	return (
 		<ConfirmDialog
-			{...dialogProps}
+			open={open}
 			confirmLoading={isPublishing}
 			onClose={handleClose}
 			onConfirm={async () => {
@@ -76,64 +73,76 @@ export const PublishTemplateVersionDialog: FC<
 					<div className="flex flex-col gap-4">
 						<p>You are about to publish a new version of this template.</p>
 						<FormFields>
-							<TextField
-								{...getFieldHelpers("name")}
+							<FormField
+								field={getFieldHelpers("name")}
 								label="Version name"
 								autoFocus
 								disabled={isPublishing}
 							/>
 
-							<TextField
-								{...getFieldHelpers("message")}
-								label="Message"
-								placeholder="Write a short message about the changes you made..."
-								disabled={isPublishing}
-								multiline
-								rows={5}
-							/>
-
-							<div className="flex flex-row gap-4">
-								<FormControlLabel
-									label="Promote to active version"
-									control={
-										<Checkbox
-											size="small"
-											checked={form.values.isActiveVersion}
-											onChange={async (e) => {
-												await form.setFieldValue(
-													"isActiveVersion",
-													e.target.checked,
-												);
-											}}
-											name="isActiveVersion"
-										/>
+							<div className="flex flex-col gap-2">
+								<Label htmlFor={messageField.id}>Message</Label>
+								<Textarea
+									id={messageField.id}
+									name={messageField.name}
+									value={messageField.value ?? ""}
+									onChange={messageField.onChange}
+									onBlur={messageField.onBlur}
+									placeholder="Write a short message about the changes you made..."
+									disabled={isPublishing}
+									rows={5}
+									aria-invalid={messageField.error}
+									aria-describedby={
+										messageField.error ? messageErrorId : undefined
 									}
+									className={cn(
+										messageField.error && "border-border-destructive",
+									)}
 								/>
+								{messageField.error && (
+									<span
+										id={messageErrorId}
+										className="text-xs text-content-destructive"
+									>
+										{messageField.helperText}
+									</span>
+								)}
+							</div>
 
-								<HelpPopover>
-									<HelpPopoverIconTrigger />
+							<div className="flex flex-row items-center gap-4">
+								<div className="flex items-center gap-2">
+									<Checkbox
+										id="isActiveVersion"
+										checked={form.values.isActiveVersion}
+										onCheckedChange={(checked) => {
+											void form.setFieldValue(
+												"isActiveVersion",
+												Boolean(checked),
+											);
+										}}
+										name="isActiveVersion"
+									/>
+									<Label htmlFor="isActiveVersion" className="cursor-pointer">
+										Promote to active version
+									</Label>
+								</div>
 
-									{/**
-									 * 2025-09-03 - Without disablePortal, the tooltip will render under the dialog;
-									 * this prop may not need to be set when we switch away from MuiDialog
-									 */}
-									<HelpPopoverContent disablePortal>
-										<HelpPopoverTitle>Active versions</HelpPopoverTitle>
-										<HelpPopoverText>
-											Templates can enforce that the active version be used for
-											all workspaces <EnterpriseBadge />
-										</HelpPopoverText>
-										<HelpPopoverLinksGroup>
-											<HelpPopoverLink
-												href={docs(
-													"/admin/templates/managing-templates#template-update-policies",
-												)}
-											>
-												Review the documentation
-											</HelpPopoverLink>
-										</HelpPopoverLinksGroup>
-									</HelpPopoverContent>
-								</HelpPopover>
+								<InfoTooltip>
+									<TooltipTitle>Active versions</TooltipTitle>
+									<TooltipMessage>
+										Templates can enforce that the active version be used for
+										all workspaces <EnterpriseBadge />
+										<br />
+										<Link
+											size="sm"
+											href={docs(
+												"/admin/templates/managing-templates#template-update-policies",
+											)}
+										>
+											Review the documentation
+										</Link>
+									</TooltipMessage>
+								</InfoTooltip>
 							</div>
 						</FormFields>
 					</div>

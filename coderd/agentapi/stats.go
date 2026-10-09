@@ -56,20 +56,21 @@ func (a *StatsAPI) UpdateStats(ctx context.Context, req *agentproto.UpdateStatsR
 		ws = database.WorkspaceIdentityFromWorkspace(w)
 	}
 
+	// The payload is unnormalized and unbounded until the batcher caps it, so
+	// log scalars rather than its contents.
 	a.Log.Debug(ctx, "read stats report",
 		slog.F("interval", a.AgentStatsRefreshInterval),
 		slog.F("workspace_id", ws.ID),
-		slog.F("payload", req),
+		slog.F("connection_count", req.Stats.GetConnectionCount()),
+		slog.F("session_count_keys", len(req.Stats.GetSessionCounts())),
+		slog.F("connections_by_proto_keys", len(req.Stats.GetConnectionsByProto())),
 	)
 
 	if a.Experiments.Enabled(codersdk.ExperimentWorkspaceUsage) {
 		// while the experiment is enabled we will not report
 		// session stats from the agent. This is because it is
 		// being handled by the CLI and the postWorkspaceUsage route.
-		req.Stats.SessionCountSsh = 0
-		req.Stats.SessionCountJetbrains = 0
-		req.Stats.SessionCountVscode = 0
-		req.Stats.SessionCountReconnectingPty = 0
+		workspacestats.ClearSessionCounts(req.Stats)
 	}
 
 	err := a.StatsReporter.ReportAgentStats(

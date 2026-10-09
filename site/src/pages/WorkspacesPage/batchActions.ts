@@ -4,13 +4,12 @@ import { API } from "#/api/api";
 import { getErrorDetail } from "#/api/errors";
 import type { Workspace, WorkspaceBuild } from "#/api/typesGenerated";
 
-interface UseBatchActionsOptions {
+type UseBatchActionsOptions = {
 	onSuccess: () => Promise<void>;
-}
+};
 
 type UpdateAllPayload = Readonly<{
 	workspaces: readonly Workspace[];
-	isDynamicParametersEnabled: boolean;
 }>;
 
 type UseBatchActionsResult = Readonly<{
@@ -33,9 +32,11 @@ export function useBatchActions(
 	const startAllMutation = useMutation({
 		mutationFn: (workspaces: readonly Workspace[]) => {
 			return Promise.all(
-				workspaces.map((w) =>
-					API.startWorkspace(w.id, w.latest_build.template_version_id),
-				),
+				workspaces
+					.filter((w) => w.latest_build.status === "stopped")
+					.map((w) =>
+						API.startWorkspace(w.id, w.latest_build.template_version_id),
+					),
 			);
 		},
 		onSuccess,
@@ -48,7 +49,11 @@ export function useBatchActions(
 
 	const stopAllMutation = useMutation({
 		mutationFn: (workspaces: readonly Workspace[]) => {
-			return Promise.all(workspaces.map((w) => API.stopWorkspace(w.id)));
+			return Promise.all(
+				workspaces
+					.filter((w) => w.latest_build.status === "running")
+					.map((w) => API.stopWorkspace(w.id)),
+			);
 		},
 		onSuccess,
 		onError: (error) => {
@@ -72,11 +77,11 @@ export function useBatchActions(
 
 	const updateAllMutation = useMutation({
 		mutationFn: (payload: UpdateAllPayload) => {
-			const { workspaces, isDynamicParametersEnabled } = payload;
+			const { workspaces } = payload;
 			return Promise.all(
 				workspaces
 					.filter((w) => w.outdated && !w.dormant_at)
-					.map((w) => API.updateWorkspace(w, [], isDynamicParametersEnabled)),
+					.map((w) => API.updateWorkspace(w)),
 			);
 		},
 		onSuccess,
@@ -136,6 +141,7 @@ export function useBatchActions(
 			unfavoriteAllMutation.isPending ||
 			startAllMutation.isPending ||
 			stopAllMutation.isPending ||
-			deleteAllMutation.isPending,
+			deleteAllMutation.isPending ||
+			updateAllMutation.isPending,
 	};
 }

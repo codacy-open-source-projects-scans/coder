@@ -1,9 +1,11 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import { expect, waitFor, within } from "storybook/test";
 import {
 	reactRouterOutlet,
 	reactRouterParameters,
 } from "storybook-addon-remix-react-router";
 import { getAuthorizationKey } from "#/api/queries/authCheck";
+import { experimentsKey } from "#/api/queries/experiments";
 import { workspaceByOwnerAndNameKey } from "#/api/queries/workspaces";
 import type { Workspace, WorkspaceAgentLifecycle } from "#/api/typesGenerated";
 import { AuthProvider } from "#/contexts/auth/AuthProvider";
@@ -23,6 +25,7 @@ import {
 	MockWorkspaceAgent,
 } from "#/testHelpers/entities";
 import { withWebSocket } from "#/testHelpers/storybook";
+import { isMac } from "#/utils/platform";
 import TerminalPage from "./TerminalPage";
 
 const createWorkspaceWithAgent = (lifecycle: WorkspaceAgentLifecycle) => {
@@ -71,7 +74,7 @@ const meta = {
 			{ key: ["hasFirstUser"], data: true },
 			{ key: ["buildInfo"], data: MockBuildInfo },
 			{ key: ["entitlements"], data: MockEntitlements },
-			{ key: ["experiments"], data: MockExperiments },
+			{ key: experimentsKey(MockUserOwner.id), data: MockExperiments },
 			{ key: ["appearance"], data: MockAppearanceConfig },
 			{ key: ["organizations"], data: [MockDefaultOrganization] },
 			{
@@ -90,9 +93,6 @@ const meta = {
 				},
 			},
 		],
-		chromatic: {
-			diffThreshold: 0.8,
-		},
 	},
 	decorators: [
 		(Story) => (
@@ -167,6 +167,51 @@ export const Ready: Story = {
 			},
 		],
 		queries: [...meta.parameters.queries, createWorkspaceWithAgent("ready")],
+	},
+};
+
+export const RightClickMenu: Story = {
+	decorators: [withWebSocket],
+	parameters: {
+		...meta.parameters,
+		webSocket: [
+			{
+				event: "message",
+				data: "$ echo hello",
+			},
+		],
+		queries: [...meta.parameters.queries, createWorkspaceWithAgent("ready")],
+	},
+	play: async ({ canvasElement }) => {
+		if (isMac()) {
+			return;
+		}
+
+		const terminal = await waitFor(() => {
+			const element = canvasElement.querySelector<HTMLElement>(".xterm");
+			if (!element) {
+				throw new Error("terminal has not rendered yet");
+			}
+			return element;
+		});
+
+		const rect = terminal.getBoundingClientRect();
+		terminal.dispatchEvent(
+			new MouseEvent("contextmenu", {
+				bubbles: true,
+				cancelable: true,
+				clientX: rect.left + rect.width / 2,
+				clientY: rect.top + rect.height / 2,
+			}),
+		);
+
+		const body = within(document.body);
+		await expect(
+			await body.findByRole("menuitem", { name: "Copy" }),
+		).toBeInTheDocument();
+		await expect(
+			body.getByRole("menuitem", { name: "Paste" }),
+		).toBeInTheDocument();
 	},
 };
 

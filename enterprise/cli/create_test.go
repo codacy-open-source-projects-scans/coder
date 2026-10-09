@@ -20,6 +20,8 @@ import (
 	"github.com/coder/coder/v2/coderd/coderdtest"
 	"github.com/coder/coder/v2/coderd/database"
 	"github.com/coder/coder/v2/coderd/database/dbtestutil"
+	"github.com/coder/coder/v2/coderd/database/provisionerjobs"
+	"github.com/coder/coder/v2/coderd/database/pubsub"
 	"github.com/coder/coder/v2/coderd/files"
 	"github.com/coder/coder/v2/coderd/notifications"
 	agplprebuilds "github.com/coder/coder/v2/coderd/prebuilds"
@@ -31,8 +33,8 @@ import (
 	"github.com/coder/coder/v2/enterprise/coderd/prebuilds"
 	"github.com/coder/coder/v2/provisioner/echo"
 	"github.com/coder/coder/v2/provisionersdk/proto"
-	"github.com/coder/coder/v2/pty/ptytest"
 	"github.com/coder/coder/v2/testutil"
+	"github.com/coder/coder/v2/testutil/expecter"
 	"github.com/coder/quartz"
 )
 
@@ -76,11 +78,9 @@ func TestEnterpriseCreate(t *testing.T) {
 
 		createTemplate := func(tplName string, orgID uuid.UUID) {
 			version := coderdtest.CreateTemplateVersion(t, ownerClient, orgID, nil)
-			wg.Add(1)
-			go func() {
+			wg.Go(func() {
 				coderdtest.AwaitTemplateVersionJobCompleted(t, ownerClient, version.ID)
-				wg.Done()
-			}()
+			})
 
 			coderdtest.CreateTemplate(t, ownerClient, orgID, version.ID, func(request *codersdk.CreateTemplateRequest) {
 				request.Name = tplName
@@ -124,7 +124,6 @@ func TestEnterpriseCreate(t *testing.T) {
 		}
 		inv, root := clitest.New(t, args...)
 		clitest.SetupConfig(t, member, root)
-		_ = ptytest.New(t).Attach(inv)
 		err := inv.Run()
 		require.NoError(t, err)
 
@@ -155,7 +154,6 @@ func TestEnterpriseCreate(t *testing.T) {
 		}
 		inv, root := clitest.New(t, args...)
 		clitest.SetupConfig(t, member, root)
-		_ = ptytest.New(t).Attach(inv)
 		err := inv.Run()
 		require.Error(t, err, "expected error due to ambiguous template name")
 		require.ErrorContains(t, err, "multiple templates found")
@@ -181,7 +179,6 @@ func TestEnterpriseCreate(t *testing.T) {
 		}
 		inv, root := clitest.New(t, args...)
 		clitest.SetupConfig(t, member, root)
-		_ = ptytest.New(t).Attach(inv)
 		err := inv.Run()
 		require.NoError(t, err)
 
@@ -216,7 +213,6 @@ func TestEnterpriseCreate(t *testing.T) {
 		}
 		inv, root := clitest.New(t, args...)
 		clitest.SetupConfig(t, newOwner, root)
-		_ = ptytest.New(t).Attach(inv)
 		err := inv.Run()
 		require.NoError(t, err)
 
@@ -247,7 +243,6 @@ func TestEnterpriseCreate(t *testing.T) {
 		}
 		inv, root := clitest.New(t, args...)
 		clitest.SetupConfig(t, member, root)
-		_ = ptytest.New(t).Attach(inv)
 		err := inv.Run()
 		require.Error(t, err)
 		// The error message should indicate the flag to fix the issue.
@@ -310,6 +305,7 @@ func TestEnterpriseCreateWithPreset(t *testing.T) {
 		t *testing.T,
 		ctx context.Context,
 		db database.Store,
+		pb pubsub.Pubsub,
 		reconciler *prebuilds.StoreReconciler,
 		presets []codersdk.Preset,
 	) {
@@ -325,6 +321,19 @@ func TestEnterpriseCreateWithPreset(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, actions)
 		require.NoError(t, reconciler.ReconcilePreset(ctx, *ps))
+
+		// StoreReconciler queues its "job posted" pubsub notification on an
+		// internal channel that only StoreReconciler.Run drains. These tests
+		// drive the reconciler directly and never start Run, so without this
+		// provisionerd would only see the job on its 30 second backup poll.
+		jobs, err := db.GetProvisionerJobsCreatedAfter(ctx, time.Time{})
+		require.NoError(t, err)
+		for _, job := range jobs {
+			if job.JobStatus != database.ProvisionerJobStatusPending {
+				continue
+			}
+			require.NoError(t, provisionerjobs.PostJob(pb, job))
+		}
 	}
 
 	getRunningPrebuilds := func(
@@ -366,7 +375,7 @@ func TestEnterpriseCreateWithPreset(t *testing.T) {
 
 			t.Logf("found %d running prebuilds so far, want %d", len(runningPrebuilds), prebuildInstances)
 			return len(runningPrebuilds) == prebuildInstances
-		}, testutil.IntervalSlow, "prebuilds not running")
+		}, testutil.IntervalFast, "prebuilds not running")
 
 		return runningPrebuilds
 	}
@@ -433,7 +442,7 @@ func TestEnterpriseCreateWithPreset(t *testing.T) {
 		require.Equal(t, preset.Name, presets[0].Name)
 
 		// Given: Reconciliation loop runs and starts prebuilt workspaces
-		runReconciliationLoop(t, ctx, db, reconciler, presets)
+		runReconciliationLoop(t, ctx, db, pb, reconciler, presets)
 		runningPrebuilds := getRunningPrebuilds(t, ctx, db, int(prebuildInstances))
 		require.Len(t, runningPrebuilds, int(prebuildInstances))
 		require.Equal(t, presets[0].ID, runningPrebuilds[0].CurrentPresetID.UUID)
@@ -449,17 +458,15 @@ func TestEnterpriseCreateWithPreset(t *testing.T) {
 		workspaceName := "my-workspace"
 		inv, root := clitest.New(t, "create", workspaceName, "--template", template.Name, "-y", "--preset", preset.Name)
 		clitest.SetupConfig(t, member, root)
-		pty := ptytest.New(t).Attach(inv)
-		inv.Stdout = pty.Output()
-		inv.Stderr = pty.Output()
+		stdout := expecter.NewAttachedToInvocation(t, inv)
 		err = inv.Run()
 		require.NoError(t, err)
 
 		// Should: display the selected preset as well as its parameters
 		presetName := fmt.Sprintf("Preset '%s' applied:", preset.Name)
-		pty.ExpectMatch(presetName)
-		pty.ExpectMatch(fmt.Sprintf("%s: '%s'", firstParameterName, secondOptionalParameterValue))
-		pty.ExpectMatch(fmt.Sprintf("%s: '%s'", thirdParameterName, thirdParameterValue))
+		stdout.ExpectMatch(ctx, presetName)
+		stdout.ExpectMatch(ctx, fmt.Sprintf("%s: '%s'", firstParameterName, secondOptionalParameterValue))
+		stdout.ExpectMatch(ctx, fmt.Sprintf("%s: '%s'", thirdParameterName, thirdParameterValue))
 
 		// Verify if the new workspace uses expected parameters.
 		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitShort)
@@ -546,7 +553,7 @@ func TestEnterpriseCreateWithPreset(t *testing.T) {
 		require.Len(t, presets, 1)
 
 		// Given: Reconciliation loop runs and starts prebuilt workspaces
-		runReconciliationLoop(t, ctx, db, reconciler, presets)
+		runReconciliationLoop(t, ctx, db, pb, reconciler, presets)
 		runningPrebuilds := getRunningPrebuilds(t, ctx, db, int(prebuildInstances))
 		require.Len(t, runningPrebuilds, int(prebuildInstances))
 		require.Equal(t, presets[0].ID, runningPrebuilds[0].CurrentPresetID.UUID)
@@ -565,12 +572,10 @@ func TestEnterpriseCreateWithPreset(t *testing.T) {
 			"--parameter", fmt.Sprintf("%s=%s", firstParameterName, firstParameterValue),
 			"--parameter", fmt.Sprintf("%s=%s", thirdParameterName, thirdParameterValue))
 		clitest.SetupConfig(t, member, root)
-		pty := ptytest.New(t).Attach(inv)
-		inv.Stdout = pty.Output()
-		inv.Stderr = pty.Output()
+		stdout := expecter.NewAttachedToInvocation(t, inv)
 		err = inv.Run()
 		require.NoError(t, err)
-		pty.ExpectMatch("No preset applied.")
+		stdout.ExpectMatch(ctx, "No preset applied.")
 
 		// Verify if the new workspace uses expected parameters.
 		ctx, cancel := context.WithTimeout(context.Background(), testutil.WaitShort)

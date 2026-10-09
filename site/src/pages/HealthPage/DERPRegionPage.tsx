@@ -1,5 +1,5 @@
+import { cn } from "cn";
 import { ChevronLeftIcon, CodeIcon, HashIcon } from "lucide-react";
-import type { FC } from "react";
 import { Link, useOutletContext, useParams } from "react-router";
 import type {
 	DERPNodeReport,
@@ -19,7 +19,6 @@ import {
 	TooltipContent,
 	TooltipTrigger,
 } from "#/components/Tooltip/Tooltip";
-import { cn } from "#/utils/cn";
 import { getLatencyColor } from "#/utils/latency";
 import { pageTitle } from "#/utils/page";
 import {
@@ -34,13 +33,13 @@ import {
 	StatusIcon,
 } from "./Content";
 
-interface NodeCheckRow {
+type NodeCheckRow = {
 	label: string;
 	description: string;
 	value: boolean | null;
-}
+};
 
-const DERPRegionPage: FC = () => {
+const DERPRegionPage: React.FC = () => {
 	const healthStatus = useOutletContext<HealthcheckReport>();
 	const params = useParams() as { regionId: string };
 	const regionId = Number(params.regionId);
@@ -83,6 +82,7 @@ const DERPRegionPage: FC = () => {
 							key={warning.code}
 							severity="warning"
 							prominent
+							dismissible
 						>
 							{warning.message}
 						</Alert>
@@ -191,7 +191,7 @@ const DERPRegionPage: FC = () => {
 							</header>
 
 							<Table>
-								<TableBody className="[&>tr>td:first-of-type]:border-l-0 [&>tr>td:last-child]:border-r-0 [&>tr:last-child>td]:border-b-0 [&>tr>td]:!rounded-none">
+								<TableBody className="[&>tr>td:first-of-type]:border-l-0 [&>tr>td:last-child]:border-r-0 [&>tr:last-child>td]:border-b-0 [&>tr>td]:rounded-none!">
 									{checks.map((check) => (
 										<TableRow key={check.label}>
 											<TableCell className="w-8">
@@ -227,7 +227,7 @@ const DERPRegionPage: FC = () => {
 
 type StatusCircleProps = { background: string };
 
-const StatusCircle: FC<StatusCircleProps> = ({ background }) => {
+const StatusCircle: React.FC<StatusCircleProps> = ({ background }) => {
 	return (
 		<div className="flex items-center justify-center">
 			<div className={cn("size-2 rounded-full", background)} />

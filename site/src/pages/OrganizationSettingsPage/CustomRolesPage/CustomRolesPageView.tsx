@@ -1,17 +1,20 @@
 import { EllipsisVerticalIcon, PlusIcon } from "lucide-react";
-import type { FC } from "react";
+import { useState } from "react";
 import { Link as RouterLink, useNavigate } from "react-router";
-import type { AssignableRoles, Role } from "#/api/typesGenerated";
+import type { AssignableRoles, Organization, Role } from "#/api/typesGenerated";
+import { PremiumBadge } from "#/components/Badge/PresetBadges";
 import { Button, Button as ShadcnButton } from "#/components/Button/Button";
-import { ChooseOne, Cond } from "#/components/Conditionals/ChooseOne";
 import {
 	DropdownMenu,
 	DropdownMenuContent,
 	DropdownMenuItem,
 	DropdownMenuTrigger,
 } from "#/components/DropdownMenu/DropdownMenu";
-import { EmptyState } from "#/components/EmptyState/EmptyState";
-import { PaywallPremium } from "#/components/Paywall/PaywallPremium";
+import {
+	SettingsHeader,
+	SettingsHeaderDescription,
+	SettingsHeaderTitle,
+} from "#/components/SettingsHeader/SettingsHeader";
 import { Skeleton } from "#/components/Skeleton/Skeleton";
 import {
 	Table,
@@ -21,106 +24,253 @@ import {
 	TableHeader,
 	TableRow,
 } from "#/components/Table/Table";
+import { TableEmpty } from "#/components/TableEmpty/TableEmpty";
 import {
 	TableLoaderSkeleton,
 	TableRowSkeleton,
 } from "#/components/TableLoader/TableLoader";
-import { docs } from "#/utils/docs";
+import { PremiumPaywallSmall } from "#/modules/paywall/PremiumPaywallSmall";
+import type { Permissions } from "#/modules/permissions";
+import { DefaultRolesDialog } from "./DefaultRolesDialog";
 import { PermissionPillsList } from "./PermissionPillsList";
 
-interface CustomRolesPageViewProps {
+type CustomRolesPageViewProps = {
+	organization: Organization;
 	builtInRoles: AssignableRoles[] | undefined;
 	customRoles: AssignableRoles[] | undefined;
 	onDeleteRole: (role: Role) => void;
 	canCreateOrgRole: boolean;
 	canUpdateOrgRole: boolean;
 	canDeleteOrgRole: boolean;
+	canEditDefaultRoles: boolean;
 	isCustomRolesEnabled: boolean;
-}
+	permissions: Permissions;
+	defaultRolesEntitled?: boolean;
+	availableOrgRoles?: AssignableRoles[];
+	onUpdateDefaultRoles?: (roles: string[]) => Promise<void>;
+	isUpdatingDefaultRoles?: boolean;
+};
 
-export const CustomRolesPageView: FC<CustomRolesPageViewProps> = ({
+export const CustomRolesPageView: React.FC<CustomRolesPageViewProps> = ({
+	organization,
 	builtInRoles,
 	customRoles,
 	onDeleteRole,
 	canCreateOrgRole,
 	canUpdateOrgRole,
 	canDeleteOrgRole,
+	canEditDefaultRoles,
 	isCustomRolesEnabled,
+	permissions,
+	defaultRolesEntitled,
+	availableOrgRoles,
+	onUpdateDefaultRoles,
+	isUpdatingDefaultRoles,
 }) => {
 	return (
-		<div className="flex flex-col gap-8">
+		<div className="flex flex-col gap-12">
 			{!isCustomRolesEnabled && (
-				<PaywallPremium
+				<PremiumPaywallSmall
+					source="custom_roles"
 					message="Custom Roles"
-					description="Create custom roles to grant users a tailored set of granular permissions."
-					documentationLink={docs("/admin/users/groups-roles")}
+					description="Build roles with the exact permissions your team needs."
+					features={[
+						"Configure roles per organization",
+						"Go beyond the built-in role set",
+						"Assign custom roles to any user",
+					]}
+					canViewPremium={permissions.viewAllLicenses}
 				/>
 			)}
-			<div className="flex flex-row gap-4 items-baseline justify-between">
-				<span>
-					<h2 className="mb-0 text-lg">Custom Roles</h2>
-					<span className="text-sm text-content-secondary leading-relaxed">
+			{onUpdateDefaultRoles && (
+				<DefaultRolesSection
+					organization={organization}
+					availableOrgRoles={availableOrgRoles}
+					canEditDefaultRoles={canEditDefaultRoles}
+					defaultRolesEntitled={Boolean(defaultRolesEntitled)}
+					isUpdatingDefaultRoles={Boolean(isUpdatingDefaultRoles)}
+					onUpdateDefaultRoles={onUpdateDefaultRoles}
+				/>
+			)}
+			<div>
+				<SettingsHeader
+					actions={
+						canCreateOrgRole &&
+						isCustomRolesEnabled && (
+							<Button variant="outline" asChild>
+								<RouterLink to="create">
+									<PlusIcon />
+									Create custom role
+								</RouterLink>
+							</Button>
+						)
+					}
+				>
+					<SettingsHeaderTitle level="h2" hierarchy="secondary">
+						Custom Roles
+					</SettingsHeaderTitle>
+					<SettingsHeaderDescription>
 						Create custom roles to grant users a tailored set of granular
 						permissions.
+					</SettingsHeaderDescription>
+				</SettingsHeader>
+				<RoleTable
+					roles={customRoles}
+					isCustomRolesEnabled={isCustomRolesEnabled}
+					canCreateOrgRole={canCreateOrgRole}
+					canUpdateOrgRole={canUpdateOrgRole}
+					canDeleteOrgRole={canDeleteOrgRole}
+					onDeleteRole={onDeleteRole}
+					aria-label="Custom roles"
+				/>
+			</div>
+			<div>
+				<SettingsHeader>
+					<SettingsHeaderTitle level="h2" hierarchy="secondary">
+						Built-In Roles
+					</SettingsHeaderTitle>
+					<SettingsHeaderDescription>
+						Built-in roles have predefined permissions. You cannot edit or
+						delete built-in roles.
+					</SettingsHeaderDescription>
+				</SettingsHeader>
+				<RoleTable
+					roles={builtInRoles}
+					isCustomRolesEnabled={isCustomRolesEnabled}
+					canCreateOrgRole={canCreateOrgRole}
+					canUpdateOrgRole={canUpdateOrgRole}
+					canDeleteOrgRole={canDeleteOrgRole}
+					onDeleteRole={onDeleteRole}
+					aria-label="Built-in roles"
+				/>
+			</div>
+		</div>
+	);
+};
+
+type DefaultRolesSectionProps = {
+	organization: Organization;
+	availableOrgRoles?: AssignableRoles[];
+	canEditDefaultRoles: boolean;
+	defaultRolesEntitled: boolean;
+	isUpdatingDefaultRoles: boolean;
+	onUpdateDefaultRoles: (roles: string[]) => Promise<void>;
+};
+
+const DefaultRolesSection: React.FC<DefaultRolesSectionProps> = ({
+	organization,
+	availableOrgRoles,
+	canEditDefaultRoles,
+	defaultRolesEntitled,
+	isUpdatingDefaultRoles,
+	onUpdateDefaultRoles,
+}) => {
+	const [isEditing, setIsEditing] = useState(false);
+
+	return (
+		<div>
+			<SettingsHeader
+				actions={
+					canEditDefaultRoles && (
+						<Button
+							type="button"
+							variant="outline"
+							onClick={() => setIsEditing(true)}
+							disabled={
+								isUpdatingDefaultRoles ||
+								!defaultRolesEntitled ||
+								!availableOrgRoles
+							}
+						>
+							Edit default roles
+						</Button>
+					)
+				}
+			>
+				<SettingsHeaderTitle level="h2" hierarchy="secondary">
+					Default Roles
+					{!defaultRolesEntitled && <PremiumBadge />}
+				</SettingsHeaderTitle>
+				<SettingsHeaderDescription>
+					Roles granted to every member of this organization, current and
+					future, in addition to any roles assigned directly. Removing a role
+					here removes it from all members that are not assigned that role
+					directly.
+					{!defaultRolesEntitled && (
+						<> Editing organization settings requires a Premium license.</>
+					)}
+				</SettingsHeaderDescription>
+			</SettingsHeader>
+			<div className="text-sm">
+				{organization.default_org_member_roles.length === 0 ? (
+					<span className="text-content-secondary">
+						No default roles. Members can create and use workspaces or use Coder
+						Agents only through directly assigned roles.
 					</span>
-				</span>
-				{canCreateOrgRole && isCustomRolesEnabled && (
-					<Button variant="outline" asChild>
-						<RouterLink to="create">
-							<PlusIcon />
-							Create custom role
-						</RouterLink>
-					</Button>
+				) : (
+					<DefaultRolesSummary
+						roleNames={organization.default_org_member_roles}
+						availableRoles={availableOrgRoles}
+					/>
 				)}
 			</div>
-			<RoleTable
-				roles={customRoles}
-				isCustomRolesEnabled={isCustomRolesEnabled}
-				canCreateOrgRole={canCreateOrgRole}
-				canUpdateOrgRole={canUpdateOrgRole}
-				canDeleteOrgRole={canDeleteOrgRole}
-				onDeleteRole={onDeleteRole}
-			/>
-			<span>
-				<h2 className="mb-0 text-lg">Built-In Roles</h2>
-				<span className="text-sm text-content-secondary leading-relaxed">
-					Built-in roles have predefined permissions. You cannot edit or delete
-					built-in roles.
-				</span>
-			</span>
-			<RoleTable
-				roles={builtInRoles}
-				isCustomRolesEnabled={isCustomRolesEnabled}
-				canCreateOrgRole={canCreateOrgRole}
-				canUpdateOrgRole={canUpdateOrgRole}
-				canDeleteOrgRole={canDeleteOrgRole}
-				onDeleteRole={onDeleteRole}
+			<DefaultRolesDialog
+				open={isEditing}
+				currentRoles={organization.default_org_member_roles}
+				availableRoles={availableOrgRoles}
+				onCancel={() => setIsEditing(false)}
+				onConfirm={async (roles) => {
+					await onUpdateDefaultRoles(roles);
+					setIsEditing(false);
+				}}
+				isUpdating={isUpdatingDefaultRoles}
 			/>
 		</div>
 	);
 };
 
-interface RoleTableProps {
+type DefaultRolesSummaryProps = {
+	roleNames: readonly string[];
+	availableRoles?: AssignableRoles[];
+};
+
+const DefaultRolesSummary: React.FC<DefaultRolesSummaryProps> = ({
+	roleNames,
+	availableRoles,
+}) => {
+	const displayNameFor = (name: string): string => {
+		const role = availableRoles?.find((r) => r.name === name);
+		return role?.display_name || role?.name || name;
+	};
+
+	return (
+		<ul className="list-disc pl-5 m-0 flex flex-col gap-1">
+			{roleNames.map((name) => (
+				<li key={name}>{displayNameFor(name)}</li>
+			))}
+		</ul>
+	);
+};
+
+type RoleTableBodyProps = {
 	roles: AssignableRoles[] | undefined;
 	isCustomRolesEnabled: boolean;
 	canCreateOrgRole: boolean;
 	canUpdateOrgRole: boolean;
 	canDeleteOrgRole: boolean;
 	onDeleteRole: (role: Role) => void;
-}
+};
 
-const RoleTable: FC<RoleTableProps> = ({
-	roles,
-	isCustomRolesEnabled,
-	canCreateOrgRole,
-	canUpdateOrgRole,
-	canDeleteOrgRole,
-	onDeleteRole,
+type RoleTableProps = RoleTableBodyProps & {
+	"aria-label": string;
+};
+
+const RoleTable: React.FC<RoleTableProps> = ({
+	"aria-label": ariaLabel,
+	...bodyProps
 }) => {
-	const isLoading = roles === undefined;
-	const isEmpty = Boolean(roles && roles.length === 0);
 	return (
-		<Table>
+		<Table aria-label={ariaLabel}>
 			<TableHeader>
 				<TableRow>
 					<TableHead className="w-2/5">Name</TableHead>
@@ -129,66 +279,73 @@ const RoleTable: FC<RoleTableProps> = ({
 				</TableRow>
 			</TableHeader>
 			<TableBody>
-				<ChooseOne>
-					<Cond condition={isLoading}>
-						<TableLoader />
-					</Cond>
-
-					<Cond condition={isEmpty}>
-						<TableRow className="h-14">
-							<TableCell colSpan={999}>
-								<EmptyState
-									message="No custom roles yet"
-									description={
-										canCreateOrgRole && isCustomRolesEnabled
-											? "Create your first custom role"
-											: !isCustomRolesEnabled
-												? "Upgrade to a premium license to create a custom role"
-												: "You don't have permission to create a custom role"
-									}
-									cta={
-										canCreateOrgRole &&
-										isCustomRolesEnabled && (
-											<Button asChild>
-												<RouterLink to="create">
-													<PlusIcon />
-													Create custom role
-												</RouterLink>
-											</Button>
-										)
-									}
-								/>
-							</TableCell>
-						</TableRow>
-					</Cond>
-
-					<Cond>
-						{[...(roles ?? [])]
-							.sort((a, b) => a.name.localeCompare(b.name))
-							.map((role) => (
-								<RoleRow
-									key={role.name}
-									role={role}
-									canUpdateOrgRole={canUpdateOrgRole}
-									canDeleteOrgRole={canDeleteOrgRole}
-									onDelete={() => onDeleteRole(role)}
-								/>
-							))}
-					</Cond>
-				</ChooseOne>
+				<RoleTableBody {...bodyProps} />
 			</TableBody>
 		</Table>
 	);
 };
 
-interface RoleRowProps {
+const RoleTableBody: React.FC<RoleTableBodyProps> = ({
+	roles,
+	isCustomRolesEnabled,
+	canCreateOrgRole,
+	canUpdateOrgRole,
+	canDeleteOrgRole,
+	onDeleteRole,
+}) => {
+	if (roles === undefined) {
+		return <TableLoader />;
+	}
+	if (roles.length === 0) {
+		return (
+			<TableEmpty
+				message="No custom roles yet"
+				description={
+					canCreateOrgRole && isCustomRolesEnabled
+						? "Create your first custom role"
+						: !isCustomRolesEnabled
+							? "Upgrade to a premium license to create a custom role"
+							: "You don't have permission to create a custom role"
+				}
+				cta={
+					canCreateOrgRole &&
+					isCustomRolesEnabled && (
+						<Button asChild>
+							<RouterLink to="create">
+								<PlusIcon />
+								Create custom role
+							</RouterLink>
+						</Button>
+					)
+				}
+			/>
+		);
+	}
+	return (
+		<>
+			{[...roles]
+				.sort((a, b) => a.name.localeCompare(b.name))
+				.map((role) => (
+					<RoleRow
+						key={role.name}
+						role={role}
+						canUpdateOrgRole={canUpdateOrgRole}
+						canDeleteOrgRole={canDeleteOrgRole}
+						onDelete={() => onDeleteRole(role)}
+					/>
+				))}
+		</>
+	);
+};
+
+type RoleRowProps = {
 	role: AssignableRoles;
 	canUpdateOrgRole: boolean;
 	canDeleteOrgRole: boolean;
 	onDelete: () => void;
-}
+};
 
-const RoleRow: FC<RoleRowProps> = ({
+const RoleRow: React.FC<RoleRowProps> = ({
 	role,
 	onDelete,
 	canUpdateOrgRole,

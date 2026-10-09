@@ -1,6 +1,5 @@
 import {
 	ArrowLeftIcon,
-	BarChart3Icon,
 	BellIcon,
 	BellOffIcon,
 	EllipsisIcon,
@@ -9,9 +8,14 @@ import {
 	Volume2Icon,
 	VolumeOffIcon,
 } from "lucide-react";
-import type { FC, ReactNode } from "react";
 import { useEffect, useState } from "react";
-import { Link, NavLink, useLocation, useOutletContext } from "react-router";
+import {
+	Link,
+	NavLink,
+	type To,
+	useLocation,
+	useOutletContext,
+} from "react-router";
 import { toast } from "sonner";
 import { getErrorMessage } from "#/api/errors";
 import { Button } from "#/components/Button/Button";
@@ -21,26 +25,24 @@ import {
 	DropdownMenuItem,
 	DropdownMenuTrigger,
 } from "#/components/DropdownMenu/DropdownMenu";
-import { ExternalImage } from "#/components/ExternalImage/ExternalImage";
-import { CoderIcon } from "#/components/Icons/CoderIcon";
+import { ProductLogo } from "#/components/Icons/ProductLogo";
 import { Spinner } from "#/components/Spinner/Spinner";
 import { useWebpushNotifications } from "#/contexts/useWebpushNotifications";
-import { useDashboard } from "#/modules/dashboard/useDashboard";
-import type { AgentsOutletContext } from "../AgentsPageView";
+import type { AgentsPageOutletContext } from "../AgentsPageLayout";
 import { getChimeEnabled, setChimeEnabled } from "../utils/chime";
 
-interface AgentPageHeaderProps {
-	children?: ReactNode;
+type AgentPageHeaderProps = {
+	children?: React.ReactNode;
 	/** When set, shows a back link on mobile instead of the logo
-	 *  and hides the settings/analytics nav buttons. */
-	mobileBack?: { to: string; label: string };
+	 *  and hides the mobile actions menu. */
+	mobileBack?: { to: To; label: string };
 	chimeEnabled?: boolean;
 	onToggleChime?: () => void;
 	webPush?: ReturnType<typeof useWebpushNotifications>;
 	onToggleNotifications?: () => Promise<void> | void;
-}
+};
 
-export const AgentPageHeader: FC<AgentPageHeaderProps> = ({
+export const AgentPageHeader: React.FC<AgentPageHeaderProps> = ({
 	children,
 	mobileBack,
 	chimeEnabled: controlledChimeEnabled,
@@ -49,9 +51,7 @@ export const AgentPageHeader: FC<AgentPageHeaderProps> = ({
 	onToggleNotifications,
 }) => {
 	const { isSidebarCollapsed, onExpandSidebar } =
-		useOutletContext<AgentsOutletContext>();
-	const { appearance } = useDashboard();
-	const logoUrl = appearance.logo_url;
+		useOutletContext<AgentsPageOutletContext>();
 	const location = useLocation();
 
 	const [internalChimeEnabled, setInternalChimeEnabled] =
@@ -60,11 +60,11 @@ export const AgentPageHeader: FC<AgentPageHeaderProps> = ({
 	const chimeEnabled = controlledChimeEnabled ?? internalChimeEnabled;
 	const webPush = controlledWebPush ?? internalWebPush;
 	const [isDesktop, setIsDesktop] = useState<boolean>(() => {
-		return window.matchMedia("(min-width: 768px)").matches;
+		return window.matchMedia("(min-width: 640px)").matches;
 	});
 
 	useEffect(() => {
-		const mediaQuery = window.matchMedia("(min-width: 768px)");
+		const mediaQuery = window.matchMedia("(min-width: 640px)");
 		const onMediaChange = (event: MediaQueryListEvent) => {
 			setIsDesktop(event.matches);
 		};
@@ -112,27 +112,25 @@ export const AgentPageHeader: FC<AgentPageHeaderProps> = ({
 	};
 
 	return (
-		<div className="order-first flex shrink-0 items-center gap-2 pl-4 pr-2 pt-3 pb-0.5 md:order-none md:px-4 md:py-0.5">
+		<div className="order-first flex shrink-0 items-center gap-2 pl-4 pr-2 pt-3 pb-0.5 sm:order-0 sm:px-4 sm:py-0.5">
 			{mobileBack ? (
 				<Button
 					asChild
 					variant="subtle"
 					size="icon"
 					aria-label={mobileBack.label}
-					className="h-7 w-7 shrink-0 md:hidden"
+					className="size-7 shrink-0 sm:hidden"
 				>
 					<Link to={mobileBack.to}>
 						<ArrowLeftIcon />
 					</Link>
 				</Button>
 			) : (
-				<NavLink to="/workspaces" className="inline-flex shrink-0 md:hidden">
-					{logoUrl ? (
-						<ExternalImage className="h-6" src={logoUrl} alt="Logo" />
-					) : (
-						<CoderIcon className="h-6 w-6 fill-content-primary" />
-					)}
-				</NavLink>
+				<div className="inline-flex shrink-0 items-center gap-2 sm:hidden">
+					<NavLink to="/workspaces" className="inline-flex">
+						<ProductLogo className="size-6" />
+					</NavLink>
+				</div>
 			)}
 			{isSidebarCollapsed && (
 				<Button
@@ -140,14 +138,14 @@ export const AgentPageHeader: FC<AgentPageHeaderProps> = ({
 					size="icon"
 					onClick={onExpandSidebar}
 					aria-label="Expand sidebar"
-					className="hidden h-7 w-7 min-w-0 shrink-0 md:inline-flex"
+					className="hidden size-7 min-w-0 shrink-0 sm:inline-flex"
 				>
 					<PanelLeftIcon />
 				</Button>
 			)}
 			<div className="min-w-0 flex-1" />
 			{children && isDesktop && (
-				<div className="hidden items-center gap-2 md:flex">{children}</div>
+				<div className="hidden items-center gap-2 sm:flex">{children}</div>
 			)}
 			{/* Mobile: meatball menu with all actions */}
 			{!mobileBack && !isDesktop && (
@@ -157,7 +155,7 @@ export const AgentPageHeader: FC<AgentPageHeaderProps> = ({
 							variant="subtle"
 							size="icon"
 							aria-label="More options"
-							className="h-7 w-7 text-content-secondary hover:text-content-primary md:hidden"
+							className="size-7 text-content-secondary hover:text-content-primary sm:hidden"
 						>
 							<EllipsisIcon />
 						</Button>
@@ -167,15 +165,12 @@ export const AgentPageHeader: FC<AgentPageHeaderProps> = ({
 						className="mobile-full-width-dropdown mobile-full-width-dropdown-top [&_[role=menuitem]]:text-sm"
 					>
 						<DropdownMenuItem asChild>
-							<Link to="/agents/settings" state={{ from: location.pathname }}>
+							<Link
+								to="/agents/settings"
+								state={{ from: location.pathname + location.search }}
+							>
 								<SettingsIcon className="size-icon-sm" />
 								Settings
-							</Link>
-						</DropdownMenuItem>
-						<DropdownMenuItem asChild>
-							<Link to="/agents/analytics">
-								<BarChart3Icon className="size-icon-sm" />
-								Analytics
 							</Link>
 						</DropdownMenuItem>
 						<DropdownMenuItem
@@ -200,7 +195,7 @@ export const AgentPageHeader: FC<AgentPageHeaderProps> = ({
 								disabled={webPush.loading}
 							>
 								{webPush.loading ? (
-									<Spinner size="sm" loading className="size-icon-sm" />
+									<Spinner size="sm" loading className="h-icon w-icon-sm" />
 								) : webPush.subscribed ? (
 									<BellIcon className="size-icon-sm" />
 								) : (

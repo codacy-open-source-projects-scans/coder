@@ -14,9 +14,9 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
-	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/xerrors"
 	"tailscale.com/tailcfg"
 
 	"cdr.dev/slog/v3"
@@ -24,8 +24,8 @@ import (
 	agentproto "github.com/coder/coder/v2/agent/proto"
 	"github.com/coder/coder/v2/coderd/agentmetrics"
 	"github.com/coder/coder/v2/coderd/coderdtest"
+	"github.com/coder/coder/v2/coderd/coderdtest/promhelp"
 	"github.com/coder/coder/v2/coderd/database"
-	"github.com/coder/coder/v2/coderd/database/dbauthz"
 	"github.com/coder/coder/v2/coderd/database/dbgen"
 	"github.com/coder/coder/v2/coderd/database/dbtestutil"
 	"github.com/coder/coder/v2/coderd/database/dbtime"
@@ -570,38 +570,6 @@ func TestAgents(t *testing.T) {
 	workspace := coderdtest.CreateWorkspace(t, client, template.ID)
 	coderdtest.AwaitWorkspaceBuildJobCompleted(t, client, workspace.LatestBuild.ID)
 
-	// Set first_connected_at on the agent so the first connection
-	// duration metric can be observed.
-	workspace = coderdtest.MustWorkspace(t, client, workspace.ID)
-	require.NotEmpty(t, workspace.LatestBuild.Resources)
-	var testAgentID uuid.UUID
-	var testAgentCreatedAt time.Time
-	for _, res := range workspace.LatestBuild.Resources {
-		for _, a := range res.Agents {
-			if a.Name == "testagent" {
-				testAgentID = a.ID
-				testAgentCreatedAt = a.CreatedAt
-				break
-			}
-		}
-	}
-	require.NotEqual(t, uuid.Nil, testAgentID, "testagent not found")
-	err := db.UpdateWorkspaceAgentConnectionByID(dbauthz.AsSystemRestricted(context.Background()), database.UpdateWorkspaceAgentConnectionByIDParams{
-		ID: testAgentID,
-		FirstConnectedAt: sql.NullTime{
-			Time:  testAgentCreatedAt.Add(45 * time.Second),
-			Valid: true,
-		},
-		LastConnectedAt: sql.NullTime{
-			Time:  testAgentCreatedAt.Add(45 * time.Second),
-			Valid: true,
-		},
-		DisconnectedAt:         sql.NullTime{},
-		UpdatedAt:              dbtime.Now(),
-		LastConnectedReplicaID: uuid.NullUUID{},
-	})
-	require.NoError(t, err)
-
 	// given
 	derpMap, _ := tailnettest.RunDERPAndSTUN(t)
 	derpMapFn := func() *tailcfg.DERPMap {
@@ -628,7 +596,6 @@ func TestAgents(t *testing.T) {
 	var agentsConnections bool
 	var agentsApps bool
 	var agentsExecutionInSeconds bool
-	var agentsFirstConnection bool
 	require.Eventually(t, func() bool {
 		metrics, err := registry.Gather()
 		assert.NoError(t, err)
@@ -649,7 +616,7 @@ func TestAgents(t *testing.T) {
 			case "coderd_agents_connections":
 				assert.Equal(t, "testagent", metric.Metric[0].Label[0].GetValue())    // Agent name
 				assert.Equal(t, "created", metric.Metric[0].Label[1].GetValue())      // Lifecycle state
-				assert.Equal(t, "connected", metric.Metric[0].Label[2].GetValue())    // Status
+				assert.Equal(t, "connecting", metric.Metric[0].Label[2].GetValue())   // Status
 				assert.Equal(t, "unknown", metric.Metric[0].Label[3].GetValue())      // Tailnet node
 				assert.Equal(t, "testuser", metric.Metric[0].Label[4].GetValue())     // Username
 				assert.Equal(t, workspace.Name, metric.Metric[0].Label[5].GetValue()) // Workspace name
@@ -665,23 +632,11 @@ func TestAgents(t *testing.T) {
 				agentsApps = true
 			case "coderd_prometheusmetrics_agents_execution_seconds":
 				agentsExecutionInSeconds = true
-			case "coderd_agents_first_connection_seconds":
-				for _, m := range metric.Metric {
-					if m.Histogram != nil && m.Histogram.GetSampleCount() > 0 {
-						assert.Equal(t, "testagent", getLabelValue(m, "agent_name"))
-						assert.Equal(t, template.Name, getLabelValue(m, "template_name"))
-						assert.Equal(t, "testuser", getLabelValue(m, "username"))
-						assert.Equal(t, workspace.Name, getLabelValue(m, "workspace_name"))
-						assert.Equal(t, uint64(1), m.Histogram.GetSampleCount())
-						assert.InDelta(t, 45.0, m.Histogram.GetSampleSum(), 1.0)
-						agentsFirstConnection = true
-					}
-				}
 			default:
 				require.FailNowf(t, "unexpected metric collected", "metric: %s", metric.GetName())
 			}
 		}
-		return agentsUp && agentsConnections && agentsApps && agentsExecutionInSeconds && agentsFirstConnection
+		return agentsUp && agentsConnections && agentsApps && agentsExecutionInSeconds
 	}, testutil.WaitShort, testutil.IntervalFast)
 }
 
@@ -797,6 +752,20 @@ func TestAgentStats(t *testing.T) {
 			switch metric.GetName() {
 			case "coderd_prometheusmetrics_agentstats_execution_seconds":
 				executionSeconds = true
+			case "coderd_agentstats_app_info":
+				// Registry metadata is independent of the agent statistics.
+			case "coderd_agentstats_session_count":
+				for _, m := range metric.Metric {
+					labels := map[string]string{}
+					for _, label := range m.Label {
+						labels[label.GetName()] = label.GetValue()
+					}
+					require.NotContains(t, labels, "family")
+					// username:workspace:agent:metric_app=value = count
+					key := labels["username"] + ":" + labels["workspace_name"] + ":" + labels["agent_name"] +
+						":" + metric.GetName() + "_app=" + labels["app_name"]
+					collected[key] = int(m.Gauge.GetValue())
+				}
 			case "coderd_agentstats_connection_count",
 				"coderd_agentstats_connection_median_latency_seconds",
 				"coderd_agentstats_rx_bytes",
@@ -818,6 +787,140 @@ func TestAgentStats(t *testing.T) {
 
 	// Keep this assertion, so that "go test" can print differences instead of "Condition never satisfied"
 	assert.EqualValues(t, golden, collected)
+}
+
+// sessionStatsStore hands each poll the next scripted response.
+type sessionStatsStore struct {
+	database.Store
+	responses chan sessionStatsResponse
+}
+
+type sessionStatsResponse struct {
+	rows []database.GetWorkspaceAgentStatsAndLabelsRow
+	err  error
+}
+
+func (s *sessionStatsStore) GetWorkspaceAgentStatsAndLabels(ctx context.Context, _ time.Time) ([]database.GetWorkspaceAgentStatsAndLabelsRow, error) {
+	select {
+	case response := <-s.responses:
+		return response.rows, response.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (s *sessionStatsStore) GetWorkspaceAgentUsageStatsAndLabels(ctx context.Context, since time.Time) ([]database.GetWorkspaceAgentUsageStatsAndLabelsRow, error) {
+	rows, err := s.GetWorkspaceAgentStatsAndLabels(ctx, since)
+	converted := make([]database.GetWorkspaceAgentUsageStatsAndLabelsRow, len(rows))
+	for i, row := range rows {
+		converted[i] = database.GetWorkspaceAgentUsageStatsAndLabelsRow(row)
+	}
+	return converted, err
+}
+
+func TestAgentStatsSessionCounts(t *testing.T) {
+	t.Parallel()
+
+	for name, usage := range map[string]bool{"Stats": false, "Usage": true} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := testutil.Context(t, testutil.WaitLong)
+			store := &sessionStatsStore{responses: make(chan sessionStatsResponse)}
+			registry := prometheus.NewRegistry()
+			closeFn, err := prometheusmetrics.AgentStats(ctx, slogtest.Make(t, &slogtest.Options{IgnoreErrors: true}), registry, store,
+				time.Now().Add(-time.Minute), time.Millisecond, []string{agentmetrics.LabelUsername}, usage)
+			require.NoError(t, err)
+			t.Cleanup(closeFn)
+
+			// Registry metadata is available before any statistics arrive,
+			// including apps without sessions and regardless of identity labels.
+			appInfo := func() map[string]codersdk.AppFamilyName {
+				t.Helper()
+				metrics, err := registry.Gather()
+				require.NoError(t, err)
+				result := map[string]codersdk.AppFamilyName{}
+				for _, metric := range metrics {
+					if metric.GetName() != "coderd_agentstats_app_info" {
+						continue
+					}
+					for _, m := range metric.Metric {
+						labels := map[string]string{}
+						for _, label := range m.Label {
+							labels[label.GetName()] = label.GetValue()
+						}
+						require.Len(t, labels, 2)
+						require.Contains(t, labels, "app_name")
+						require.Contains(t, labels, "family")
+						require.NotContains(t, result, labels["app_name"])
+						require.Equal(t, float64(1), m.GetGauge().GetValue())
+						result[labels["app_name"]] = codersdk.AppFamilyName(labels["family"])
+					}
+				}
+				return result
+			}
+			require.Equal(t, codersdk.SessionCountAppFamilies(), appInfo())
+
+			polls := uint64(0)
+			poll := func(response sessionStatsResponse) {
+				t.Helper()
+				select {
+				case store.responses <- response:
+				case <-ctx.Done():
+					t.Fatal(ctx.Err())
+				}
+				polls++
+				require.Eventually(t, func() bool {
+					executions := promhelp.MetricValue(t, registry,
+						"coderd_prometheusmetrics_agentstats_execution_seconds", prometheus.Labels{})
+					return executions.GetHistogram().GetSampleCount() >= polls
+				}, testutil.WaitShort, testutil.IntervalFast)
+			}
+			counts := func() map[string]float64 {
+				t.Helper()
+				metrics, err := registry.Gather()
+				require.NoError(t, err)
+				result := map[string]float64{}
+				for _, family := range metrics {
+					if family.GetName() != "coderd_agentstats_session_count" {
+						continue
+					}
+					for _, m := range family.Metric {
+						labels := map[string]string{}
+						for _, label := range m.Label {
+							labels[label.GetName()] = label.GetValue()
+						}
+						require.Len(t, labels, 2, "username plus app_name")
+						require.NotContains(t, labels, "family")
+						require.Equal(t, "alice", labels["username"])
+						result[labels["app_name"]] = m.GetGauge().GetValue()
+					}
+				}
+				return result
+			}
+			row := func(raw string) database.GetWorkspaceAgentStatsAndLabelsRow {
+				return database.GetWorkspaceAgentStatsAndLabelsRow{Username: "alice", SessionCounts: json.RawMessage(raw)}
+			}
+
+			poll(sessionStatsResponse{rows: []database.GetWorkspaceAgentStatsAndLabelsRow{
+				row(`{"cursor":2,"vscode":1,"future_ide":4}`),
+				row(`{"cursor":3}`),
+				row(`not-json`),
+			}})
+			expected := map[string]float64{"cursor": 5, "vscode": 1, "future_ide": 4}
+			require.Equal(t, expected, counts())
+
+			poll(sessionStatsResponse{err: xerrors.New("query failed")})
+			require.Equal(t, expected, counts(), "failed query must retain the last snapshot")
+
+			poll(sessionStatsResponse{})
+			require.Equal(t, expected, counts(), "empty window must retain the last snapshot")
+			require.Equal(t, codersdk.SessionCountAppFamilies(), appInfo(), "statistics must not change registry metadata")
+
+			poll(sessionStatsResponse{rows: []database.GetWorkspaceAgentStatsAndLabelsRow{row(`{"vscode":7}`)}})
+			require.Equal(t, map[string]float64{"vscode": 7}, counts(), "apps no longer reported must be dropped")
+		})
+	}
 }
 
 func TestExperimentsMetric(t *testing.T) {
@@ -1154,13 +1257,4 @@ func insertDeleted(t *testing.T, db database.Store, u database.User, org databas
 		Deleted: true,
 	})
 	require.NoError(t, err)
-}
-
-func getLabelValue(m *dto.Metric, name string) string {
-	for _, l := range m.Label {
-		if l.GetName() == name {
-			return l.GetValue()
-		}
-	}
-	return ""
 }

@@ -3,6 +3,7 @@ import { toast } from "sonner";
 
 const CLIPBOARD_TIMEOUT_MS = 1_000;
 export const COPY_FAILED_MESSAGE = "Failed to copy text to clipboard";
+const DIALOG_SELECTOR = 'dialog[open], [role="dialog"], [role="alertdialog"]';
 export const HTTP_FALLBACK_DATA_ID = "http-fallback";
 
 export type UseClipboardInput = Readonly<{
@@ -12,6 +13,13 @@ export type UseClipboardInput = Readonly<{
 
 export type UseClipboardResult = Readonly<{
 	copyToClipboard: (textToCopy: string) => Promise<void>;
+
+	/**
+	 * Reads text from the clipboard. When the asynchronous Clipboard API is
+	 * available (secure contexts), it returns the live clipboard contents.
+	 */
+	readFromClipboard: () => Promise<string>;
+
 	error: Error | undefined;
 
 	/**
@@ -40,24 +48,32 @@ export const useClipboard = (
 ): UseClipboardResult => {
 	const { onError = toast.error, clearErrorOnSuccess = true } = input;
 
-	const [showCopiedSuccess, setShowCopiedSuccess] = useState(false);
+	const [successToken, setSuccessToken] = useState<symbol>();
 	const [error, setError] = useState<Error>();
-	const timeoutIdRef = useRef<number | undefined>(undefined);
+	const lastCopiedTextRef = useRef("");
 
 	useEffect(() => {
-		return () => window.clearTimeout(timeoutIdRef.current);
-	}, []);
+		if (successToken === undefined) {
+			return;
+		}
+
+		const timeoutId = window.setTimeout(() => {
+			setSuccessToken((current) =>
+				current === successToken ? undefined : current,
+			);
+		}, CLIPBOARD_TIMEOUT_MS);
+		return () => window.clearTimeout(timeoutId);
+	}, [successToken]);
 
 	const copyToClipboard = useCallback(
 		async (textToCopy: string) => {
 			const markSuccess = () => {
-				setShowCopiedSuccess(true);
+				lastCopiedTextRef.current = textToCopy;
+				// A unique token restarts feedback even when copying the same text.
+				setSuccessToken(Symbol());
 				if (clearErrorOnSuccess) {
 					setError(undefined);
 				}
-				timeoutIdRef.current = window.setTimeout(() => {
-					setShowCopiedSuccess(false);
-				}, CLIPBOARD_TIMEOUT_MS);
 			};
 
 			try {
@@ -83,7 +99,27 @@ export const useClipboard = (
 		[onError, clearErrorOnSuccess],
 	);
 
-	return { showCopiedSuccess, error, copyToClipboard };
+	const readFromClipboard = useCallback(async (): Promise<string> => {
+		// Insecure (HTTP) contexts and older browsers cannot read the system
+		// clipboard, so fall back to the last value copied within Coder. In a
+		// secure context, surface read failures (such as a denied permission)
+		// instead of silently pasting a stale cached selection.
+		if (
+			window.isSecureContext &&
+			typeof navigator.clipboard?.readText === "function"
+		) {
+			return await navigator.clipboard.readText();
+		}
+
+		return lastCopiedTextRef.current;
+	}, []);
+
+	return {
+		showCopiedSuccess: successToken !== undefined,
+		error,
+		copyToClipboard,
+		readFromClipboard,
+	};
 };
 
 /**
@@ -99,6 +135,14 @@ export const useClipboard = (
 function simulateClipboardWrite(textToCopy: string): boolean {
 	const previousFocusTarget = document.activeElement;
 	const dummyInput = document.createElement("input");
+	// Keep the dummy input inside an open dialog so focus traps allow
+	// execCommand("copy") to select it.
+	const activeDialog =
+		previousFocusTarget instanceof HTMLElement
+			? previousFocusTarget.closest(DIALOG_SELECTOR)
+			: undefined;
+	const dummyInputContainer =
+		activeDialog ?? document.querySelector(DIALOG_SELECTOR) ?? document.body;
 
 	// Have to add test ID to dummy element for mocking purposes in tests
 	dummyInput.setAttribute("data-testid", HTTP_FALLBACK_DATA_ID);
@@ -119,7 +163,7 @@ function simulateClipboardWrite(textToCopy: string): boolean {
 	style.padding = "0";
 	style.border = "0";
 
-	document.body.appendChild(dummyInput);
+	dummyInputContainer.appendChild(dummyInput);
 	dummyInput.value = textToCopy;
 	dummyInput.focus();
 	dummyInput.select();

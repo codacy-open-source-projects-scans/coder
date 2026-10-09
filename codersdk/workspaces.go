@@ -16,6 +16,7 @@ import (
 	"cdr.dev/slog/v3"
 	"github.com/coder/coder/v2/coderd/tracing"
 	"github.com/coder/coder/v2/codersdk/wsjson"
+	"github.com/coder/coder/v2/codersdk/wsrelated"
 	"github.com/coder/websocket"
 )
 
@@ -66,17 +67,18 @@ type Workspace struct {
 	// what is causing an unhealthy status.
 	Health           WorkspaceHealth  `json:"health"`
 	AutomaticUpdates AutomaticUpdates `json:"automatic_updates" enums:"always,never"`
-	AllowRenames     bool             `json:"allow_renames"`
-	Favorite         bool             `json:"favorite"`
-	NextStartAt      *time.Time       `json:"next_start_at" format:"date-time"`
+	// AllowRenames is the effective rename permission for this workspace,
+	// derived from the template's allow_workspace_renames setting and the
+	// deprecated deployment-wide flag.
+	AllowRenames bool       `json:"allow_renames"`
+	Favorite     bool       `json:"favorite"`
+	NextStartAt  *time.Time `json:"next_start_at" format:"date-time"`
 	// IsPrebuild indicates whether the workspace is a prebuilt workspace.
 	// Prebuilt workspaces are owned by the prebuilds system user and have specific behavior,
 	// such as being managed differently from regular workspaces.
 	// Once a prebuilt workspace is claimed by a user, it transitions to a regular workspace,
 	// and IsPrebuild returns false.
-	IsPrebuild bool `json:"is_prebuild"`
-	// TaskID, if set, indicates that the workspace is relevant to the given codersdk.Task.
-	TaskID     uuid.NullUUID          `json:"task_id,omitempty"`
+	IsPrebuild bool                   `json:"is_prebuild"`
 	SharedWith []SharedWorkspaceActor `json:"shared_with,omitempty"`
 }
 
@@ -113,8 +115,6 @@ const (
 	CreateWorkspaceBuildReasonSSHConnection       CreateWorkspaceBuildReason = "ssh_connection"
 	CreateWorkspaceBuildReasonVSCodeConnection    CreateWorkspaceBuildReason = "vscode_connection"
 	CreateWorkspaceBuildReasonJetbrainsConnection CreateWorkspaceBuildReason = "jetbrains_connection"
-	CreateWorkspaceBuildReasonTaskManualPause     CreateWorkspaceBuildReason = "task_manual_pause"
-	CreateWorkspaceBuildReasonTaskResume          CreateWorkspaceBuildReason = "task_resume"
 )
 
 // CreateWorkspaceBuildRequest provides options to update the latest workspace build.
@@ -135,11 +135,43 @@ type CreateWorkspaceBuildRequest struct {
 	// TemplateVersionPresetID is the ID of the template version preset to use for the build.
 	TemplateVersionPresetID uuid.UUID `json:"template_version_preset_id,omitempty" format:"uuid"`
 	// Reason sets the reason for the workspace build.
-	Reason CreateWorkspaceBuildReason `json:"reason,omitempty" validate:"omitempty,oneof=dashboard cli ssh_connection vscode_connection jetbrains_connection task_manual_pause"`
+	Reason CreateWorkspaceBuildReason `json:"reason,omitempty" validate:"omitempty,oneof=dashboard cli ssh_connection vscode_connection jetbrains_connection"`
+	// OnSuccess queues a follow-up workspace build after this build succeeds.
+	// It currently supports restarting a workspace by starting it after a
+	// successful stop build.
+	OnSuccess *CreateWorkspaceBuildOnSuccessRequest `json:"on_success,omitempty"`
+}
+
+// CreateWorkspaceBuildOnSuccessRequest queues a follow-up build that
+// runs after the parent build succeeds. It currently supports
+// restarting a workspace: the parent build must be a "stop" and this
+// child build a "start". The child build inherits LogLevel and Reason
+// from the parent CreateWorkspaceBuildRequest.
+type CreateWorkspaceBuildOnSuccessRequest struct {
+	// TemplateVersionID pins the child build to a specific template
+	// version. Pinning requires permission to update the template,
+	// since the active version may change before the child build
+	// runs. When empty, the child build uses the template's active
+	// version at the time it runs.
+	TemplateVersionID uuid.UUID `json:"template_version_id,omitempty" format:"uuid"`
+	// Transition must be "start". The parent build's transition must
+	// be "stop".
+	Transition WorkspaceTransition `json:"transition" validate:"oneof=start,required"`
+	// RichParameterValues are applied to the child build. Parameters
+	// not listed here fall back to their values from the previous
+	// build, matching normal build behavior.
+	RichParameterValues []WorkspaceBuildParameter `json:"rich_parameter_values,omitempty"`
+	// TemplateVersionPresetID selects a preset for the child build.
+	// It requires TemplateVersionID to also be set.
+	TemplateVersionPresetID uuid.UUID `json:"template_version_preset_id,omitempty" format:"uuid"`
 }
 
 type WorkspaceOptions struct {
 	IncludeDeleted bool `json:"include_deleted,omitempty"`
+	// IncludeRelated selects which related data to load alongside the workspace.
+	// A nil value loads everything; a non-nil value is encoded into the
+	// include_related query parameter and loads only the selected data.
+	IncludeRelated *wsrelated.Config `json:"include_related,omitempty"`
 }
 
 // asRequestOption returns a function that can be used in (*Client).Request.
@@ -150,13 +182,20 @@ func (o WorkspaceOptions) asRequestOption() RequestOption {
 		if o.IncludeDeleted {
 			q.Set("include_deleted", "true")
 		}
+		if o.IncludeRelated != nil {
+			q.Set("include_related", o.IncludeRelated.QueryParam())
+		}
 		r.URL.RawQuery = q.Encode()
 	}
 }
 
 // Workspace returns a single workspace.
-func (c *Client) Workspace(ctx context.Context, id uuid.UUID) (Workspace, error) {
-	return c.getWorkspace(ctx, id)
+func (c *Client) Workspace(ctx context.Context, id uuid.UUID, opts ...WorkspaceOptions) (Workspace, error) {
+	reqOpts := make([]RequestOption, 0, len(opts))
+	for _, o := range opts {
+		reqOpts = append(reqOpts, o.asRequestOption())
+	}
+	return c.getWorkspace(ctx, id, reqOpts...)
 }
 
 // DeletedWorkspace returns a single workspace that was deleted.
@@ -177,7 +216,7 @@ func (c *Client) getWorkspace(ctx context.Context, id uuid.UUID, opts ...Request
 		return Workspace{}, ReadBodyAsError(res)
 	}
 	var workspace Workspace
-	return workspace, json.NewDecoder(res.Body).Decode(&workspace)
+	return workspace, ReadBodyAsJSON(res, &workspace)
 }
 
 type WorkspaceBuildsRequest struct {
@@ -190,7 +229,7 @@ func (c *Client) WorkspaceBuilds(ctx context.Context, req WorkspaceBuildsRequest
 	res, err := c.Request(
 		ctx, http.MethodGet,
 		fmt.Sprintf("/api/v2/workspaces/%s/builds", req.WorkspaceID),
-		nil, req.Pagination.asRequestOption(), WithQueryParam("since", req.Since.Format(time.RFC3339)),
+		nil, req.asRequestOption(), WithQueryParam("since", req.Since.Format(time.RFC3339)),
 	)
 	if err != nil {
 		return nil, err
@@ -200,7 +239,7 @@ func (c *Client) WorkspaceBuilds(ctx context.Context, req WorkspaceBuildsRequest
 		return nil, ReadBodyAsError(res)
 	}
 	var workspaceBuild []WorkspaceBuild
-	return workspaceBuild, json.NewDecoder(res.Body).Decode(&workspaceBuild)
+	return workspaceBuild, ReadBodyAsJSON(res, &workspaceBuild)
 }
 
 // CreateWorkspaceBuild queues a new build to occur for a workspace.
@@ -214,7 +253,7 @@ func (c *Client) CreateWorkspaceBuild(ctx context.Context, workspace uuid.UUID, 
 		return WorkspaceBuild{}, ReadBodyAsError(res)
 	}
 	var workspaceBuild WorkspaceBuild
-	return workspaceBuild, json.NewDecoder(res.Body).Decode(&workspaceBuild)
+	return workspaceBuild, ReadBodyAsJSON(res, &workspaceBuild)
 }
 
 func (c *Client) WatchWorkspace(ctx context.Context, id uuid.UUID) (<-chan Workspace, error) {
@@ -349,25 +388,25 @@ func (c *Client) PutExtendWorkspace(ctx context.Context, id uuid.UUID, req PutEx
 }
 
 type PostWorkspaceUsageRequest struct {
-	AgentID uuid.UUID    `json:"agent_id" format:"uuid"`
-	AppName UsageAppName `json:"app_name"`
+	AgentID uuid.UUID `json:"agent_id" format:"uuid"`
+	// AppName is any name for the app reporting usage. The server normalizes
+	// it at ingestion, so a new app needs no server change. The UsageAppName
+	// constants are the well-known names.
+	AppName string `json:"app_name"`
 }
 
 type UsageAppName string
 
+// Well-known usage app names. The values are wire format and cannot change.
+// UsageAppNameReconnectingPty keeps its hyphen, which the server folds to the
+// canonical reconnecting_pty.
 const (
 	UsageAppNameVscode          UsageAppName = "vscode"
 	UsageAppNameJetbrains       UsageAppName = "jetbrains"
 	UsageAppNameReconnectingPty UsageAppName = "reconnecting-pty"
 	UsageAppNameSSH             UsageAppName = "ssh"
+	UsageAppNamePortForwarding  UsageAppName = "port_forwarding"
 )
-
-var AllowedAppNames = []UsageAppName{
-	UsageAppNameVscode,
-	UsageAppNameJetbrains,
-	UsageAppNameReconnectingPty,
-	UsageAppNameSSH,
-}
 
 // PostWorkspaceUsage marks the workspace as having been used recently and records an app stat.
 func (c *Client) PostWorkspaceUsageWithBody(ctx context.Context, id uuid.UUID, req PostWorkspaceUsageRequest) error {
@@ -520,6 +559,8 @@ type WorkspaceFilter struct {
 	Name string `json:"name,omitempty" typescript:"-"`
 	// Status is a workspace status, which is really the status of the latest build
 	Status string `json:"status,omitempty" typescript:"-"`
+	// Organization is an organization name or ID
+	Organization string `json:"organization,omitempty" typescript:"-"`
 	// Offset is the number of workspaces to skip before returning results.
 	Offset int `json:"offset,omitempty" typescript:"-"`
 	// Limit is a limit on the number of workspaces returned.
@@ -530,6 +571,12 @@ type WorkspaceFilter struct {
 	SharedWithUser string `json:"shared_with_user,omitempty" typescript:"-"`
 	// SharedWithGroup is the group name, group ID, or <org name>/<group name> of the group that the workspace is shared with
 	SharedWithGroup string `json:"shared_with_group,omitempty" typescript:"-"`
+	// User is "me", a username, or a user ID. It matches workspaces the user
+	// owns or that are shared with them directly or through a group.
+	User string `json:"user,omitempty" typescript:"-"`
+	// IncludeAgentMetadata expands each agent in the response with the
+	// named metadata keys. It does not filter the returned workspaces.
+	IncludeAgentMetadata []string `json:"include_agent_metadata,omitempty" typescript:"-"`
 	// FilterQuery supports a raw filter query string
 	FilterQuery string `json:"q,omitempty"`
 }
@@ -553,6 +600,9 @@ func (f WorkspaceFilter) asRequestOption() RequestOption {
 		if f.Status != "" {
 			params = append(params, fmt.Sprintf("status:%q", f.Status))
 		}
+		if f.Organization != "" {
+			params = append(params, fmt.Sprintf("organization:%q", f.Organization))
+		}
 		if f.Shared != nil {
 			params = append(params, fmt.Sprintf("shared:%v", *f.Shared))
 		}
@@ -561,6 +611,12 @@ func (f WorkspaceFilter) asRequestOption() RequestOption {
 		}
 		if f.SharedWithGroup != "" {
 			params = append(params, fmt.Sprintf("shared_with_group:%q", f.SharedWithGroup))
+		}
+		if f.User != "" {
+			params = append(params, fmt.Sprintf("user:%q", f.User))
+		}
+		for _, key := range f.IncludeAgentMetadata {
+			params = append(params, fmt.Sprintf("include_agent_metadata:%q", key))
 		}
 		if f.FilterQuery != "" {
 			// If custom stuff is added, just add it on here.
@@ -590,11 +646,18 @@ func (c *Client) Workspaces(ctx context.Context, filter WorkspaceFilter) (Worksp
 	}
 
 	var wres WorkspacesResponse
-	return wres, json.NewDecoder(res.Body).Decode(&wres)
+	return wres, ReadBodyAsJSON(res, &wres)
 }
 
 // WorkspaceByOwnerAndName returns a workspace by the owner's UUID and the workspace's name.
 func (c *Client) WorkspaceByOwnerAndName(ctx context.Context, owner string, name string, params WorkspaceOptions) (Workspace, error) {
+	// These identifiers must remain individual path segments during URL resolution.
+	if err := validateWorkspacePathSegment(owner); err != nil {
+		return Workspace{}, xerrors.Errorf("invalid workspace owner: %w", err)
+	}
+	if err := validateWorkspacePathSegment(name); err != nil {
+		return Workspace{}, xerrors.Errorf("invalid workspace name: %w", err)
+	}
 	res, err := c.Request(ctx, http.MethodGet, fmt.Sprintf("/api/v2/users/%s/workspace/%s", owner, name), nil, func(r *http.Request) {
 		q := r.URL.Query()
 		q.Set("include_deleted", fmt.Sprintf("%t", params.IncludeDeleted))
@@ -610,7 +673,16 @@ func (c *Client) WorkspaceByOwnerAndName(ctx context.Context, owner string, name
 	}
 
 	var workspace Workspace
-	return workspace, json.NewDecoder(res.Body).Decode(&workspace)
+	return workspace, ReadBodyAsJSON(res, &workspace)
+}
+
+// validateWorkspacePathSegment prevents workspace and user identifiers from
+// changing the endpoint during URL resolution, without restricting legacy names.
+func validateWorkspacePathSegment(identifier string) error {
+	if identifier == "" || identifier == "." || identifier == ".." || strings.ContainsAny(identifier, `/\%?#`) {
+		return xerrors.New("must be a non-empty path segment without slashes, escapes, query, fragment, or dot segments")
+	}
+	return nil
 }
 
 // SplitWorkspaceIdentifier splits an identifier into owner and
@@ -675,7 +747,7 @@ func (c *Client) WorkspaceQuota(ctx context.Context, organizationID string, user
 		return WorkspaceQuota{}, ReadBodyAsError(res)
 	}
 	var quota WorkspaceQuota
-	return quota, json.NewDecoder(res.Body).Decode(&quota)
+	return quota, ReadBodyAsJSON(res, &quota)
 }
 
 type ResolveAutostartResponse struct {
@@ -692,7 +764,7 @@ func (c *Client) ResolveAutostart(ctx context.Context, workspaceID string) (Reso
 		return ResolveAutostartResponse{}, ReadBodyAsError(res)
 	}
 	var response ResolveAutostartResponse
-	return response, json.NewDecoder(res.Body).Decode(&response)
+	return response, ReadBodyAsJSON(res, &response)
 }
 
 func (c *Client) FavoriteWorkspace(ctx context.Context, workspaceID uuid.UUID) error {
@@ -730,7 +802,7 @@ func (c *Client) WorkspaceTimings(ctx context.Context, id uuid.UUID) (WorkspaceB
 		return WorkspaceBuildTimings{}, ReadBodyAsError(res)
 	}
 	var timings WorkspaceBuildTimings
-	return timings, json.NewDecoder(res.Body).Decode(&timings)
+	return timings, ReadBodyAsJSON(res, &timings)
 }
 
 type WorkspaceACL struct {
@@ -781,7 +853,7 @@ func (c *Client) WorkspaceACL(ctx context.Context, workspaceID uuid.UUID) (Works
 		return WorkspaceACL{}, ReadBodyAsError(res)
 	}
 	var acl WorkspaceACL
-	return acl, json.NewDecoder(res.Body).Decode(&acl)
+	return acl, ReadBodyAsJSON(res, &acl)
 }
 
 type UpdateWorkspaceACL struct {
@@ -836,7 +908,7 @@ func (c *Client) WorkspaceExternalAgentCredentials(ctx context.Context, workspac
 		return ExternalAgentCredentials{}, ReadBodyAsError(res)
 	}
 	var credentials ExternalAgentCredentials
-	return credentials, json.NewDecoder(res.Body).Decode(&credentials)
+	return credentials, ReadBodyAsJSON(res, &credentials)
 }
 
 // WorkspaceBuildUpdate contains information about a workspace build state change.
@@ -908,5 +980,5 @@ func (c *Client) WorkspaceAvailableUsers(ctx context.Context, organizationID uui
 		return nil, ReadBodyAsError(res)
 	}
 	var users []MinimalUser
-	return users, json.NewDecoder(res.Body).Decode(&users)
+	return users, ReadBodyAsJSON(res, &users)
 }

@@ -1,8 +1,8 @@
-import { useTheme } from "@emotion/react";
-import { type FC, type ReactNode, useState } from "react";
+import { cn } from "cn";
+import { useState } from "react";
 import type { AlertProps } from "#/components/Alert/Alert";
+import { Badge } from "#/components/Badge/Badge";
 import { Button, type ButtonProps } from "#/components/Button/Button";
-import { Pill } from "#/components/Pill/Pill";
 import {
 	Popover,
 	PopoverContent,
@@ -10,26 +10,70 @@ import {
 } from "#/components/Popover/Popover";
 import type { ThemeRole } from "#/theme/roles";
 
-export type NotificationItem = {
+export type Notification = {
 	title: string;
 	severity: AlertProps["severity"];
-	detail?: ReactNode;
-	actions?: ReactNode;
+	detail?: React.ReactNode;
+	actions?: React.ReactNode;
 };
+
+type NotificationSeverity = "warning" | "info";
 
 type NotificationsProps = {
-	items: NotificationItem[];
-	severity: ThemeRole;
-	icon: ReactNode;
+	items: Notification[];
+	severity: NotificationSeverity;
+	icon: React.ReactNode;
 };
 
-export const Notifications: FC<NotificationsProps> = ({
+// Maps a ThemeRole severity to Tailwind classes for the role's outline
+// color. These are the closest semantic matches available in the design
+// token system.
+const severityStyles: Record<ThemeRole, { svgColor: string; border: string }> =
+	{
+		error: {
+			svgColor: "[&_svg]:text-border-destructive",
+			border: "border-border-destructive",
+		},
+		warning: {
+			svgColor: "[&_svg]:text-border-warning",
+			border: "border-border-warning",
+		},
+		notice: {
+			svgColor: "[&_svg]:text-border-pending",
+			border: "border-border-pending",
+		},
+		info: {
+			svgColor: "[&_svg]:text-content-secondary",
+			border: "border-border",
+		},
+		success: {
+			svgColor: "[&_svg]:text-border-success",
+			border: "border-border-success",
+		},
+		active: {
+			svgColor: "[&_svg]:text-border-pending",
+			border: "border-border-pending",
+		},
+		inactive: {
+			svgColor: "[&_svg]:text-content-disabled",
+			border: "border-border",
+		},
+		danger: {
+			svgColor: "[&_svg]:text-border-warning",
+			border: "border-border-warning",
+		},
+		preview: {
+			svgColor: "[&_svg]:text-border-purple",
+			border: "border-border-purple",
+		},
+	};
+
+export const Notifications: React.FC<NotificationsProps> = ({
 	items,
 	severity,
 	icon,
 }) => {
 	const [isOpen, setIsOpen] = useState(false);
-	const theme = useTheme();
 
 	return (
 		<Popover open={isOpen} onOpenChange={setIsOpen}>
@@ -50,10 +94,10 @@ export const Notifications: FC<NotificationsProps> = ({
 			<PopoverContent
 				align="end"
 				collisionPadding={16}
-				className="max-w-[400px] p-0 w-auto bg-surface-secondary border-surface-quaternary text-sm text-content-primary"
-				style={{
-					borderColor: theme.roles[severity].outline,
-				}}
+				className={cn(
+					"max-w-[400px] p-0 w-auto bg-surface-secondary text-sm text-content-primary",
+					severityStyles[severity].border,
+				)}
 			>
 				{items.map((n) => (
 					<NotificationItem notification={n} key={n.title} />
@@ -67,30 +111,32 @@ type NotificationPillProps = NotificationsProps & {
 	isOpen: boolean;
 };
 
-const NotificationPill: FC<NotificationPillProps> = ({
+const NotificationPill: React.FC<NotificationPillProps> = ({
 	items,
 	severity,
 	icon,
 	isOpen,
 }) => {
 	return (
-		<Pill
-			icon={icon}
-			css={(theme) => ({
-				"& svg": { color: theme.roles[severity].outline },
-				borderColor: isOpen ? theme.roles[severity].outline : undefined,
-			})}
+		<Badge
+			className={cn(
+				severityStyles[severity].svgColor,
+				isOpen && severityStyles[severity].border,
+			)}
 		>
+			{icon}
 			{items.length}
-		</Pill>
+		</Badge>
 	);
 };
 
-interface NotificationItemProps {
-	notification: NotificationItem;
-}
+type NotificationItemProps = {
+	notification: Notification;
+};
 
-const NotificationItem: FC<NotificationItemProps> = ({ notification }) => {
+const NotificationItem: React.FC<NotificationItemProps> = ({
+	notification,
+}) => {
 	return (
 		<article className="p-5 leading-normal border-0 border-t border-solid first:border-t-0">
 			<h4 className="m-0 font-medium">{notification.title}</h4>
@@ -104,6 +150,6 @@ const NotificationItem: FC<NotificationItemProps> = ({ notification }) => {
 	);
 };
 
-export const NotificationActionButton: FC<ButtonProps> = (props) => {
+export const NotificationActionButton: React.FC<ButtonProps> = (props) => {
 	return <Button variant="default" size="sm" {...props} />;
 };

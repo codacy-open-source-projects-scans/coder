@@ -3,8 +3,10 @@
  * @see {@link https://ui.shadcn.com/docs/components/dialog}
  */
 import { cva, type VariantProps } from "class-variance-authority";
+import { cn } from "cn";
 import { Dialog as DialogPrimitive } from "radix-ui";
-import { cn } from "#/utils/cn";
+import { Button } from "#/components/Button/Button";
+import { Spinner } from "#/components/Spinner/Spinner";
 
 export const Dialog = DialogPrimitive.Root;
 
@@ -15,12 +17,12 @@ const DialogPortal = DialogPrimitive.Portal;
 export const DialogClose = DialogPrimitive.Close;
 
 const DialogOverlay: React.FC<
-	React.ComponentPropsWithRef<typeof DialogPrimitive.Overlay>
+	React.ComponentProps<typeof DialogPrimitive.Overlay>
 > = ({ className, ...props }) => {
 	return (
 		<DialogPrimitive.Overlay
 			className={cn(
-				`fixed inset-0 z-50 bg-overlay
+				`fixed inset-0 z-50 bg-overlay ease-out-strong
 			data-[state=open]:animate-in data-[state=closed]:animate-out
 			data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0`,
 				className,
@@ -31,18 +33,16 @@ const DialogOverlay: React.FC<
 };
 
 const dialogVariants = cva(
-	`fixed left-[50%] top-[50%] z-50 grid w-full max-w-lg gap-6
-	border border-solid bg-surface-primary p-8 shadow-lg duration-200 sm:rounded-lg
-	translate-x-[-50%] translate-y-[-50%] outline-none
+	`fixed left-[50%] top-[50%] z-50 grid max-h-[90vh] w-full max-w-lg gap-6 overflow-y-auto
+	border border-solid bg-surface-primary p-8 shadow-lg duration-200 ease-out-strong sm:rounded-lg
+	-translate-1/2 outline-hidden
 	data-[state=open]:animate-in data-[state=closed]:animate-out
 	data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0
-	data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95
-	data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-[48%]
-	data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-[48%]`,
+	data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95`,
 	{
 		variants: {
 			variant: {
-				default: "border-border-primary",
+				default: "border-border",
 				destructive: "border-border-destructive",
 			},
 		},
@@ -52,9 +52,7 @@ const dialogVariants = cva(
 	},
 );
 
-type DialogContentProps = React.ComponentPropsWithRef<
-	typeof DialogPrimitive.Content
-> &
+type DialogContentProps = React.ComponentProps<typeof DialogPrimitive.Content> &
 	VariantProps<typeof dialogVariants>;
 
 export const DialogContent: React.FC<DialogContentProps> = ({
@@ -76,7 +74,7 @@ export const DialogContent: React.FC<DialogContentProps> = ({
 	);
 };
 
-export const DialogHeader: React.FC<React.ComponentPropsWithRef<"div">> = ({
+export const DialogHeader: React.FC<React.ComponentProps<"div">> = ({
 	className,
 	...props
 }) => {
@@ -91,7 +89,7 @@ export const DialogHeader: React.FC<React.ComponentPropsWithRef<"div">> = ({
 	);
 };
 
-export const DialogFooter: React.FC<React.ComponentPropsWithRef<"div">> = ({
+export const DialogFooter: React.FC<React.ComponentProps<"div">> = ({
 	className,
 	...props
 }) => {
@@ -106,8 +104,70 @@ export const DialogFooter: React.FC<React.ComponentPropsWithRef<"div">> = ({
 	);
 };
 
+type DialogActionsProps = {
+	/** Text to display in the confirm button */
+	confirmText?: React.ReactNode;
+	/** Whether or not confirm is loading, also disables cancel when true */
+	confirmLoading?: boolean;
+	/** Whether or not the submit button is disabled */
+	confirmDisabled?: boolean;
+	/** Whether the confirm button triggers a destructive action or not */
+	confirmVariant?: React.ComponentProps<typeof Button>["variant"];
+	/** Called when confirm is clicked */
+	onConfirm?: () => void;
+
+	/** Text to display in the cancel button */
+	cancelText?: string;
+	/** Called when cancel is clicked */
+	onCancel?: () => void;
+};
+
+/**
+ * Quickly handles most modals actions, some combination of a cancel and confirm button
+ */
+export const DialogActions: React.FC<DialogActionsProps> = ({
+	confirmText = "Confirm",
+	confirmLoading = false,
+	confirmDisabled = false,
+	confirmVariant,
+	onConfirm,
+
+	cancelText = "Cancel",
+	onCancel,
+}) => {
+	return (
+		<>
+			{onCancel && (
+				<Button
+					disabled={confirmLoading}
+					onClick={(e) => {
+						e.stopPropagation();
+						onCancel();
+					}}
+					variant="outline"
+				>
+					{cancelText}
+				</Button>
+			)}
+
+			{onConfirm && (
+				<Button
+					variant={confirmVariant}
+					disabled={confirmLoading || confirmDisabled}
+					onClick={onConfirm}
+					data-testid="confirm-button"
+					type="submit"
+				>
+					<Spinner loading={confirmLoading} />
+					{confirmText}
+				</Button>
+			)}
+		</>
+	);
+};
+
 export const DialogTitle: React.FC<
-	React.ComponentPropsWithRef<typeof DialogPrimitive.Title>
+	React.ComponentProps<typeof DialogPrimitive.Title>
 > = ({ className, ...props }) => {
 	return (
 		<DialogPrimitive.Title
@@ -121,7 +181,7 @@ export const DialogTitle: React.FC<
 };
 
 export const DialogDescription: React.FC<
-	React.ComponentPropsWithRef<typeof DialogPrimitive.Description>
+	React.ComponentProps<typeof DialogPrimitive.Description>
 > = ({ className, ...props }) => {
 	return (
 		<DialogPrimitive.Description

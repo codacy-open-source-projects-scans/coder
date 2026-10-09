@@ -1,12 +1,11 @@
 import { useFormik } from "formik";
-import type { FC } from "react";
 import { useMutation } from "react-query";
 import { Link as RouterLink, useSearchParams } from "react-router";
 import * as Yup from "yup";
 import { requestOneTimePassword } from "#/api/queries/users";
 import { ErrorAlert } from "#/components/Alert/ErrorAlert";
 import { Button } from "#/components/Button/Button";
-import { CustomLogo } from "#/components/CustomLogo/CustomLogo";
+import { ProductLogo } from "#/components/Icons/ProductLogo";
 import { Input } from "#/components/Input/Input";
 import { Label } from "#/components/Label/Label";
 import { Spinner } from "#/components/Spinner/Spinner";
@@ -14,7 +13,7 @@ import { getApplicationName } from "#/utils/appearance";
 import { getFormHelpers, onChangeTrimmed } from "#/utils/formUtils";
 import { pageTitle } from "#/utils/page";
 
-const RequestOTPPage: FC = () => {
+const RequestOTPPage: React.FC = () => {
 	const applicationName = getApplicationName();
 	const requestOTPMutation = useMutation(requestOneTimePassword());
 	const [searchParams] = useSearchParams();
@@ -26,7 +25,7 @@ const RequestOTPPage: FC = () => {
 
 			<main className="p-6 flex items-center justify-center flex-col min-h-full text-center">
 				<div>
-					<CustomLogo />
+					<ProductLogo />
 				</div>
 				{requestOTPMutation.isSuccess ? (
 					<RequestOTPSuccess
@@ -61,7 +60,7 @@ const validationSchema = Yup.object({
 		.required("Please enter an email address."),
 });
 
-const RequestOTP: FC<RequestOTPProps> = ({
+const RequestOTP: React.FC<RequestOTPProps> = ({
 	error,
 	onRequest,
 	isRequesting,
@@ -135,7 +134,7 @@ const RequestOTP: FC<RequestOTPProps> = ({
 	);
 };
 
-const RequestOTPSuccess: FC<{ email: string }> = ({ email }) => {
+const RequestOTPSuccess: React.FC<{ email: string }> = ({ email }) => {
 	return (
 		<div className="w-full max-w-[380px] flex flex-col items-center font-medium text-sm leading-6">
 			<div>

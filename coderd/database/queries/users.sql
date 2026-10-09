@@ -78,6 +78,7 @@ FROM
 	users
 WHERE
 	status = 'active'::user_status AND deleted = false
+	AND is_service_account = false
 	AND CASE WHEN @include_system::bool THEN TRUE ELSE is_system = false END;
 
 -- name: InsertUser :one
@@ -124,14 +125,24 @@ SET
 WHERE
 	id = $1;
 
--- name: GetUserThemePreference :one
+-- name: GetUserAppearanceSettings :one
 SELECT
-	value as theme_preference
+	COALESCE(MAX(value) FILTER (WHERE key = 'theme_preference'), '')::text AS theme_preference,
+	COALESCE(MAX(value) FILTER (WHERE key = 'theme_mode'), '')::text AS theme_mode,
+	COALESCE(MAX(value) FILTER (WHERE key = 'theme_light'), '')::text AS theme_light,
+	COALESCE(MAX(value) FILTER (WHERE key = 'theme_dark'), '')::text AS theme_dark,
+	COALESCE(MAX(value) FILTER (WHERE key = 'terminal_font'), '')::text AS terminal_font
 FROM
 	user_configs
 WHERE
 	user_id = @user_id
-	AND key = 'theme_preference';
+	AND key IN (
+		'theme_preference',
+		'theme_mode',
+		'theme_light',
+		'theme_dark',
+		'terminal_font'
+	);
 
 -- name: UpdateUserThemePreference :one
 INSERT INTO
@@ -147,15 +158,6 @@ WHERE user_configs.user_id = @user_id
 	AND user_configs.key = 'theme_preference'
 RETURNING *;
 
--- name: GetUserTerminalFont :one
-SELECT
-	value as terminal_font
-FROM
-	user_configs
-WHERE
-	user_id = @user_id
-	AND key = 'terminal_font';
-
 -- name: UpdateUserTerminalFont :one
 INSERT INTO
 	user_configs (user_id, key, value)
@@ -168,6 +170,48 @@ SET
 	value = @terminal_font
 WHERE user_configs.user_id = @user_id
 	AND user_configs.key = 'terminal_font'
+RETURNING *;
+
+-- name: UpdateUserThemeMode :one
+INSERT INTO
+	user_configs (user_id, key, value)
+VALUES
+	(@user_id, 'theme_mode', @theme_mode)
+ON CONFLICT
+	ON CONSTRAINT user_configs_pkey
+DO UPDATE
+SET
+	value = @theme_mode
+WHERE user_configs.user_id = @user_id
+	AND user_configs.key = 'theme_mode'
+RETURNING *;
+
+-- name: UpdateUserThemeLight :one
+INSERT INTO
+	user_configs (user_id, key, value)
+VALUES
+	(@user_id, 'theme_light', @theme_light)
+ON CONFLICT
+	ON CONSTRAINT user_configs_pkey
+DO UPDATE
+SET
+	value = @theme_light
+WHERE user_configs.user_id = @user_id
+	AND user_configs.key = 'theme_light'
+RETURNING *;
+
+-- name: UpdateUserThemeDark :one
+INSERT INTO
+	user_configs (user_id, key, value)
+VALUES
+	(@user_id, 'theme_dark', @theme_dark)
+ON CONFLICT
+	ON CONSTRAINT user_configs_pkey
+DO UPDATE
+SET
+	value = @theme_dark
+WHERE user_configs.user_id = @user_id
+	AND user_configs.key = 'theme_dark'
 RETURNING *;
 
 -- name: GetUserChatCustomPrompt :one
@@ -240,29 +284,6 @@ END
 WHERE user_configs.user_id = @user_id
 	AND user_configs.key = 'chat_debug_logging_enabled';
 
--- name: GetUserTaskNotificationAlertDismissed :one
-SELECT
-	value::boolean as task_notification_alert_dismissed
-FROM
-	user_configs
-WHERE
-	user_id = @user_id
-	AND key = 'preference_task_notification_alert_dismissed';
-
--- name: UpdateUserTaskNotificationAlertDismissed :one
-INSERT INTO
-	user_configs (user_id, key, value)
-VALUES
-	(@user_id, 'preference_task_notification_alert_dismissed', (@task_notification_alert_dismissed::boolean)::text)
-ON CONFLICT
-	ON CONSTRAINT user_configs_pkey
-DO UPDATE
-SET
-	value = @task_notification_alert_dismissed
-WHERE user_configs.user_id = @user_id
-	AND user_configs.key = 'preference_task_notification_alert_dismissed'
-RETURNING value::boolean AS task_notification_alert_dismissed;
-
 -- name: GetUserThinkingDisplayMode :one
 SELECT
 	value AS thinking_display_mode
@@ -286,6 +307,98 @@ WHERE user_configs.user_id = @user_id
 	AND user_configs.key = 'preference_thinking_display_mode'
 RETURNING value AS thinking_display_mode;
 
+-- name: GetUserShellToolDisplayMode :one
+SELECT
+	value AS shell_tool_display_mode
+FROM
+	user_configs
+WHERE
+	user_id = @user_id
+	AND key = 'preference_shell_tool_display_mode';
+
+-- name: UpdateUserShellToolDisplayMode :one
+INSERT INTO
+	user_configs (user_id, key, value)
+VALUES
+	(@user_id, 'preference_shell_tool_display_mode', @shell_tool_display_mode::text)
+ON CONFLICT
+	ON CONSTRAINT user_configs_pkey
+DO UPDATE
+SET
+	value = @shell_tool_display_mode
+WHERE user_configs.user_id = @user_id
+	AND user_configs.key = 'preference_shell_tool_display_mode'
+RETURNING value AS shell_tool_display_mode;
+
+-- name: GetUserCodeDiffDisplayMode :one
+SELECT
+	value AS code_diff_display_mode
+FROM
+	user_configs
+WHERE
+	user_id = @user_id
+	AND key = 'preference_code_diff_display_mode';
+
+-- name: UpdateUserCodeDiffDisplayMode :one
+INSERT INTO
+	user_configs (user_id, key, value)
+VALUES
+	(@user_id, 'preference_code_diff_display_mode', @code_diff_display_mode::text)
+ON CONFLICT
+	ON CONSTRAINT user_configs_pkey
+DO UPDATE
+SET
+	value = @code_diff_display_mode
+WHERE user_configs.user_id = @user_id
+	AND user_configs.key = 'preference_code_diff_display_mode'
+RETURNING value AS code_diff_display_mode;
+
+-- name: GetUserAgentChatSendShortcut :one
+SELECT
+	value AS agent_chat_send_shortcut
+FROM
+	user_configs
+WHERE
+	user_id = @user_id
+	AND key = 'preference_agent_chat_send_shortcut';
+
+-- name: UpdateUserAgentChatSendShortcut :one
+INSERT INTO
+	user_configs (user_id, key, value)
+VALUES
+	(@user_id, 'preference_agent_chat_send_shortcut', @agent_chat_send_shortcut::text)
+ON CONFLICT
+	ON CONSTRAINT user_configs_pkey
+DO UPDATE
+SET
+	value = @agent_chat_send_shortcut
+WHERE user_configs.user_id = @user_id
+	AND user_configs.key = 'preference_agent_chat_send_shortcut'
+RETURNING value AS agent_chat_send_shortcut;
+
+-- name: GetUserCollapseAssistantSteps :one
+SELECT
+	value::boolean as collapse_assistant_steps
+FROM
+	user_configs
+WHERE
+	user_id = @user_id
+	AND key = 'preference_collapse_assistant_steps';
+
+-- name: UpdateUserCollapseAssistantSteps :one
+INSERT INTO
+	user_configs (user_id, key, value)
+VALUES
+	(@user_id, 'preference_collapse_assistant_steps', (@collapse_assistant_steps::boolean)::text)
+ON CONFLICT
+	ON CONSTRAINT user_configs_pkey
+DO UPDATE
+SET
+	value = @collapse_assistant_steps
+WHERE user_configs.user_id = @user_id
+	AND user_configs.key = 'preference_collapse_assistant_steps'
+RETURNING value::boolean AS collapse_assistant_steps;
+
 -- name: UpdateUserRoles :one
 UPDATE
 	users
@@ -305,6 +418,19 @@ SET
 	one_time_passcode_expires_at = NULL
 WHERE
 	id = $1;
+
+-- name: UpdateUserEmail :one
+UPDATE
+	users
+SET
+	email = @new_email,
+	updated_at = @updated_at,
+	hashed_one_time_passcode = NULL,
+	one_time_passcode_expires_at = NULL
+WHERE
+	LOWER(email) = LOWER(@old_email)
+	AND deleted = false
+RETURNING *;
 
 -- name: UpdateUserDeletedByID :exec
 UPDATE
@@ -342,11 +468,12 @@ WHERE
 		ELSE true
 	END
 	-- Start filters
-	-- Filter by email or username
+	-- Filter by email, username, or name (display name)
 	AND CASE
 		WHEN @search :: text != '' THEN (
 			email ILIKE concat('%', @search, '%')
 			OR username ILIKE concat('%', @search, '%')
+			OR name ILIKE concat('%', @search, '%')
 		)
 		ELSE true
 	END
@@ -355,6 +482,18 @@ WHERE
 		WHEN @name :: text != '' THEN
 			name ILIKE concat('%', @name, '%')
 		ELSE true
+	END
+	-- Filter by exact username
+	AND CASE
+	  WHEN @exact_username :: text != '' THEN
+		  lower(username) = lower(@exact_username)
+	  ELSE true
+	END
+  	-- Filter by exact email
+  	AND CASE
+	  WHEN @exact_email :: text != '' THEN
+		  lower(email) = lower(@exact_email)
+	  ELSE true
 	END
 	-- Filter by status
 	AND CASE
@@ -452,6 +591,9 @@ WHERE
 -- name: GetAuthorizationUserRoles :one
 -- This function returns roles for authorization purposes. Implied member roles
 -- are included.
+-- Must stay semantically in sync with GetActiveUsersAuthorizationRoles
+-- (implied member roles, org default roles, groups);
+-- TestGetActiveUsersAuthorizationRolesParity enforces this.
 SELECT
 	-- username and email are returned just to help for logging purposes
 	-- status is used to enforce 'suspended' users, as all roles are ignored
@@ -467,20 +609,33 @@ SELECT
 				-- Concatenating the organization id scopes the organization roles.
 				array_agg(org_roles || ':' || organization_members.organization_id::text)
 			FROM
-				organization_members,
+				organization_members
+				JOIN organizations ON organizations.id = organization_members.organization_id,
 				-- All org members get an implied role for their orgs. Most members
 				-- get organization-member, but service accounts will get
 				-- organization-service-account instead. They're largely the same,
 				-- but having them be distinct means we can allow configuring
-				-- service-accounts to have slightly broader permissions–such as
+				-- service-accounts to have slightly broader permissions, such as
 				-- for workspace sharing.
+				--
+				-- organizations.default_org_member_roles is unioned in so changes
+				-- to org defaults propagate to every member on the next request.
+				-- Service accounts do not inherit agents-access from the defaults
+				-- so they only get chat access through an explicit grant.
 				unnest(
-					array_append(
-						roles,
+					array_cat(
+						array_append(
+							roles,
+							CASE WHEN users.is_service_account THEN
+								'organization-service-account'
+							ELSE
+								'organization-member'
+							END
+						),
 						CASE WHEN users.is_service_account THEN
-							'organization-service-account'
+							array_remove(organizations.default_org_member_roles, 'agents-access')
 						ELSE
-							'organization-member'
+							organizations.default_org_member_roles
 						END
 					)
 				) AS org_roles
@@ -502,7 +657,68 @@ SELECT
 FROM
 	users
 WHERE
-	id = @user_id;
+	users.id = @user_id;
+
+-- name: GetActiveUsersAuthorizationRoles :many
+-- Returns the authorization roles (site and org-scoped, including implied
+-- member roles and organization default roles) and the group memberships
+-- for every active, non-deleted user who is neither a system user nor a
+-- service account, matching the GetActiveUserCount population.
+-- Must stay semantically in sync with GetAuthorizationUserRoles;
+-- TestGetActiveUsersAuthorizationRolesParity enforces this.
+WITH org_roles AS (
+	SELECT
+		organization_members.user_id,
+		-- The roles are returned as a flat array, org scoped and site side.
+		-- Concatenating the organization id scopes the organization roles.
+		array_agg(org_role || ':' || organization_members.organization_id::text) AS roles
+	FROM
+		organization_members
+		JOIN organizations ON organizations.id = organization_members.organization_id,
+		-- All org members get an implied organization-member role for
+		-- their orgs. Memberships of service accounts are aggregated here
+		-- too, but their rows never survive the join against the outer
+		-- WHERE, so the organization-service-account case does not apply.
+		--
+		-- organizations.default_org_member_roles applies to every member
+		-- but is not materialized on membership rows, so it is unioned in
+		-- here.
+		unnest(
+			array_cat(
+				array_append(organization_members.roles, 'organization-member'),
+				organizations.default_org_member_roles
+			)
+		) AS org_role
+	GROUP BY
+		organization_members.user_id
+),
+user_groups AS (
+	SELECT
+		group_members.user_id,
+		array_agg(group_members.group_id :: text) AS groups
+	FROM
+		group_members
+	GROUP BY
+		group_members.user_id
+)
+SELECT
+	users.id,
+	array_cat(
+		-- All users are members
+		array_append(users.rbac_roles, 'member'),
+		-- Users with no org memberships have no org_roles row.
+		coalesce(org_roles.roles, ARRAY[]::text[])
+	) :: text[] AS roles,
+	coalesce(user_groups.groups, ARRAY[]::text[]) :: text[] AS groups
+FROM
+	users
+	LEFT JOIN org_roles ON org_roles.user_id = users.id
+	LEFT JOIN user_groups ON user_groups.user_id = users.id
+WHERE
+	users.status = 'active'::user_status
+	AND users.deleted = false
+	AND users.is_system = false
+	AND users.is_service_account = false;
 
 -- name: UpdateUserQuietHoursSchedule :one
 UPDATE
@@ -540,3 +756,8 @@ SET
 WHERE
     id = $1
 ;
+
+-- name: GetUserForChatSyntheticAPIKeyByID :one
+SELECT *
+FROM users
+WHERE id = @id::uuid;

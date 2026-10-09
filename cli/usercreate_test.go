@@ -9,21 +9,23 @@ import (
 	"github.com/coder/coder/v2/cli/clitest"
 	"github.com/coder/coder/v2/coderd/coderdtest"
 	"github.com/coder/coder/v2/codersdk"
-	"github.com/coder/coder/v2/pty/ptytest"
 	"github.com/coder/coder/v2/testutil"
+	"github.com/coder/coder/v2/testutil/expecter"
 )
 
 func TestUserCreate(t *testing.T) {
 	t.Parallel()
 	t.Run("Prompts", func(t *testing.T) {
 		t.Parallel()
+		logger := testutil.Logger(t)
 		ctx := testutil.Context(t, testutil.WaitLong)
 		client := coderdtest.New(t, nil)
 		coderdtest.CreateFirstUser(t, client)
 		inv, root := clitest.New(t, "users", "create")
 		clitest.SetupConfig(t, client, root)
 		doneChan := make(chan struct{})
-		pty := ptytest.New(t).Attach(inv)
+		stdout := expecter.NewAttachedToInvocation(t, inv)
+		stdin := testutil.NewWriterAttachedToInvocation(t, logger.Named("stdin"), inv)
 		go func() {
 			defer close(doneChan)
 			err := inv.Run()
@@ -37,8 +39,8 @@ func TestUserCreate(t *testing.T) {
 		for i := 0; i < len(matches); i += 2 {
 			match := matches[i]
 			value := matches[i+1]
-			pty.ExpectMatch(match)
-			pty.WriteLine(value)
+			stdout.ExpectMatch(ctx, match)
+			stdin.WriteLine(value)
 		}
 		_ = testutil.TryReceive(ctx, t, doneChan)
 		created, err := client.User(ctx, matches[1])
@@ -50,13 +52,15 @@ func TestUserCreate(t *testing.T) {
 
 	t.Run("PromptsNoName", func(t *testing.T) {
 		t.Parallel()
+		logger := testutil.Logger(t)
 		ctx := testutil.Context(t, testutil.WaitLong)
 		client := coderdtest.New(t, nil)
 		coderdtest.CreateFirstUser(t, client)
 		inv, root := clitest.New(t, "users", "create")
 		clitest.SetupConfig(t, client, root)
 		doneChan := make(chan struct{})
-		pty := ptytest.New(t).Attach(inv)
+		stdout := expecter.NewAttachedToInvocation(t, inv)
+		stdin := testutil.NewWriterAttachedToInvocation(t, logger.Named("stdin"), inv)
 		go func() {
 			defer close(doneChan)
 			err := inv.Run()
@@ -70,8 +74,8 @@ func TestUserCreate(t *testing.T) {
 		for i := 0; i < len(matches); i += 2 {
 			match := matches[i]
 			value := matches[i+1]
-			pty.ExpectMatch(match)
-			pty.WriteLine(value)
+			stdout.ExpectMatch(ctx, match)
+			stdin.WriteLine(value)
 		}
 		_ = testutil.TryReceive(ctx, t, doneChan)
 		created, err := client.User(ctx, matches[1])
@@ -155,6 +159,21 @@ func TestUserCreate(t *testing.T) {
 			name: "ServiceAccountPassword",
 			args: []string{"--service-account", "-u", "dean", "--password", "1n5ecureP4ssw0rd!"},
 			err:  "You cannot use --password with --service-account",
+		},
+		{
+			name: "DisableLogin",
+			args: []string{"--disable-login", "-u", "dean"},
+			err:  "--disable-login is deprecated. Use --service-account for machine-to-machine access.",
+		},
+		{
+			name: "LoginTypeNone",
+			args: []string{"--login-type", "none", "-u", "dean"},
+			err:  "Login type 'none' is deprecated. Use --service-account for machine-to-machine access.",
+		},
+		{
+			name: "DisableLoginWithLoginType",
+			args: []string{"--disable-login", "--login-type", "password", "-u", "dean"},
+			err:  "You cannot specify both --disable-login and --login-type",
 		},
 	}
 

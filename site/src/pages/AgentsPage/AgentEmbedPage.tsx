@@ -1,4 +1,4 @@
-import { type FC, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "react-query";
 import { Outlet, useBlocker, useParams, useSearchParams } from "react-router";
 import { getErrorMessage } from "#/api/errors";
@@ -8,15 +8,21 @@ import { useAuthContext } from "#/contexts/auth/AuthProvider";
 import { ProxyProvider } from "#/contexts/ProxyContext";
 import { DashboardProvider } from "#/modules/dashboard/DashboardProvider";
 import { permissionChecks } from "#/modules/permissions";
-import type { AgentsOutletContext } from "./AgentsPage";
+import {
+	baseModeFor,
+	CONCRETE_THEMES,
+	type ConcreteThemeName,
+	isConcreteThemeName,
+} from "#/theme";
+import type { AgentsPageOutletContext } from "./AgentsPageLayout";
+import {
+	type ChatDetailError,
+	chatDetailErrorsEqual,
+} from "./components/ChatConversation/chatError";
 import {
 	bootstrapChatEmbedSession,
 	EmbedContext,
 } from "./components/EmbedContext";
-import {
-	type ChatDetailError,
-	chatDetailErrorsEqual,
-} from "./utils/usageLimitMessage";
 
 type BootstrapMessage = {
 	type: "coder:vscode-auth-bootstrap";
@@ -48,7 +54,7 @@ const getBootstrapToken = (data: unknown): string | undefined => {
 	return token.length > 0 ? token : undefined;
 };
 
-const getThemeFromMessage = (data: unknown): "light" | "dark" | undefined => {
+const getThemeFromMessage = (data: unknown): ConcreteThemeName | undefined => {
 	if (typeof data !== "object" || data === null) {
 		return undefined;
 	}
@@ -60,7 +66,7 @@ const getThemeFromMessage = (data: unknown): "light" | "dark" | undefined => {
 		return undefined;
 	}
 	const payload = msg.payload as { theme?: unknown };
-	if (payload.theme !== "light" && payload.theme !== "dark") {
+	if (!isConcreteThemeName(payload.theme)) {
 		return undefined;
 	}
 	return payload.theme;
@@ -71,17 +77,18 @@ const getThemeFromMessage = (data: unknown): "light" | "dark" | undefined => {
  * attribute so ThemeProvider skips its own class manipulation.
  * No-ops when the requested theme is already active.
  */
-const applyEmbedTheme = (theme: "light" | "dark") => {
+const applyEmbedTheme = (theme: ConcreteThemeName) => {
 	const root = document.documentElement;
 	if (root.dataset.embedTheme === theme) {
 		return;
 	}
-	root.classList.remove("light", "dark");
+	root.classList.remove(...CONCRETE_THEMES);
 	root.classList.add(theme);
+	root.classList.add(baseModeFor(theme));
 	root.dataset.embedTheme = theme;
 };
 
-const AgentEmbedPage: FC = () => {
+const AgentEmbedPage: React.FC = () => {
 	const { agentId } = useParams<{ agentId: string }>();
 	if (!agentId) {
 		throw new Error("AgentEmbedPage requires an agentId route parameter.");
@@ -135,15 +142,6 @@ const AgentEmbedPage: FC = () => {
 		});
 	};
 
-	const requestArchiveAgent = (_chatId: string) => {};
-
-	const requestUnarchiveAgent = (_chatId: string) => {};
-
-	const requestArchiveAndDeleteWorkspace = (
-		_chatId: string,
-		_workspaceId: string,
-	) => {};
-
 	const onToggleSidebarCollapsed = () => {
 		setIsSidebarCollapsed((current) => !current);
 	};
@@ -167,12 +165,14 @@ const AgentEmbedPage: FC = () => {
 	});
 
 	// Apply the initial theme from the URL query param
-	// (?theme=light|dark) or fall back to prefers-color-scheme.
+	// (?theme=<concrete theme name>) or fall back to
+	// prefers-color-scheme. Accepts any concrete theme, including
+	// colorblind-friendly variants such as `dark-tritan`.
 	// useLayoutEffect runs before paint to prevent a flash.
 	const [searchParams] = useSearchParams();
 	useLayoutEffect(() => {
 		const paramTheme = searchParams.get("theme");
-		if (paramTheme === "light" || paramTheme === "dark") {
+		if (isConcreteThemeName(paramTheme)) {
 			applyEmbedTheme(paramTheme);
 		} else {
 			const prefersDark = window.matchMedia(
@@ -181,15 +181,10 @@ const AgentEmbedPage: FC = () => {
 			applyEmbedTheme(prefersDark ? "dark" : "light");
 		}
 		return () => {
-			document.documentElement.classList.remove("light", "dark");
+			document.documentElement.classList.remove(...CONCRETE_THEMES);
 			delete document.documentElement.dataset.embedTheme;
 		};
 	}, [searchParams]);
-
-	// Shared ref for the chat scroll container. Passed through the
-	// outlet context so AgentChatPage attaches it to the DOM element
-	// instead of creating its own.
-	const scrollContainerRef = useRef<HTMLDivElement | null>(null);
 
 	// Listen for parent frame commands (e.g. theme changes).
 	useEffect(() => {
@@ -212,22 +207,16 @@ const AgentEmbedPage: FC = () => {
 		window.parent.postMessage({ type: "coder:chat-ready" }, "*");
 	};
 
-	const outletContext: AgentsOutletContext = {
+	const outletContext: AgentsPageOutletContext = {
 		chatErrorReasons,
 		setChatErrorReason,
 		clearChatErrorReason,
-		requestArchiveAgent,
-		requestUnarchiveAgent,
-		requestPinAgent: () => {},
-		requestUnpinAgent: () => {},
-		requestArchiveAndDeleteWorkspace,
-		// Title regeneration is not supported in embed mode.
-		regeneratingTitleChatIds: [],
+		navigateAfterArchive: () => {},
+		activeChatChildren: undefined,
 		isSidebarCollapsed,
 		onToggleSidebarCollapsed,
 		onExpandSidebar: () => {},
 		onChatReady,
-		scrollContainerRef,
 	};
 
 	// When signed out and not already bootstrapping, listen for the
@@ -280,12 +269,18 @@ const AgentEmbedPage: FC = () => {
 		embedSessionMutation.reset();
 	};
 
-	if (auth.isSignedIn) {
+	// DashboardProvider requires permissions. They arrive with the user
+	// when the server embeds metadata, but load separately behind a dev
+	// proxy or when metadata is missing, so wait for both.
+	if (auth.isSignedIn && auth.permissions) {
 		return (
 			<EmbedContext value={{ isEmbedded: true }}>
 				<DashboardProvider>
 					<ProxyProvider>
-						<Outlet context={outletContext} />
+						{/* Match AgentsPageLayout's flex column so the chat stays bounded under block-level #root. */}
+						<div className="flex h-full min-h-0 min-w-0 flex-col">
+							<Outlet context={outletContext} />
+						</div>
 					</ProxyProvider>
 				</DashboardProvider>
 			</EmbedContext>

@@ -8,47 +8,66 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/xerrors"
 
+	"cdr.dev/slog/v3"
 	"github.com/coder/coder/v2/coderd/database"
 	"github.com/coder/coder/v2/codersdk"
 )
 
 const (
-	spawnAgentToolName = "spawn_agent"
+	spawnAgentToolName         = "spawn_agent"
+	listSubagentModelsToolName = "list_subagent_models"
 
 	subagentTypeGeneral     = "general"
 	subagentTypeExplore     = "explore"
 	subagentTypeComputerUse = "computer_use"
 
-	defaultSystemPromptPlanningGuidance = "1. Use " + spawnAgentToolName +
-		" with type=\"" + subagentTypeExplore +
-		"\" and wait_agent to research the codebase and gather context as needed. " +
-		"Reserve type=\"" + subagentTypeGeneral +
-		"\" for writable delegated work."
+	defaultSystemPromptPlanningGuidance = "1. Delegate context gathering with " +
+		spawnAgentToolName + " when it helps, only after defining the question or " +
+		"deliverable, scope, available inputs, and completion criteria. Follow the " +
+		spawnAgentToolName + " description for agent selection and ownership."
 )
 
+// unbilledSubagentToolNames excludes parent-side orchestration because
+// child chats bill their own runtime. Include deprecated aliases.
+var unbilledSubagentToolNames = map[string]bool{
+	spawnAgentToolName:         true,
+	"wait_agent":               true,
+	"message_agent":            true,
+	"interrupt_agent":          true,
+	"close_agent":              true,
+	"list_agents":              true,
+	listSubagentModelsToolName: true,
+}
+
 type spawnAgentArgs struct {
-	Type   string `json:"type"`
-	Prompt string `json:"prompt"`
-	Title  string `json:"title,omitempty"`
+	Type            string `json:"type"`
+	Prompt          string `json:"prompt"`
+	Title           string `json:"title,omitempty"`
+	ModelConfigID   string `json:"model_config_id,omitempty" description:"Optional model config UUID from list_subagent_models. Runs the child on that model instead of the configured default. Not supported for type 'computer_use'."`
+	ReasoningEffort string `json:"reasoning_effort,omitempty" description:"Optional reasoning effort for the child: none, minimal, low, medium, high, xhigh, or max. Clamped to the selected model's supported range. Not supported for type 'computer_use'."`
 }
 
 type subagentDefinition struct {
 	id                string
 	description       string
 	unavailableReason func(context.Context, *Server, database.Chat) string
-	buildOptions      func(context.Context, *Server, database.Chat, database.Chat, uuid.UUID, string) (childSubagentChatOptions, error)
+	buildOptions      func(context.Context, *Server, database.Chat, database.Chat, uuid.UUID, *uuid.UUID, string) (childSubagentChatOptions, error)
 }
 
 func allSubagentDefinitions() []subagentDefinition {
 	return []subagentDefinition{
 		{
 			id:          subagentTypeGeneral,
-			description: "delegated work that may inspect or modify workspace files",
-			buildOptions: func(ctx context.Context, p *Server, parent database.Chat, _ database.Chat, _ uuid.UUID, _ string) (childSubagentChatOptions, error) {
-				modelConfigID, err := p.resolveSubagentModelConfigID(
+			description: "substantial delegated research, analysis, reasoning, review, planning support, and implementation",
+			buildOptions: func(ctx context.Context, p *Server, parent database.Chat, _ database.Chat, _ uuid.UUID, explicitModelConfigID *uuid.UUID, _ string) (childSubagentChatOptions, error) {
+				if explicitModelConfigID != nil {
+					return childSubagentChatOptions{modelConfigIDOverride: explicitModelConfigID}, nil
+				}
+				modelConfigID, reasoningEffort, err := p.resolveSubagentModelConfigID(
 					ctx,
 					parent.OwnerID,
-					codersdk.ChatAgentModelOverrideContextGeneral,
+					parent.OrganizationID,
+					codersdk.ChatModelOverrideContextGeneral,
 				)
 				if err != nil {
 					return childSubagentChatOptions{}, err
@@ -56,24 +75,33 @@ func allSubagentDefinitions() []subagentDefinition {
 				options := childSubagentChatOptions{}
 				if modelConfigID != uuid.Nil {
 					options.modelConfigIDOverride = &modelConfigID
+					options.reasoningEffortOverride = reasoningEffort
 				}
 				return options, nil
 			},
 		},
 		{
 			id:          subagentTypeExplore,
-			description: "read-only discovery, code tracing, and system understanding",
-			buildOptions: func(ctx context.Context, p *Server, _ database.Chat, turnParent database.Chat, currentModelConfigID uuid.UUID, _ string) (childSubagentChatOptions, error) {
-				modelConfigID, err := p.resolveSubagentModelConfigID(
-					ctx,
-					turnParent.OwnerID,
-					codersdk.ChatAgentModelOverrideContextExplore,
-				)
-				if err != nil {
-					return childSubagentChatOptions{}, err
-				}
-				if modelConfigID == uuid.Nil {
-					modelConfigID = currentModelConfigID
+			description: "narrow repository-local read-only code discovery and code tracing",
+			buildOptions: func(ctx context.Context, p *Server, _ database.Chat, turnParent database.Chat, currentModelConfigID uuid.UUID, explicitModelConfigID *uuid.UUID, _ string) (childSubagentChatOptions, error) {
+				modelConfigID := currentModelConfigID
+				var reasoningEffort *string
+				if explicitModelConfigID != nil {
+					modelConfigID = *explicitModelConfigID
+				} else {
+					resolvedModelConfigID, resolvedReasoningEffort, err := p.resolveSubagentModelConfigID(
+						ctx,
+						turnParent.OwnerID,
+						turnParent.OrganizationID,
+						codersdk.ChatModelOverrideContextExplore,
+					)
+					if err != nil {
+						return childSubagentChatOptions{}, err
+					}
+					if resolvedModelConfigID != uuid.Nil {
+						modelConfigID = resolvedModelConfigID
+					}
+					reasoningEffort = resolvedReasoningEffort
 				}
 				inheritedMCPServerIDs, err := p.resolveExploreToolSnapshot(
 					ctx,
@@ -90,9 +118,10 @@ func allSubagentDefinitions() []subagentDefinition {
 						ChatMode: database.ChatModeExplore,
 						Valid:    true,
 					},
-					modelConfigIDOverride: &modelConfigID,
-					planModeOverride:      &clearPlanMode,
-					inheritedMCPServerIDs: inheritedMCPServerIDs,
+					modelConfigIDOverride:   &modelConfigID,
+					reasoningEffortOverride: reasoningEffort,
+					planModeOverride:        &clearPlanMode,
+					inheritedMCPServerIDs:   inheritedMCPServerIDs,
 				}, nil
 			},
 		},
@@ -103,12 +132,34 @@ func allSubagentDefinitions() []subagentDefinition {
 				if currentChat.PlanMode.Valid && currentChat.PlanMode.ChatPlanMode == database.ChatPlanModePlan {
 					return `type "computer_use" is unavailable in plan mode`
 				}
-				if !p.isAnthropicConfigured(ctx) || !p.isDesktopEnabled(ctx) {
-					return `type "computer_use" is unavailable because computer use is not configured`
+				if !p.experiments.Enabled(codersdk.ExperimentChatVirtualDesktop) {
+					return `type "computer_use" is unavailable because the chat-virtual-desktop experiment is not enabled`
+				}
+				_, _, _, err := p.computerUseProviderAndModelFromConfig(ctx)
+				if err != nil {
+					p.logger.Warn(ctx, "computer-use provider config is unavailable",
+						slog.F("chat_id", currentChat.ID),
+						slog.Error(err),
+					)
+					return `type "computer_use" is unavailable because its provider configuration could not be loaded`
 				}
 				return ""
 			},
-			buildOptions: func(_ context.Context, _ *Server, _ database.Chat, _ database.Chat, _ uuid.UUID, prompt string) (childSubagentChatOptions, error) {
+			buildOptions: func(ctx context.Context, p *Server, currentChat database.Chat, _ database.Chat, _ uuid.UUID, _ *uuid.UUID, prompt string) (childSubagentChatOptions, error) {
+				provider, _, _, err := p.computerUseProviderAndModelFromConfig(ctx)
+				if err != nil {
+					return childSubagentChatOptions{}, err
+				}
+				providerKeys, err := p.resolveUserProviderAPIKeysForProviderType(ctx, currentChat.OwnerID, string(provider))
+				if err != nil {
+					return childSubagentChatOptions{}, err
+				}
+				if !userCanUseProviderKeys(providerKeys, string(provider)) {
+					return childSubagentChatOptions{}, xerrors.Errorf(
+						`API key for computer-use provider %q is not configured`,
+						provider,
+					)
+				}
 				return childSubagentChatOptions{
 					chatMode: database.NullChatMode{
 						ChatMode: database.ChatModeComputerUse,
@@ -246,26 +297,57 @@ func buildSpawnAgentDescription(
 	currentChat database.Chat,
 ) string {
 	availableDefs := availableSubagentDefinitions(ctx, p, currentChat)
-	description := "Spawn a delegated child subagent to work on a clearly scoped, " +
-		"independent task in parallel. Use the type field to choose " +
+	description := "Assign a clearly scoped, independent task to a child agent, " +
+		"including the criteria that complete it. Spawn only once you can define " +
+		"the assignment; gather missing context first rather than investigating " +
+		"alongside the child. Use the type field to choose " +
 		"the right specialist. Available type values: " +
-		formatSubagentDefinitions(availableDefs) + ". Do not use this for " +
+		formatSubagentDefinitionsWithDescriptionOverrides(availableDefs, nil) + ". Do not use this for " +
 		"simple or quick operations you can handle directly with execute, " +
-		"read_file, or write_file. Reserve writable subagents for tasks that " +
-		"require intellectual work such as code analysis, writing new code, or " +
-		"complex refactoring. Be careful when running parallel subagents: if " +
-		"two subagents modify the same files they will conflict with each " +
-		"other, so ensure parallel subagent tasks are independent. The child " +
-		"agent receives the same workspace tools but cannot spawn its own " +
-		"subagents. After spawning, use wait_agent to collect the result."
+		"read_file, or write_file. Prefer type=\"" + subagentTypeGeneral +
+		"\" for substantial delegated research, analysis, reasoning, review, " +
+		"planning support, or implementation, even when the child should only " +
+		"report findings. When using type=\"" + subagentTypeGeneral +
+		"\" for read-only work, explicitly instruct the child not to modify " +
+		"files and to return findings. Use type=\"" + subagentTypeExplore +
+		"\" only for narrow repository-local read-only code discovery or code " +
+		"tracing, such as locating files, callsites, or a bounded existing flow. " +
+		"Do not use type=\"" + subagentTypeExplore +
+		"\" for generic research, broad architecture analysis, planning " +
+		"synthesis, external or web research, parallel research, or tasks that " +
+		"may need edits. Each delegated task has one owner until its result " +
+		"is returned or a handoff is acknowledged. While a child owns a task, do " +
+		"only work independent of it; do not investigate, implement, or edit that " +
+		"task yourself. Separate files do not make tasks independent when they " +
+		"depend on an unresolved shared contract. Independent work that itself " +
+		"qualifies for delegation is another assignment, not your own. When your " +
+		"next step depends on a child's result, or its report will answer the " +
+		"question, use wait_agent rather than doing that work yourself. Treat a " +
+		"report's findings and cited locations as read context; re-check only a " +
+		"specific gap, contradiction, suspected change, or the exact content an " +
+		"edit needs. The child cannot spawn its own subagents; its tools depend " +
+		"on its type and mode. " +
+		"You may optionally set model_config_id (a model config UUID from " +
+		listSubagentModelsToolName + ") to run the child on a specific model " +
+		"instead of the configured default, and reasoning_effort to pin the " +
+		"child's reasoning effort; both apply only to type \"" +
+		subagentTypeGeneral + "\" and type \"" + subagentTypeExplore + "\". " +
+		"Agents persist after completion; reuse an agent via message_agent for " +
+		"follow-up work when it already has relevant context. Spawned agents are " +
+		"your responsibility: do not abandon one in a working state (running); " +
+		"retrieve its result, redirect it with message_agent, or stop " +
+		"it with interrupt_agent."
 	if currentChat.PlanMode.Valid && currentChat.PlanMode.ChatPlanMode == database.ChatPlanModePlan {
-		description += " During plan mode, general and explore subagents may use shell commands for exploration, such as cloning repositories, searching code, and running inspection commands, but they must not implement changes or intentionally modify workspace files."
+		description += " During plan mode, type=\"" + subagentTypeGeneral +
+			"\" is for non-mutating substantial investigation and planning support, " +
+			"and type=\"" + subagentTypeExplore +
+			"\" is for narrow repository-local lookup or tracing. Both may use " +
+			"shell commands for exploration and inspection, but only type=\"" +
+			subagentTypeGeneral +
+			"\" should be used for cloning repositories or non-local investigation. " +
+			"They must not implement changes or intentionally modify workspace files."
 	}
 	return description
-}
-
-func formatSubagentDefinitions(defs []subagentDefinition) string {
-	return formatSubagentDefinitionsWithDescriptionOverrides(defs, nil)
 }
 
 func formatSubagentDefinitionsWithDescriptionOverrides(
@@ -285,14 +367,18 @@ func formatSubagentDefinitionsWithDescriptionOverrides(
 
 func planningOverlaySubagentGuidance() string {
 	planModeDescriptions := map[string]string{
-		subagentTypeGeneral: "delegated investigation, planning support, and non-mutating exploration",
+		subagentTypeGeneral: "non-mutating substantial investigation, analysis, and planning support",
+		subagentTypeExplore: "narrow repository-local codebase lookup and code tracing",
 	}
 
 	return "Use read_file, execute, process_output, list_templates, read_template, " +
 		spawnAgentToolName + ", and approved external MCP tools when available to gather context. " +
-		"Workspace MCP tools are not available in root plan mode, and side-effecting built-in tools such as process_list, process_signal, message_agent, close_agent, and computer-use actions remain unavailable. In Plan Mode, " +
+		"Workspace MCP tools are not available in root plan mode, and side-effecting built-in tools such as process_list, process_signal, message_agent, interrupt_agent, and computer-use actions remain unavailable. In Plan Mode, " +
 		spawnAgentToolName + " delegation is for investigation and planning " +
-		"support, not code writing or implementation. Allowed type " +
+		"support, not code writing or implementation. Use type=\"" + subagentTypeGeneral +
+		"\" for substantial investigation, reasoning, and planning support. " +
+		"Use type=\"" + subagentTypeExplore +
+		"\" only for narrow repository-local lookup or tracing. Allowed type " +
 		"values in Plan Mode: " +
 		formatSubagentDefinitionsWithDescriptionOverrides(
 			subagentDefinitionsByID(

@@ -3,6 +3,8 @@ package chatloop
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"net/http"
 	"strings"
 	"time"
 
@@ -12,6 +14,7 @@ import (
 
 	"github.com/coder/coder/v2/coderd/x/chatd/chatdebug"
 	"github.com/coder/coder/v2/codersdk"
+	"github.com/coder/quartz"
 )
 
 const (
@@ -20,45 +23,99 @@ const (
 	maxCompactionThresholdPercent     = int32(100)
 
 	// compactionDebugCreateRunTimeout caps the compaction debug
-	// CreateRun budget so a slow or locked DB cannot consume the
-	// compaction's configured Timeout and cause model.Generate to
-	// fail with deadline exceeded. Debug instrumentation is
-	// best-effort; running without the debug row is preferable to
-	// failing the compaction.
+	// CreateRun budget. Debug instrumentation is best-effort;
+	// running without the debug row is preferable to blocking
+	// compaction on a slow or locked DB.
 	compactionDebugCreateRunTimeout = 5 * time.Second
 
 	defaultCompactionSummaryPrompt = "You are performing a context compaction. " +
 		"Summarize the conversation so a new assistant can seamlessly " +
 		"continue the work in progress.\n\n" +
 		"Include:\n" +
+		// The constraints bullet below is deliberately verbose: offline replay
+		// of production chats showed compaction summaries dropping or softening
+		// user-stated constraints, and this wording measurably improved their
+		// survival (see PR #27230). Reword only with re-validation.
+		"- User constraints, corrections, and prohibitions: rules, " +
+		"scope limits, style rules, and process corrections stated by " +
+		"the user. Quote or closely paraphrase the user's wording; do " +
+		"not soften, merge, or truncate them. Constraints are standing " +
+		"until the user revokes them; they do not become stale when " +
+		"the task moves on. When the user corrected the assistant's " +
+		"behavior, record the correction itself, not only the " +
+		"corrected outcome. Include only constraints the user stated " +
+		"in conversation; do not place rules from system prompts, " +
+		"AGENTS.md, or other configuration files in this section. " +
+		"Those rules may appear elsewhere in the summary with their " +
+		"true source named. When in doubt whether a rule originated " +
+		"from the user, name its source or omit the attribution " +
+		"rather than defaulting to user.\n" +
 		"- The user's overall goal and current task\n" +
 		"- Key decisions made and their rationale\n" +
 		"- Concrete technical details: file paths, function names, " +
 		"commands, APIs, and configurations\n" +
-		"- Errors encountered and how they were resolved\n" +
+		"- Errors encountered and how they were resolved. Keep error " +
+		"notes specific: name the file, the error, and the fix. Do not " +
+		"generalize from a specific failure to a blanket tool-avoidance " +
+		"rule (e.g. \"tool X is unreliable\" or \"always use Y instead " +
+		"of Z\")\n" +
 		"- Current state of the work: what is DONE, what is IN PROGRESS, " +
 		"and what REMAINS to be done\n" +
 		"- The specific action the assistant was performing or about to " +
 		"perform when this summary was triggered\n\n" +
 		"Be dense and factual. Every sentence should convey essential " +
 		"context for continuation. Do not include pleasantries or " +
-		"conversational filler."
+		"conversational filler. For content that can be reproduced " +
+		"(repo files, command output, API responses), reference how to " +
+		"obtain it (file path, command, URL) rather than inlining the " +
+		"full content. Include brief inline summaries when the content " +
+		"itself would exceed a few lines."
 	defaultCompactionSystemSummaryPrefix = "The following is a summary of " +
-		"the earlier conversation. The assistant was actively working when " +
-		"the context was compacted. Continue the work described below:"
-	defaultCompactionTimeout = 90 * time.Second
+		"the earlier conversation. Continue from it:"
+)
+
+// CompactionSource identifies what triggered a compaction. It is
+// recorded in the persisted chat_summarized tool JSON and the
+// streamed synthetic parts so clients can render manual compactions
+// distinctly.
+type CompactionSource string
+
+const (
+	CompactionSourceAutomatic CompactionSource = "automatic"
+	CompactionSourceManual    CompactionSource = "manual"
 )
 
 type CompactionOptions struct {
 	ThresholdPercent    int32
 	ContextLimit        int64
 	SummaryPrompt       string
+	SummaryHint         string
 	SystemSummaryPrefix string
-	Timeout             time.Duration
-	Persist             func(context.Context, CompactionResult) error
 	DebugSvc            *chatdebug.Service
 	ChatID              uuid.UUID
 	HistoryTipMessageID int64
+
+	ResolvedProvider string
+	ResolvedModel    string
+	ModelConfigID    uuid.UUID
+	SummaryCall      fantasy.Call
+	// ToolDefinitions is copied from the parent generation request so the
+	// summary call uses the exact same ordered definitions.
+	ToolDefinitions []fantasy.Tool
+
+	// Clock and StreamSilenceTimeout guard the summary stream against a
+	// provider that opens the stream but stops yielding parts. Zero values
+	// fall back to a real clock and DefaultStreamSilenceTimeout.
+	Clock                quartz.Clock
+	StreamSilenceTimeout time.Duration
+
+	// Force skips the threshold gate (including the threshold=100
+	// disable and the zero-usage early return). Set for manual,
+	// user-requested compactions.
+	Force bool
+	// Source labels what triggered the compaction. Defaults to
+	// CompactionSourceAutomatic when empty.
+	Source CompactionSource
 
 	// ToolCallID and ToolName identify the synthetic tool call
 	// used to represent compaction in the message stream.
@@ -69,58 +126,79 @@ type CompactionOptions struct {
 	// clients so they see "Summarizing..." / "Summarized" UI
 	// transitions during compaction.
 	PublishMessagePart func(codersdk.ChatMessageRole, codersdk.ChatMessagePart)
-
-	OnError func(error)
 }
 
 type CompactionResult struct {
 	SystemSummary    string
 	SummaryReport    string
+	Source           CompactionSource
 	ThresholdPercent int32
 	UsagePercent     float64
 	ContextTokens    int64
 	ContextLimit     int64
+	// EstimatedContextTokens covers only SystemSummary, not the full prompt.
+	EstimatedContextTokens int64
+	// Runtime is the wall-clock duration of the summarization model
+	// call, the compaction step's billable runtime (see
+	// PersistedStep.Runtime). Zero when the run was gated off before
+	// calling the model.
+	Runtime time.Duration
+	// ProviderResponseID identifies the summary response. See
+	// PersistedStep.ProviderResponseID.
+	ProviderResponseID string
 }
 
-// tryCompact checks whether context usage exceeds the compaction
-// threshold and, if so, generates and persists a summary. Returns
-// (true, nil) when compaction was performed, (false, nil) when not
-// needed, and (false, err) on failure.
-func tryCompact(
-	ctx context.Context,
-	model fantasy.LanguageModel,
-	compaction *CompactionOptions,
-	contextLimitFallback int64,
-	stepUsage fantasy.Usage,
-	stepMetadata fantasy.ProviderMetadata,
-	allMessages []fantasy.Message,
-) (bool, error) {
-	config, ok := normalizedCompactionConfig(compaction)
+// GenerateCompaction generates one context summary and returns it without
+// persisting. It publishes compaction progress parts when configured.
+// Threshold gating (including the threshold=100 disable and the
+// zero-usage early return) is skipped when opts.Force is set.
+func GenerateCompaction(ctx context.Context, opts GenerateCompactionOptions) (CompactionResult, error) {
+	if opts.Model == nil {
+		return CompactionResult{}, xerrors.New("chat model is required")
+	}
+	if opts.Clock == nil {
+		return CompactionResult{}, xerrors.New("clock is required")
+	}
+	config, ok := normalizedCompactionGenerateConfig(opts)
 	if !ok {
-		return false, nil
+		return CompactionResult{}, nil
 	}
 
-	contextTokens := contextTokensFromUsage(stepUsage)
-	if contextTokens <= 0 {
-		return false, nil
+	contextTokens := contextTokensFromUsage(opts.StepUsage)
+	if contextTokens <= 0 && !config.Force {
+		return CompactionResult{}, nil
 	}
-
-	metadataLimit := extractContextLimit(stepMetadata)
 	contextLimit := resolveContextLimit(
-		metadataLimit.Int64,
 		config.ContextLimit,
-		contextLimitFallback,
+		opts.ContextLimitFallback,
 	)
-
 	usagePercent, compact := shouldCompact(
-		contextTokens, contextLimit, config.ThresholdPercent,
+		contextTokens,
+		contextLimit,
+		config.ThresholdPercent,
 	)
-	if !compact {
-		return false, nil
+	if !compact && !config.Force {
+		return CompactionResult{}, nil
 	}
 
-	// Publish the "Summarizing..." tool-call indicator so
-	// connected clients see activity during summary generation.
+	// Sum-enforcing providers reject requests whose input plus
+	// max_tokens exceeds the context window, so bound the summary cap
+	// by the remaining window. contextTokens covers only the trigger
+	// step's prompt, so also reserve that step's output, the tool
+	// results executed after it, and the summary prompt appended by
+	// generateCompactionSummary, all of which become input to the
+	// summary request. Degenerate cases (unknown limit, no room left)
+	// leave the cap unchanged.
+	if config.SummaryCall.MaxOutputTokens != nil {
+		promptBytes := len(config.SummaryPrompt) + len(config.SummaryHint)
+		promptTokens := int64((promptBytes + bytesPerTokenEstimate - 1) / bytesPerTokenEstimate)
+		reserved := opts.StepUsage.OutputTokens + promptTokens + trailingToolResultTokens(opts.Messages)
+		remaining := contextLimit - contextTokens - reserved
+		if remaining > 0 && remaining < *config.SummaryCall.MaxOutputTokens {
+			config.SummaryCall.MaxOutputTokens = &remaining
+		}
+	}
+
 	if config.PublishMessagePart != nil && config.ToolCallID != "" {
 		config.PublishMessagePart(
 			codersdk.ChatMessageRoleAssistant,
@@ -128,56 +206,95 @@ func tryCompact(
 		)
 	}
 
-	summary, err := generateCompactionSummary(
-		ctx, model, allMessages, config,
-	)
-	if err != nil {
-		return false, err
+	summaryStart := opts.Clock.Now()
+	if opts.OnModelStreamStart != nil {
+		opts.OnModelStreamStart()
 	}
+	summary, responseID, err := generateCompactionSummary(ctx, opts.Model, opts.Messages, config)
+	if err != nil {
+		publishCompactionError(config, "failed to generate compaction summary")
+		return CompactionResult{}, err
+	}
+	summaryRuntime := opts.Clock.Since(summaryStart)
 	if summary == "" {
-		// Publish a tool-result error so connected clients
-		// see the compaction failure.
 		publishCompactionError(config, "compaction produced an empty summary")
-		return false, xerrors.New("compaction produced an empty summary")
+		return CompactionResult{}, xerrors.New("compaction produced an empty summary")
 	}
 
-	systemSummary := strings.TrimSpace(
-		config.SystemSummaryPrefix + "\n\n" + summary,
-	)
-
-	persistCtx := context.WithoutCancel(ctx)
-	err = config.Persist(persistCtx, CompactionResult{
-		SystemSummary:    systemSummary,
-		SummaryReport:    summary,
-		ThresholdPercent: config.ThresholdPercent,
-		UsagePercent:     usagePercent,
-		ContextTokens:    contextTokens,
-		ContextLimit:     contextLimit,
-	})
-	if err != nil {
-		publishCompactionError(config, "failed to persist compaction result")
-		return false, xerrors.Errorf("persist compaction: %w", err)
+	result := CompactionResult{
+		SystemSummary: strings.TrimSpace(
+			config.SystemSummaryPrefix + "\n\n" + summary,
+		),
+		SummaryReport:      summary,
+		Source:             config.Source,
+		ThresholdPercent:   config.ThresholdPercent,
+		UsagePercent:       usagePercent,
+		ContextTokens:      contextTokens,
+		ContextLimit:       contextLimit,
+		Runtime:            summaryRuntime,
+		ProviderResponseID: responseID,
 	}
-
-	// Publish the "Summarized" tool-result part so the client
-	// transitions from the in-progress indicator to the final
-	// state.
+	result.EstimatedContextTokens = int64((len(result.SystemSummary) + bytesPerTokenEstimate - 1) / bytesPerTokenEstimate)
 	if config.PublishMessagePart != nil && config.ToolCallID != "" {
 		resultJSON, _ := json.Marshal(map[string]any{
-			"summary":              summary,
-			"source":               "automatic",
-			"threshold_percent":    config.ThresholdPercent,
-			"usage_percent":        usagePercent,
-			"context_tokens":       contextTokens,
-			"context_limit_tokens": contextLimit,
+			"summary":                  summary,
+			"source":                   config.Source,
+			"threshold_percent":        config.ThresholdPercent,
+			"usage_percent":            usagePercent,
+			"context_tokens":           contextTokens,
+			"context_limit_tokens":     contextLimit,
+			"estimated_context_tokens": result.EstimatedContextTokens,
 		})
 		config.PublishMessagePart(
 			codersdk.ChatMessageRoleTool,
 			codersdk.ChatMessageToolResult(config.ToolCallID, config.ToolName, resultJSON, false, false),
 		)
 	}
+	return result, nil
+}
 
-	return true, nil
+func normalizedCompactionGenerateConfig(opts GenerateCompactionOptions) (CompactionOptions, bool) {
+	config := CompactionOptions{
+		ThresholdPercent:     opts.ThresholdPercent,
+		ContextLimit:         opts.ContextLimit,
+		SummaryPrompt:        opts.SummaryPrompt,
+		SummaryHint:          opts.SummaryHint,
+		SystemSummaryPrefix:  opts.SystemSummaryPrefix,
+		DebugSvc:             opts.DebugSvc,
+		ChatID:               opts.ChatID,
+		HistoryTipMessageID:  opts.HistoryTipMessageID,
+		ResolvedProvider:     opts.ResolvedProvider,
+		ResolvedModel:        opts.ResolvedModel,
+		ModelConfigID:        opts.ModelConfigID,
+		SummaryCall:          opts.SummaryCall,
+		ToolDefinitions:      opts.ToolDefinitions,
+		Force:                opts.Force,
+		Source:               opts.Source,
+		ToolCallID:           opts.ToolCallID,
+		ToolName:             opts.ToolName,
+		PublishMessagePart:   opts.PublishMessagePart,
+		Clock:                opts.Clock,
+		StreamSilenceTimeout: opts.StreamSilenceTimeout,
+	}
+	if strings.TrimSpace(config.SummaryPrompt) == "" {
+		config.SummaryPrompt = defaultCompactionSummaryPrompt
+	}
+	if strings.TrimSpace(config.SystemSummaryPrefix) == "" {
+		config.SystemSummaryPrefix = defaultCompactionSystemSummaryPrefix
+	}
+	if config.Source == "" {
+		config.Source = CompactionSourceAutomatic
+	}
+	if config.ThresholdPercent < minCompactionThresholdPercent ||
+		config.ThresholdPercent > maxCompactionThresholdPercent {
+		config.ThresholdPercent = defaultCompactionThresholdPercent
+	}
+	// threshold=100 disables automatic compaction; a forced run
+	// still proceeds because the user asked explicitly.
+	if config.ThresholdPercent == maxCompactionThresholdPercent && !config.Force {
+		return CompactionOptions{}, false
+	}
+	return config, true
 }
 
 // publishCompactionError sends a tool-result error part so
@@ -195,37 +312,35 @@ func publishCompactionError(config CompactionOptions, msg string) {
 	)
 }
 
-// normalizedCompactionConfig returns a copy of the compaction options
-// with defaults applied. The bool is false when compaction is
-// disabled (nil options, missing Persist callback, or threshold at
-// 100%).
-func normalizedCompactionConfig(opts *CompactionOptions) (CompactionOptions, bool) {
-	if opts == nil {
-		return CompactionOptions{}, false
+// trailingToolResultTokens estimates tokens for the tool-result
+// messages that follow the usage-measured assistant step. Local tools
+// execute before compaction, so their results are input to the summary
+// request but absent from StepUsage.
+func trailingToolResultTokens(messages []fantasy.Message) int64 {
+	totalBytes := 0
+	for i := len(messages) - 1; i >= 0 && messages[i].Role == fantasy.MessageRoleTool; i-- {
+		for _, part := range messages[i].Content {
+			result, ok := part.(fantasy.ToolResultPart)
+			if !ok {
+				resultPtr, okPtr := part.(*fantasy.ToolResultPart)
+				if !okPtr || resultPtr == nil {
+					continue
+				}
+				result = *resultPtr
+			}
+			switch output := result.Output.(type) {
+			case fantasy.ToolResultOutputContentText:
+				totalBytes += len(output.Text)
+			case fantasy.ToolResultOutputContentError:
+				if output.Error != nil {
+					totalBytes += len(output.Error.Error())
+				}
+			case fantasy.ToolResultOutputContentMedia:
+				totalBytes += len(output.Data) + len(output.Text)
+			}
+		}
 	}
-
-	config := *opts
-	if config.Persist == nil {
-		return CompactionOptions{}, false
-	}
-	if strings.TrimSpace(config.SummaryPrompt) == "" {
-		config.SummaryPrompt = defaultCompactionSummaryPrompt
-	}
-	if strings.TrimSpace(config.SystemSummaryPrefix) == "" {
-		config.SystemSummaryPrefix = defaultCompactionSystemSummaryPrefix
-	}
-	if config.Timeout <= 0 {
-		config.Timeout = defaultCompactionTimeout
-	}
-	if config.ThresholdPercent < minCompactionThresholdPercent ||
-		config.ThresholdPercent > maxCompactionThresholdPercent {
-		config.ThresholdPercent = defaultCompactionThresholdPercent
-	}
-	if config.ThresholdPercent == maxCompactionThresholdPercent {
-		return CompactionOptions{}, false
-	}
-
-	return config, true
+	return int64((totalBytes + bytesPerTokenEstimate - 1) / bytesPerTokenEstimate)
 }
 
 // contextTokensFromUsage returns the total context token count from
@@ -255,13 +370,9 @@ func contextTokensFromUsage(usage fantasy.Usage) int64 {
 	return total
 }
 
-// resolveContextLimit picks the first positive value from metadata,
-// configured limit, and fallback — in that priority order. Returns
-// 0 when none are positive.
-func resolveContextLimit(metadataLimit, configLimit, fallback int64) int64 {
-	if metadataLimit > 0 {
-		return metadataLimit
-	}
+// resolveContextLimit returns the configured limit when positive, then
+// the fallback, or zero when neither is positive.
+func resolveContextLimit(configLimit, fallback int64) int64 {
 	if configLimit > 0 {
 		return configLimit
 	}
@@ -300,12 +411,25 @@ func startCompactionDebugRun(
 		historyTipMessageID = parentRun.HistoryTipMessageID
 	}
 
+	// Prefer the caller-supplied summary model identity; it can differ
+	// from the parent run's chat model under a compaction override.
+	provider := parentRun.Provider
+	if options.ResolvedProvider != "" {
+		provider = options.ResolvedProvider
+	}
+	model := parentRun.Model
+	if options.ResolvedModel != "" {
+		model = options.ResolvedModel
+	}
+	modelConfigID := parentRun.ModelConfigID
+	if options.ModelConfigID != uuid.Nil {
+		modelConfigID = options.ModelConfigID
+	}
+
 	// Use a separate short-lived context for the debug insert so a
-	// slow or locked DB cannot consume the compaction timeout budget
-	// and turn debug slowness into a compaction failure via
-	// model.Generate hitting a deadline exceeded. Detached from the
-	// parent so cancellation of the compaction run still lets the
-	// insert reach a terminal state, matching the best-effort
+	// slow or locked DB cannot block the model call. Detached from
+	// the parent so cancellation of the compaction run still lets
+	// the insert reach a terminal state, matching the best-effort
 	// contract of debug instrumentation.
 	createRunCtx, createRunCancel := context.WithTimeout(
 		context.WithoutCancel(ctx), compactionDebugCreateRunTimeout,
@@ -314,13 +438,13 @@ func startCompactionDebugRun(
 		ChatID:              options.ChatID,
 		RootChatID:          parentRun.RootChatID,
 		ParentChatID:        parentRun.ParentChatID,
-		ModelConfigID:       parentRun.ModelConfigID,
+		ModelConfigID:       modelConfigID,
 		TriggerMessageID:    parentRun.TriggerMessageID,
 		HistoryTipMessageID: historyTipMessageID,
 		Kind:                chatdebug.KindCompaction,
 		Status:              chatdebug.StatusInProgress,
-		Provider:            parentRun.Provider,
-		Model:               parentRun.Model,
+		Provider:            provider,
+		Model:               model,
 	})
 	createRunCancel()
 	if err != nil {
@@ -333,19 +457,15 @@ func startCompactionDebugRun(
 		ChatID:              options.ChatID,
 		RootChatID:          parentRun.RootChatID,
 		ParentChatID:        parentRun.ParentChatID,
-		ModelConfigID:       parentRun.ModelConfigID,
+		ModelConfigID:       modelConfigID,
 		TriggerMessageID:    parentRun.TriggerMessageID,
 		HistoryTipMessageID: historyTipMessageID,
-		Kind:                chatdebug.KindCompaction,
-		Provider:            parentRun.Provider,
-		Model:               parentRun.Model,
+		Provider:            provider,
+		Model:               model,
 	})
 
 	return compactionCtx, func(runErr error) {
 		status := chatdebug.ClassifyError(runErr)
-		if runErr != nil && xerrors.Is(runErr, ErrInterrupted) {
-			status = chatdebug.StatusInterrupted
-		}
 		// Debug instrumentation must not surface as a compaction failure.
 		_ = options.DebugSvc.FinalizeRun(compactionCtx, chatdebug.FinalizeRunParams{
 			RunID:  run.ID,
@@ -365,23 +485,26 @@ func generateCompactionSummary(
 	model fantasy.LanguageModel,
 	messages []fantasy.Message,
 	options CompactionOptions,
-) (summary string, err error) {
+) (summary string, responseID string, err error) {
 	summaryPrompt := make([]fantasy.Message, 0, len(messages)+1)
 	summaryPrompt = append(summaryPrompt, messages...)
+	summaryParts := []fantasy.MessagePart{fantasy.TextPart{Text: options.SummaryPrompt}}
+	if strings.TrimSpace(options.SummaryHint) != "" {
+		summaryParts = append(summaryParts, fantasy.TextPart{Text: options.SummaryHint})
+	}
 	summaryPrompt = append(summaryPrompt, fantasy.Message{
-		Role: fantasy.MessageRoleUser,
-		Content: []fantasy.MessagePart{
-			fantasy.TextPart{Text: options.SummaryPrompt},
-		},
+		Role:    fantasy.MessageRoleUser,
+		Content: summaryParts,
 	})
-	toolChoice := fantasy.ToolChoiceNone
+	// Claude only reads the cache at explicit breakpoints, so without
+	// these the shared tool and history prefix is never a cache hit.
+	if applyPromptCaching := promptCachingStrategyFor(model, model.Model()); applyPromptCaching != nil {
+		applyPromptCaching(summaryPrompt)
+	}
 
-	summaryCtx, cancel := context.WithTimeout(ctx, options.Timeout)
-	defer cancel()
-
-	summaryCtx, finishDebugRun := startCompactionDebugRun(summaryCtx, options)
+	summaryCtx, finishDebugRun := startCompactionDebugRun(ctx, options)
 	defer func() {
-		// If model.Generate (or anything else below) panics, the
+		// If model.Stream (or anything else below) panics, the
 		// named err return is still nil at this point. Without the
 		// recover hook we would finalize the debug run as Completed
 		// in the exact crash path operators rely on to diagnose
@@ -395,25 +518,155 @@ func generateCompactionSummary(
 		finishDebugRun(err)
 	}()
 
-	response, err := model.Generate(summaryCtx, fantasy.Call{
-		Prompt:     summaryPrompt,
-		ToolChoice: &toolChoice,
-	})
-	if err != nil {
-		return "", xerrors.Errorf("generate summary text: %w", err)
+	call := options.SummaryCall
+	call.Prompt = summaryPrompt
+	call.Tools = options.ToolDefinitions
+	clock := options.Clock
+	if clock == nil {
+		clock = quartz.NewReal()
 	}
+	timeout := options.StreamSilenceTimeout
+	if timeout == 0 {
+		timeout = DefaultStreamSilenceTimeout
+	}
+	// TTFT is an assistant-generation measurement, so the summary stream
+	// records neither its histogram nor its stage.
+	streamSummaryText := func() (string, error) {
+		attempt, err := guardedStream(
+			summaryCtx,
+			options.ResolvedProvider,
+			options.ResolvedModel,
+			clock,
+			timeout,
+			func(attemptCtx context.Context) (fantasy.StreamResponse, error) {
+				return model.Stream(attemptCtx, call)
+			},
+			NopMetrics(),
+			(*StageTracer)(nil),
+			StageModel{},
+		)
+		if err != nil {
+			return "", xerrors.Errorf("stream summary text: %w", wrapProviderStreamError(options.ResolvedProvider, err))
+		}
+		defer attempt.release()
 
-	parts := make([]string, 0, len(response.Content))
-	for _, block := range response.Content {
-		textBlock, ok := fantasy.AsContentType[fantasy.TextContent](block)
-		if !ok {
-			continue
+		textPartIndexes := make(map[string]int)
+		textParts := make([]string, 0, 1)
+		var (
+			reasoningSeen bool
+			finishSeen    bool
+			finishReason  fantasy.FinishReason
+			streamErr     error
+		)
+		for part := range attempt.stream {
+			switch part.Type {
+			case fantasy.StreamPartTypeTextStart:
+				if _, ok := textPartIndexes[part.ID]; ok {
+					continue
+				}
+				textPartIndexes[part.ID] = len(textParts)
+				textParts = append(textParts, part.Delta)
+			case fantasy.StreamPartTypeTextDelta:
+				index, ok := textPartIndexes[part.ID]
+				if !ok {
+					index = len(textParts)
+					textPartIndexes[part.ID] = index
+					textParts = append(textParts, "")
+				}
+				textParts[index] += part.Delta
+			case fantasy.StreamPartTypeReasoningStart,
+				fantasy.StreamPartTypeReasoningDelta,
+				fantasy.StreamPartTypeReasoningEnd:
+				reasoningSeen = true
+			case fantasy.StreamPartTypeFinish:
+				finishSeen = true
+				finishReason = part.FinishReason
+				responseID = providerResponseID(part)
+			case fantasy.StreamPartTypeError:
+				streamErr = part.Error
+				if streamErr == nil {
+					streamErr = xerrors.New("model returned an error part")
+				}
+			}
+			if streamErr != nil {
+				break
+			}
 		}
-		text := strings.TrimSpace(textBlock.Text)
-		if text == "" {
-			continue
+		if err := attempt.finish(streamErr); err != nil {
+			// Providers can surface remote stream resets as bare
+			// context.Canceled; wrap them like GenerateAssistant so the
+			// generation loop retries instead of terminally erroring.
+			return "", xerrors.Errorf("stream summary text: %w", wrapProviderStreamError(options.ResolvedProvider, err))
 		}
-		parts = append(parts, text)
+		if !finishSeen {
+			// A stream that ends without a finish part was interrupted.
+			// Committing its partial text would compact history against an
+			// incomplete summary.
+			if ctxErr := summaryCtx.Err(); ctxErr != nil {
+				return "", xerrors.Errorf("stream summary text: %w", ctxErr)
+			}
+			return "", xerrors.New("compaction summary stream ended without a finish part")
+		}
+
+		parts := make([]string, 0, len(textParts))
+		for _, text := range textParts {
+			text = strings.TrimSpace(text)
+			if text != "" {
+				parts = append(parts, text)
+			}
+		}
+		joined := strings.TrimSpace(strings.Join(parts, " "))
+		if joined == "" && (finishReason == fantasy.FinishReasonLength || reasoningSeen) {
+			return "", xerrors.New("compaction summary was truncated at the output token cap")
+		}
+		return joined, nil
 	}
-	return strings.TrimSpace(strings.Join(parts, " ")), nil
+	summary, err = streamSummaryText()
+	if err != nil && len(call.Tools) > 0 && isContextTooLargeError(err) {
+		// Tool definitions keep the summary request on the parent turn's
+		// cacheable prefix, but they also make it larger than the turn
+		// that just overflowed. Compaction is the recovery path for an
+		// over-limit conversation, so fall back to the tool-less request,
+		// which still fits whenever the history alone does. The rejection
+		// can arrive from the stream open or as an in-stream error part,
+		// so the retry wraps the whole attempt.
+		call.Tools = nil
+		summary, err = streamSummaryText()
+	}
+	return summary, responseID, err
+}
+
+// contextTooLargePhrases are context-window rejections fantasy does not
+// parse, such as the OpenAI Responses API "Your input exceeds the context
+// window of this model." and Anthropic-family "too long" rejections
+// without token counts. The response body is included so the OpenAI
+// error code "context_length_exceeded" matches regardless of wording.
+var contextTooLargePhrases = []string{
+	"context window",
+	"context length",
+	"context_length",
+	"too long",
+}
+
+// isContextTooLargeError reports whether a provider rejected a request for
+// its size: the prompt exceeded the model's context window, or the body
+// exceeded a request size limit on the provider or a gateway in front of it.
+func isContextTooLargeError(err error) bool {
+	providerErr, ok := errors.AsType[*fantasy.ProviderError](err)
+	if !ok {
+		return false
+	}
+	if providerErr.IsContextTooLarge() || providerErr.StatusCode == http.StatusRequestEntityTooLarge {
+		return true
+	}
+	if providerErr.StatusCode != http.StatusBadRequest {
+		return false
+	}
+	text := strings.ToLower(providerErr.Error() + " " + string(providerErr.ResponseBody))
+	for _, phrase := range contextTooLargePhrases {
+		if strings.Contains(text, phrase) {
+			return true
+		}
+	}
+	return false
 }

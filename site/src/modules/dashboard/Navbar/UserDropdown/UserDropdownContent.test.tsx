@@ -8,7 +8,10 @@ import { MockUserOwner } from "#/testHelpers/entities";
 import { render, waitForLoaderToBeRemoved } from "#/testHelpers/renderHelpers";
 import { UserDropdownContent } from "./UserDropdownContent";
 
-const renderUserDropdownContent = (props: { onSignOut: () => void }) => {
+const renderUserDropdownContent = (props: {
+	onSignOut: () => void;
+	profileExtra?: React.ReactNode;
+}) => {
 	return render(
 		<DropdownMenu defaultOpen>
 			<DropdownMenuTrigger>Open</DropdownMenuTrigger>
@@ -16,6 +19,7 @@ const renderUserDropdownContent = (props: { onSignOut: () => void }) => {
 				<UserDropdownContent
 					user={MockUserOwner}
 					onSignOut={props.onSignOut}
+					profileExtra={props.profileExtra}
 					supportLinks={[]}
 				/>
 			</DropdownMenuContent>
@@ -42,5 +46,17 @@ describe("UserDropdownContent", () => {
 		await waitForLoaderToBeRemoved();
 		screen.getByText("Sign Out").click();
 		expect(onSignOut).toBeCalledTimes(1);
+	});
+
+	it("renders the profile extra content when provided", async () => {
+		renderUserDropdownContent({
+			onSignOut: vi.fn(),
+			profileExtra: <div>AI spend - $819 / $1,200 USD</div>,
+		});
+		await waitForLoaderToBeRemoved();
+
+		expect(
+			screen.getByText("AI spend - $819 / $1,200 USD"),
+		).toBeInTheDocument();
 	});
 });

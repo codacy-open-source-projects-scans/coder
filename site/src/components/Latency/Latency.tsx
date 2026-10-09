@@ -1,5 +1,5 @@
+import { cn } from "cn";
 import { CircleHelpIcon } from "lucide-react";
-import type { FC } from "react";
 import { Abbr } from "#/components/Abbr/Abbr";
 import { Spinner } from "#/components/Spinner/Spinner";
 import {
@@ -7,16 +7,15 @@ import {
 	TooltipContent,
 	TooltipTrigger,
 } from "#/components/Tooltip/Tooltip";
-import { cn } from "#/utils/cn";
 import { getLatencyColor } from "#/utils/latency";
 
-interface LatencyProps {
+type LatencyProps = {
 	latency?: number;
 	isLoading?: boolean;
 	className?: string;
-}
+};
 
-export const Latency: FC<LatencyProps> = ({
+export const Latency: React.FC<LatencyProps> = ({
 	latency,
 	isLoading,
 	className,
@@ -38,7 +37,7 @@ export const Latency: FC<LatencyProps> = ({
 							className,
 						)}
 					>
-						<Spinner loading className={cn("!size-icon-xs", latencyColor)} />
+						<Spinner loading className={cn("size-icon-xs!", latencyColor)} />
 					</div>
 				</TooltipTrigger>
 				<TooltipContent side="bottom">Loading latency...</TooltipContent>
@@ -52,7 +51,7 @@ export const Latency: FC<LatencyProps> = ({
 				<TooltipTrigger asChild>
 					<CircleHelpIcon
 						aria-label="Latency not available"
-						className={cn("!size-icon-sm", latencyColor, className)}
+						className={cn("size-icon-sm!", latencyColor, className)}
 					/>
 				</TooltipTrigger>
 				<TooltipContent side="bottom">Latency not available</TooltipContent>

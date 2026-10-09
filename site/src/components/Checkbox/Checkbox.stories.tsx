@@ -51,7 +51,7 @@ export const DisabledChecked: Story = {
 
 export const CustomStyling: Story = {
 	args: {
-		className: "h-6 w-6 rounded-full",
+		className: "size-6 rounded-full",
 	},
 };
 
@@ -77,7 +77,7 @@ export const WithLabel: Story = {
 };
 
 export const Indeterminate: Story = {
-	render: () => {
+	render: function IndeterminateRender() {
 		const [checked, setChecked] = React.useState<boolean | "indeterminate">(
 			"indeterminate",
 		);

@@ -17,12 +17,15 @@ import type {
 	WorkspaceAgent,
 	WorkspaceAgentDevcontainer,
 	WorkspaceAgentListContainersResponse,
+	WorkspaceAgentListeningPortsResponse,
 	WorkspaceAgentLog,
 	WorkspaceBuild,
 	WorkspaceBuildParameter,
 	WorkspaceRole,
+	WorkspaceStatus,
 	WorkspacesRequest,
 	WorkspacesResponse,
+	WorkspaceTransition,
 } from "#/api/typesGenerated";
 import type { ConnectionStatus } from "#/modules/terminal/types";
 import {
@@ -32,6 +35,9 @@ import {
 import { checkAuthorization } from "./authCheck";
 import { disabledRefetchOptions } from "./util";
 import { workspaceBuildsKey } from "./workspaceBuilds";
+import { getWorkspaceQuotaQueryKey } from "./workspaceQuota";
+
+export const workspacesQueryKeyPrefix = ["workspaces"] as const;
 
 export const workspaceByOwnerAndNameKey = (
 	ownerUsername: string,
@@ -126,7 +132,7 @@ export const createWorkspace = (queryClient: QueryClient) => {
 			return API.createWorkspace(userId, req);
 		},
 		onSuccess: async () => {
-			await queryClient.invalidateQueries({ queryKey: ["workspaces"] });
+			await invalidateWorkspaceListQueries(queryClient);
 		},
 	};
 };
@@ -145,6 +151,7 @@ type AutoCreateWorkspaceOptions = {
 	match: string | null;
 	templateVersionId?: string;
 	buildParameters?: WorkspaceBuildParameter[];
+	templateVersionPresetId?: string;
 };
 
 export const autoCreateWorkspace = (queryClient: QueryClient) => {
@@ -155,6 +162,7 @@ export const autoCreateWorkspace = (queryClient: QueryClient) => {
 			workspaceName,
 			templateVersionId,
 			buildParameters,
+			templateVersionPresetId,
 			match,
 		}: AutoCreateWorkspaceOptions) => {
 			if (match) {
@@ -182,10 +190,11 @@ export const autoCreateWorkspace = (queryClient: QueryClient) => {
 				...templateVersionParameters,
 				name: workspaceName,
 				rich_parameter_values: buildParameters,
+				template_version_preset_id: templateVersionPresetId,
 			});
 		},
 		onSuccess: async () => {
-			await queryClient.invalidateQueries({ queryKey: ["workspaces"] });
+			await invalidateWorkspaceListQueries(queryClient);
 		},
 	};
 };
@@ -212,7 +221,7 @@ async function findMatchWorkspace(q: string): Promise<Workspace | undefined> {
 }
 
 export function workspacesKey(req: WorkspacesRequest = {}) {
-	return ["workspaces", req] as const;
+	return [...workspacesQueryKeyPrefix, req] as const;
 }
 
 export function workspaces(req: WorkspacesRequest = {}) {
@@ -220,6 +229,92 @@ export function workspaces(req: WorkspacesRequest = {}) {
 		queryKey: workspacesKey(req),
 		queryFn: () => API.getWorkspaces(req),
 	} as const satisfies QueryOptions<WorkspacesResponse>;
+}
+
+const isWorkspacesListQuery = (query: {
+	queryKey: readonly unknown[];
+}): boolean => {
+	const key = query.queryKey;
+	if (key.length === 1) {
+		return true;
+	}
+	if (key.length !== 2) {
+		return false;
+	}
+	const segment = key[1];
+	return (
+		segment !== null && typeof segment === "object" && !Array.isArray(segment)
+	);
+};
+
+export const invalidateWorkspaceListQueries = (queryClient: QueryClient) => {
+	return queryClient.invalidateQueries({
+		queryKey: workspacesQueryKeyPrefix,
+		predicate: isWorkspacesListQuery,
+	});
+};
+
+/**
+ * Optimistically patches a workspace's build status in every cached workspaces
+ * list query and returns a rollback function that restores the previous caches.
+ * Useful for long-running actions (e.g. restart) where the list has no live
+ * updates and would otherwise show a stale status until the next poll.
+ */
+export const setOptimisticWorkspaceListBuildStatus = (
+	queryClient: QueryClient,
+	workspaceId: string,
+	status: WorkspaceStatus,
+	transition: WorkspaceTransition,
+): (() => void) => {
+	const filter = {
+		queryKey: workspacesQueryKeyPrefix,
+		predicate: isWorkspacesListQuery,
+	} as const;
+	const previous = queryClient.getQueriesData<WorkspacesResponse>(filter);
+	queryClient.setQueriesData<WorkspacesResponse>(filter, (data) => {
+		if (!data) {
+			return data;
+		}
+		return {
+			...data,
+			workspaces: data.workspaces.map((ws) =>
+				ws.id === workspaceId
+					? {
+							...ws,
+							latest_build: { ...ws.latest_build, status, transition },
+						}
+					: ws,
+			),
+		};
+	});
+	return () => {
+		for (const [key, data] of previous) {
+			queryClient.setQueryData(key, data);
+		}
+	};
+};
+
+type WorkspaceMutationInvalidationOptions = {
+	organizationName: string;
+	username: string;
+};
+
+export async function invalidateWorkspaceMutationQueries(
+	queryClient: QueryClient,
+	{ organizationName, username }: WorkspaceMutationInvalidationOptions,
+): Promise<void> {
+	const invalidations = [invalidateWorkspaceListQueries(queryClient)];
+
+	if (organizationName !== "") {
+		invalidations.push(
+			queryClient.invalidateQueries({
+				queryKey: getWorkspaceQuotaQueryKey(organizationName, username),
+				exact: true,
+			}),
+		);
+	}
+
+	await Promise.all(invalidations);
 }
 
 export const updateDeadline = (
@@ -235,7 +330,6 @@ export const updateDeadline = (
 export const changeVersion = (
 	workspace: Workspace,
 	queryClient: QueryClient,
-	isDynamicParametersEnabled: boolean,
 ) => {
 	return {
 		mutationFn: ({
@@ -245,12 +339,7 @@ export const changeVersion = (
 			versionId: string;
 			buildParameters?: WorkspaceBuildParameter[];
 		}) => {
-			return API.changeWorkspaceVersion(
-				workspace,
-				versionId,
-				buildParameters,
-				isDynamicParametersEnabled,
-			);
+			return API.changeWorkspaceVersion(workspace, versionId, buildParameters);
 		},
 		onSuccess: async (build: WorkspaceBuild) => {
 			await updateWorkspaceBuild(build, queryClient);
@@ -265,16 +354,10 @@ export const updateWorkspace = (
 	return {
 		mutationFn: ({
 			buildParameters,
-			isDynamicParametersEnabled,
 		}: {
 			buildParameters?: WorkspaceBuildParameter[];
-			isDynamicParametersEnabled: boolean;
 		}) => {
-			return API.updateWorkspace(
-				workspace,
-				buildParameters,
-				isDynamicParametersEnabled,
-			);
+			return API.updateWorkspace(workspace, buildParameters);
 		},
 		onSuccess: async (build: WorkspaceBuild) => {
 			await updateWorkspaceBuild(build, queryClient);
@@ -445,13 +528,20 @@ export const agentLogs = (agentId: string) => {
 	} satisfies UseQueryOptions<WorkspaceAgentLog[]>;
 };
 
+export const agentListeningPorts = (agentId: string) => {
+	return {
+		queryKey: ["portForward", agentId],
+		queryFn: () => API.getAgentListeningPorts(agentId),
+	} satisfies UseQueryOptions<WorkspaceAgentListeningPortsResponse>;
+};
+
 // workspace usage options
-interface WorkspaceUsageOptions {
+type WorkspaceUsageOptions = {
 	usageApp: UsageAppName;
 	connectionStatus: ConnectionStatus;
 	workspaceId: string | undefined;
 	agentId: string | undefined;
-}
+};
 
 export const workspaceUsage = (options: WorkspaceUsageOptions) => {
 	return {

@@ -1,4 +1,6 @@
-# Customizing dev containers
+---
+title: Customizing dev containers
+---
 
 Coder supports custom configuration in your `devcontainer.json` file through the
 `customizations.coder` block. These options let you control how Coder interacts
@@ -246,27 +248,6 @@ Standard dev container variables are also available:
 |-------------------------------|--------------------------------------------|
 | `${containerWorkspaceFolder}` | Workspace folder path inside the container |
 | `${localWorkspaceFolder}`     | Workspace folder path on the host          |
-
-### Session token
-
-Use `$SESSION_TOKEN` in external app URLs to include the user's session token:
-
-```json
-{
-  "customizations": {
-    "coder": {
-      "apps": [
-        {
-          "slug": "custom-ide",
-          "displayName": "Custom IDE",
-          "url": "custom-ide://open?token=$SESSION_TOKEN&folder=${containerWorkspaceFolder}",
-          "external": true
-        }
-      ]
-    }
-  }
-}
-```
 
 ## Feature options as environment variables
 

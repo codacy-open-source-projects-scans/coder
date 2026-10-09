@@ -16,7 +16,6 @@ import (
 	"golang.org/x/xerrors"
 
 	"cdr.dev/slog/v3"
-	"github.com/coder/coder/v2/coderd/util/ptr"
 	"github.com/coder/coder/v2/coderd/util/slice"
 	stringutil "github.com/coder/coder/v2/coderd/util/strings"
 	"github.com/coder/coder/v2/codersdk"
@@ -166,31 +165,10 @@ type State struct {
 	Parameters            []*proto.RichParameter
 	Presets               []*proto.Preset
 	ExternalAuthProviders []*proto.ExternalAuthProviderResource
-	AITasks               []*proto.AITask
-	HasAITasks            bool
 	HasExternalAgents     bool
 }
 
 var ErrInvalidTerraformAddr = xerrors.New("invalid terraform address")
-
-// hasAITaskResources is used to determine if a template has *any* `coder_ai_task` resources defined. During template
-// import, it's possible that none of these have `count=1` since count may be dependent on the value of a `coder_parameter`
-// or something else.
-// We need to know at template import if these resources exist to inform the frontend of their existence.
-func hasAITaskResources(graph *gographviz.Graph) bool {
-	for _, node := range graph.Nodes.Lookup {
-		// Check if this node is a coder_ai_task resource
-		if label, exists := node.Attrs["label"]; exists {
-			labelValue := strings.Trim(label, `"`)
-			// The first condition is for the case where the resource is in the root module.
-			// The second condition is for the case where the resource is in a child module.
-			if strings.HasPrefix(labelValue, "coder_ai_task.") || strings.Contains(labelValue, ".coder_ai_task.") {
-				return true
-			}
-		}
-	}
-	return false
-}
 
 func hasExternalAgentResources(graph *gographviz.Graph) bool {
 	for _, node := range graph.Nodes.Lookup {
@@ -229,7 +207,6 @@ func ConvertState(ctx context.Context, modules []*tfjson.StateModule, rawGraph s
 	// Extra array to preserve the order of rich parameters.
 	tfResourcesRichParameters := make([]*tfjson.StateResource, 0)
 	tfResourcesPresets := make([]*tfjson.StateResource, 0)
-	tfResourcesAITasks := make([]*tfjson.StateResource, 0)
 	var findTerraformResources func(mod *tfjson.StateModule)
 	findTerraformResources = func(mod *tfjson.StateModule) {
 		for _, module := range mod.ChildModules {
@@ -241,9 +218,6 @@ func ConvertState(ctx context.Context, modules []*tfjson.StateModule, rawGraph s
 			}
 			if resource.Type == "coder_workspace_preset" {
 				tfResourcesPresets = append(tfResourcesPresets, resource)
-			}
-			if resource.Type == "coder_ai_task" {
-				tfResourcesAITasks = append(tfResourcesAITasks, resource)
 			}
 
 			label := convertAddressToLabel(resource.Address)
@@ -548,6 +522,13 @@ func ConvertState(ctx context.Context, modules []*tfjson.StateModule, rawGraph s
 		}
 		appSlugs[attrs.Slug] = struct{}{}
 
+		// The browser navigates to external app URLs directly, so they must be valid urls
+		if attrs.External && attrs.URL != "" {
+			if err := provisioner.ValidateExternalURL(attrs.URL); err != nil {
+				return nil, xerrors.Errorf("invalid external url %q for app %q: %w", attrs.URL, attrs.Slug, err)
+			}
+		}
+
 		var healthcheck *proto.Healthcheck
 		if len(attrs.Healthcheck) != 0 {
 			healthcheck = &proto.Healthcheck{
@@ -677,6 +658,7 @@ func ConvertState(ctx context.Context, modules []*tfjson.StateModule, rawGraph s
 			RunOnStart:       attrs.RunOnStart,
 			RunOnStop:        attrs.RunOnStop,
 			TimeoutSeconds:   attrs.TimeoutSeconds,
+			ResourceAddress:  resource.Address,
 		}
 
 	scriptAgentLoop:
@@ -860,11 +842,11 @@ func ConvertState(ctx context.Context, modules []*tfjson.StateModule, rawGraph s
 
 			if !param.Validation[0].MaxDisabled {
 				// #nosec G115 - Safe conversion as the number is expected to be within int32 range
-				protoParam.ValidationMax = ptr.Ref(int32(param.Validation[0].Max))
+				protoParam.ValidationMax = new(int32(param.Validation[0].Max))
 			}
 			if !param.Validation[0].MinDisabled {
 				// #nosec G115 - Safe conversion as the number is expected to be within int32 range
-				protoParam.ValidationMin = ptr.Ref(int32(param.Validation[0].Min))
+				protoParam.ValidationMin = new(int32(param.Validation[0].Min))
 			}
 			protoParam.ValidationMonotonic = param.Validation[0].Monotonic
 		}
@@ -1016,29 +998,6 @@ func ConvertState(ctx context.Context, modules []*tfjson.StateModule, rawGraph s
 		return nil, xerrors.Errorf("a maximum of 1 coder_workspace_preset can be marked as default, but %d are set", defaultPresets)
 	}
 
-	// This will only pick up resources which will actually be created.
-	aiTasks := make([]*proto.AITask, 0, len(tfResourcesAITasks))
-	for _, resource := range tfResourcesAITasks {
-		var task provider.AITask
-		err = mapstructure.Decode(resource.AttributeValues, &task)
-		if err != nil {
-			return nil, xerrors.Errorf("decode coder_ai_task attributes: %w", err)
-		}
-
-		appID := task.AppID
-		if appID == "" && len(task.SidebarApp) > 0 {
-			appID = task.SidebarApp[0].ID
-		}
-
-		aiTasks = append(aiTasks, &proto.AITask{
-			Id:    task.ID,
-			AppId: appID,
-			SidebarApp: &proto.AITaskSidebarApp{
-				Id: appID,
-			},
-		})
-	}
-
 	// A map is used to ensure we don't have duplicates!
 	externalAuthProvidersMap := map[string]*proto.ExternalAuthProviderResource{}
 	// Process the legacy coder_git_auth type first so that
@@ -1083,15 +1042,11 @@ func ConvertState(ctx context.Context, modules []*tfjson.StateModule, rawGraph s
 	slices.SortFunc(externalAuthProviders, func(a, b *proto.ExternalAuthProviderResource) int {
 		return cmp.Compare(a.Id, b.Id)
 	})
-	hasAITasks := hasAITaskResources(graph)
-
 	return &State{
 		Resources:             resources,
 		Parameters:            parameters,
 		Presets:               presets,
 		ExternalAuthProviders: externalAuthProviders,
-		HasAITasks:            hasAITasks,
-		AITasks:               aiTasks,
 		HasExternalAgents:     hasExternalAgentResources(graph),
 	}, nil
 }

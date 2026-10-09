@@ -1,5 +1,5 @@
 import { ExternalLinkIcon } from "lucide-react";
-import { type FC, useEffect } from "react";
+import { useEffect } from "react";
 import { useQuery } from "react-query";
 import { useLocation, useNavigate, useParams } from "react-router";
 import {
@@ -14,7 +14,7 @@ import { useTemplateLayoutContext } from "#/pages/TemplatePage/TemplateLayout";
 import { docs } from "#/utils/docs";
 import { getTemplatePageTitle } from "../utils";
 
-const TemplateFilesPage: FC = () => {
+const TemplateFilesPage: React.FC = () => {
 	const { organization: organizationName = "default" } = useParams() as {
 		organization?: string;
 	};
@@ -65,7 +65,7 @@ const TemplateFilesPage: FC = () => {
 					<div className="flex items-center gap-2 mt-4">
 						<Button asChild size="sm" variant="default">
 							<a
-								href="https://github.com/coder/registry/blob/main/.agents/skills/coder-templates/SKILL.md"
+								href="https://registry.coder.com/skills/coder-templates"
 								target="_blank"
 								rel="noopener noreferrer"
 								className="flex items-center"

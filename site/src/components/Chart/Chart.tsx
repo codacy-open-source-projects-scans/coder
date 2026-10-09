@@ -2,16 +2,10 @@
  * Copied from shadc/ui on 01/13/2025
  * @see {@link https://ui.shadcn.com/docs/components/chart}
  */
-import {
-	type CSSProperties,
-	createContext,
-	type Ref,
-	useContext,
-	useId,
-	useMemo,
-} from "react";
+
+import { cn } from "cn";
+import { createContext, useContext, useId, useMemo } from "react";
 import * as RechartsPrimitive from "recharts";
-import { cn } from "#/utils/cn";
 
 // Format: { THEME_NAME: CSS_SELECTOR }
 const THEMES = { light: "", dark: ".dark" } as const;
@@ -42,10 +36,7 @@ function useChart() {
 	return context;
 }
 
-type ChartContainerProps = Omit<
-	React.ComponentPropsWithRef<"div">,
-	"children"
-> &
+type ChartContainerProps = Omit<React.ComponentProps<"div">, "children"> &
 	Pick<
 		React.ComponentProps<typeof RechartsPrimitive.ResponsiveContainer>,
 		"children"
@@ -73,14 +64,14 @@ export const ChartContainer: React.FC<ChartContainerProps> = ({
 					"[&_.recharts-cartesian-grid_line[stroke='#ccc']]:stroke-border/50",
 					"[&_.recharts-curve.recharts-tooltip-cursor]:stroke-border",
 					"[&_.recharts-dot[stroke='#fff']]:stroke-transparent",
-					"[&_.recharts-layer]:outline-none",
+					"[&_.recharts-layer]:outline-hidden",
 					"[&_.recharts-polar-grid_[stroke='#ccc']]:stroke-border",
 					"[&_.recharts-radial-bar-background-sector]:fill-muted",
 					"[&_.recharts-rectangle.recharts-tooltip-cursor]:fill-muted",
 					"[&_.recharts-reference-line_[stroke='#ccc']]:stroke-border",
 					"[&_.recharts-sector[stroke='#fff']]:stroke-transparent",
-					"[&_.recharts-sector]:outline-none",
-					"[&_.recharts-surface]:outline-none",
+					"[&_.recharts-sector]:outline-hidden",
+					"[&_.recharts-surface]:outline-hidden",
 					"[&_.recharts-text]:fill-content-secondary [&_.recharts-text]:font-medium",
 					"[&_.recharts-cartesian-axis-line]:stroke-[hsl(var(--border-default))]",
 					className,
@@ -107,7 +98,7 @@ const ChartStyle = ({ id, config }: { id: string; config: ChartConfig }) => {
 
 	return (
 		<style
-			// biome-ignore lint/security/noDangerouslySetInnerHtml: necessary to run shadcn/chart component
+			// oxlint-disable-next-line react/no-danger -- This renders generated chart CSS, which is safe in this case because we control the inputs
 			dangerouslySetInnerHTML={{
 				__html: Object.entries(THEMES)
 					.map(
@@ -141,7 +132,7 @@ type ChartTooltipContentProps = React.ComponentProps<
 	indicator?: "line" | "dot" | "dashed";
 	nameKey?: string;
 	labelKey?: string;
-	ref?: Ref<HTMLDivElement>;
+	ref?: React.Ref<HTMLDivElement>;
 };
 
 export const ChartTooltipContent: React.FC<ChartTooltipContentProps> = ({
@@ -208,7 +199,7 @@ export const ChartTooltipContent: React.FC<ChartTooltipContentProps> = ({
 		<div
 			ref={ref}
 			className={cn(
-				"grid min-w-[8rem] items-start gap-1 rounded-lg border border-solid border-border bg-surface-primary px-3 py-2 text-xs shadow-xl",
+				"grid min-w-32 items-start gap-1 rounded-lg border border-solid border-border bg-surface-primary px-3 py-2 text-xs shadow-xl",
 				className,
 			)}
 		>
@@ -237,7 +228,7 @@ export const ChartTooltipContent: React.FC<ChartTooltipContentProps> = ({
 										!hideIndicator && (
 											<div
 												className={cn(
-													"shrink-0 rounded-[2px] border-[--color-border] bg-[--color-bg]",
+													"shrink-0 rounded-[2px] border-(--color-border) bg-(--color-bg)",
 													{
 														"h-2.5 w-2.5": indicator === "dot",
 														"w-1": indicator === "line",
@@ -246,12 +237,10 @@ export const ChartTooltipContent: React.FC<ChartTooltipContentProps> = ({
 														"my-0.5": nestLabel && indicator === "dashed",
 													},
 												)}
-												style={
-													{
-														"--color-bg": indicatorColor,
-														"--color-border": indicatorColor,
-													} as CSSProperties
-												}
+												style={{
+													"--color-bg": indicatorColor,
+													"--color-border": indicatorColor,
+												}}
 											/>
 										)
 									)}

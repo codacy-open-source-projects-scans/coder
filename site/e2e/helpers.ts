@@ -1,5 +1,6 @@
 import { type ChildProcess, exec, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import type { Server } from "node:http";
 import net from "node:net";
 import path from "node:path";
 import { Duplex } from "node:stream";
@@ -70,24 +71,34 @@ export type LoginOptions = {
 	password: string;
 };
 
+// The current user is stashed on the Playwright context under a symbol key so
+// helpers can read it back without reaching for `any`.
+type ContextWithUser = BrowserContext &
+	Record<symbol, LoginOptions | undefined>;
+
 export async function login(page: Page, options: LoginOptions = users.owner) {
 	const ctx = page.context();
-	// biome-ignore lint/suspicious/noExplicitAny: reset the current user
-	(ctx as any)[Symbol.for("currentUser")] = undefined;
+	(ctx as ContextWithUser)[Symbol.for("currentUser")] = undefined;
 	await ctx.clearCookies();
-	await page.goto("/login");
+	await page.goto("/login", { waitUntil: "domcontentloaded" });
 	await page.getByLabel("Email").fill(options.email);
 	await page.getByLabel("Password").fill(options.password);
 	await page.getByRole("button", { name: "Sign In" }).click();
-	await expectUrl(page).toHavePathName("/workspaces");
-	// biome-ignore lint/suspicious/noExplicitAny: update once logged in
-	(ctx as any)[Symbol.for("currentUser")] = options;
+	// Sign-in triggers a hard navigation to "/", then React Router
+	// client-side redirects to "/workspaces" without firing a load event.
+	// waitForURL alone resolves on the URL change, before WorkspacesPage
+	// has mounted. The title check is the actual synchronization point:
+	// it retries until the page component renders. Removing either wait
+	// reintroduces a navigation race in tests that goto() right after
+	// login. See https://github.com/coder/coder/pull/27107.
+	await page.waitForURL((url) => url.pathname === "/workspaces");
+	await expect(page).toHaveTitle("Workspaces - Coder");
+	(ctx as ContextWithUser)[Symbol.for("currentUser")] = options;
 }
 
 function currentUser(page: Page): LoginOptions {
 	const ctx = page.context();
-	// biome-ignore lint/suspicious/noExplicitAny: get the current user
-	const user = (ctx as any)[Symbol.for("currentUser")];
+	const user = (ctx as ContextWithUser)[Symbol.for("currentUser")];
 
 	if (!user) {
 		throw new Error("page context does not have a user. did you call `login`?");
@@ -432,7 +443,7 @@ export const startWorkspaceWithEphemeralParameters = async (
 
 	await fillParameters(page, richParameters, buildParameters);
 
-	await page.getByRole("button", { name: /update and start/i }).click();
+	await clickWorkspaceUpdateSubmit(page, /update and start/i);
 
 	await page.waitForSelector("text=Workspace status: Running", {
 		state: "visible",
@@ -478,38 +489,60 @@ export const downloadCoderVersion = async (
 		return binaryPath;
 	}
 
-	// Run our official install script to install the binary
-	await new Promise<void>((resolve, reject) => {
-		const cp = spawn(
-			path.join(__dirname, "../../install.sh"),
-			[
-				"--version",
-				versionNumber,
-				"--method",
-				"standalone",
-				"--prefix",
-				tempDir,
-				"--binary-name",
-				binaryName,
-			],
-			{
-				env: {
-					...process.env,
-					XDG_CACHE_HOME: "/tmp/coder-e2e-cache",
-					TRACE: "1", // tells install.sh to `set -x`, helpful if something goes wrong
+	// runInstallScript runs our official install script to install the binary,
+	// resolving with the script's exit code.
+	const runInstallScript = (): Promise<number> =>
+		new Promise<number>((resolve, reject) => {
+			const cp = spawn(
+				path.join(__dirname, "../../install.sh"),
+				[
+					"--version",
+					versionNumber,
+					"--method",
+					"standalone",
+					"--prefix",
+					tempDir,
+					"--binary-name",
+					binaryName,
+				],
+				{
+					env: {
+						...process.env,
+						XDG_CACHE_HOME: "/tmp/coder-e2e-cache",
+						TRACE: "1", // tells install.sh to `set -x`, helpful if something goes wrong
+					},
 				},
-			},
-		);
-		cp.stderr.on("data", (data) => console.error(data.toString()));
-		cp.stdout.on("data", (data) => console.info(data.toString()));
-		cp.on("close", (code) => {
-			if (code === 0) {
-				resolve();
-			} else {
-				reject(new Error(`install.sh failed with code ${code}`));
-			}
+			);
+			cp.stderr.on("data", (data) => console.error(data.toString()));
+			cp.stdout.on("data", (data) => console.info(data.toString()));
+			cp.on("error", (err) => reject(err));
+			cp.on("close", (code) => resolve(code ?? 1));
 		});
-	});
+
+	// The install script downloads the release asset from GitHub, which
+	// occasionally returns a transient error (e.g. HTTP 403/503, surfacing as a
+	// nonzero curl exit code). Retry with exponential backoff so a single hiccup
+	// does not fail the test. Partial downloads are resumed and completed
+	// binaries are reused across attempts by install.sh.
+	const maxAttempts = 5;
+	for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+		const code = await runInstallScript();
+		if (code === 0) {
+			return binaryPath;
+		}
+		if (attempt === maxAttempts) {
+			throw new Error(
+				`install.sh failed with code ${code} after ${maxAttempts} attempts`,
+			);
+		}
+		// Exponential backoff with jitter: ~1s, 2s, 4s, 8s between attempts.
+		const backoffMs =
+			2 ** (attempt - 1) * 1000 + Math.floor(Math.random() * 1000);
+		console.error(
+			`install.sh attempt ${attempt}/${maxAttempts} failed with code ${code}; retrying in ${backoffMs}ms`,
+		);
+		await new Promise((resolve) => setTimeout(resolve, backoffMs));
+	}
 	return binaryPath;
 };
 
@@ -581,7 +614,7 @@ type RecursivePartial<T> = {
 			: T[P];
 };
 
-interface EchoProvisionerResponses {
+type EchoProvisionerResponses = {
 	init?: RecursivePartial<Response>[];
 	// parse is for observing any Terraform variables
 	parse?: RecursivePartial<Response>[];
@@ -593,7 +626,7 @@ interface EchoProvisionerResponses {
 	// extraFiles allows the bundling of terraform files in echo provisioner tars
 	// in order to support dynamic parameters
 	extraFiles?: Map<string, string>;
-}
+};
 
 const emptyPlan = new TextEncoder().encode("{}");
 
@@ -817,7 +850,6 @@ const createTemplateVersionTar = async (
 			timings: [],
 			presets: [],
 			resourceReplacements: [],
-			aiTasks: [],
 			...response.graph,
 		} as GraphComplete;
 		response.graph.resources = response.graph.resources?.map(fillResource);
@@ -865,17 +897,32 @@ export class Awaiter {
 	}
 }
 
-export const createServer = async (
-	port: number,
-): Promise<ReturnType<typeof express>> => {
+type MockServer = {
+	app: ReturnType<typeof express>;
+	/** Stops the server and drops keep-alive connections. */
+	close: () => Promise<void>;
+};
+
+export const createServer = async (port: number): Promise<MockServer> => {
 	await waitForPort(port); // Wait until the port is available
 
-	const e = express();
+	const app = express();
 	// We need to specify the local IP address as the web server
 	// tends to fail with IPv6 related error:
 	// listen EADDRINUSE: address already in use :::50516
-	await new Promise<void>((r) => e.listen(port, "0.0.0.0", r));
-	return e;
+	const server = await new Promise<Server>((resolve) => {
+		const s = app.listen(port, "0.0.0.0", () => resolve(s));
+	});
+
+	return {
+		app,
+		close: () =>
+			new Promise<void>((resolve, reject) => {
+				// Order matters: stop accepting, then drop keep-alives.
+				server.close((err) => (err ? reject(err) : resolve()));
+				server.closeAllConnections?.();
+			}),
+	};
 };
 
 async function waitForPort(
@@ -1107,6 +1154,12 @@ const fillParameters = async (
 	}
 };
 
+const clickWorkspaceUpdateSubmit = async (page: Page, name: RegExp) => {
+	const submitButton = page.getByRole("button", { name });
+	await expect(submitButton).toBeEnabled({ timeout: 30_000 });
+	await submitButton.click();
+};
+
 export const updateTemplate = async (
 	page: Page,
 	organization: string,
@@ -1198,18 +1251,16 @@ export const updateWorkspace = async (
 	await page.getByTestId("workspace-update-button").click();
 	await page.getByTestId("confirm-button").click();
 
-	await page
-		.getByRole("button", { name: /go to workspace parameters/i })
-		.click();
+	await page.getByRole("link", { name: /go to workspace parameters/i }).click();
 
 	await fillParameters(page, richParameters, buildParameters);
 
 	if (workspaceStatus === "running") {
-		await page.getByRole("button", { name: /update and restart/i }).click();
+		await clickWorkspaceUpdateSubmit(page, /update and restart/i);
 		// Confirmation dialog.
 		await page.getByRole("button", { name: /restart/i }).click();
 	} else {
-		await page.getByRole("button", { name: /update and start/i }).click();
+		await clickWorkspaceUpdateSubmit(page, /update and start/i);
 	}
 };
 
@@ -1228,11 +1279,11 @@ export const updateWorkspaceParameters = async (
 	await fillParameters(page, richParameters, buildParameters);
 
 	if (workspaceStatus === "running") {
-		await page.getByRole("button", { name: /update and restart/i }).click();
+		await clickWorkspaceUpdateSubmit(page, /update and restart/i);
 		// Confirmation dialog.
 		await page.getByRole("button", { name: /restart/i }).click();
 	} else {
-		await page.getByRole("button", { name: /update and start/i }).click();
+		await clickWorkspaceUpdateSubmit(page, /update and start/i);
 	}
 
 	await page.waitForSelector("text=Workspace status: Running", {
@@ -1290,8 +1341,8 @@ export async function createUser(
 	await page.goto("/deployment/users", { waitUntil: "domcontentloaded" });
 	await expect(page).toHaveTitle("Users - Coder");
 
-	await page.getByRole("link", { name: "Create user" }).click();
-	await expect(page).toHaveTitle("Create User - Coder");
+	await page.getByRole("link", { name: "New user" }).click();
+	await expect(page).toHaveTitle("New user - Coder");
 
 	const username = userValues.username ?? randomName();
 	const name = userValues.name ?? username;
@@ -1301,7 +1352,7 @@ export async function createUser(
 
 	await page.getByLabel("Username").fill(username);
 	if (name) {
-		await page.getByLabel("Full name").fill(name);
+		await page.getByLabel("Name", { exact: true }).fill(name);
 	}
 	await page.getByLabel("Email").fill(email);
 
@@ -1332,11 +1383,12 @@ export async function createUser(
 	await expect(addedRow).toBeVisible();
 
 	// Give them a role
-	await addedRow.getByLabel("Edit user roles").click();
+	await addedRow.getByLabel("Open menu").click();
+	await page.getByText("Edit roles").click();
 	for (const role of roles) {
-		await page.getByRole("group").getByText(role, { exact: true }).click();
+		await page.getByRole("dialog").getByText(role, { exact: true }).click();
 	}
-	await page.mouse.click(10, 10); // close the popover by clicking outside of it
+	await page.getByText("Confirm").click();
 
 	await page.goto(returnTo, { waitUntil: "domcontentloaded" });
 	return { name, username, email, password, roles };
@@ -1356,7 +1408,7 @@ export async function createOrganization(page: Page): Promise<{
 	const description = `Org description ${name}`;
 	await page.getByLabel("Description").fill(description);
 	await page.getByLabel("Icon", { exact: true }).fill("/emojis/1f957.png");
-	await page.getByRole("button", { name: /save/i }).click();
+	await page.getByRole("button", { name: /create organization/i }).click();
 
 	await expectUrl(page).toHavePathName(`/organizations/${name}`);
 	await expect(page.getByText(/created successfully/)).toBeVisible();

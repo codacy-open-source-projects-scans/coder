@@ -1,4 +1,6 @@
-# Coder Agents
+---
+title: Coder Agents
+---
 
 Coder Agents is a chat interface and API for delegating development work and research to coding agents in your Coder deployment. Developers describe the work they want done, and Coder Agents handles selecting a template, provisioning a workspace, and executing the task.
 
@@ -7,16 +9,18 @@ agent that runs the agent loop directly within the Coder control plane.
 
 No specialized software, API keys, or network access is required inside your workspace. The only requirement is network access between the control plane and external LLM providers.
 
-<video autoplay playsinline loop>
+<video autoplay controls muted playsinline loop>
   <source src="https://raw.githubusercontent.com/coder/coder/refs/heads/main/docs/images/guides/ai-agents/coder-agents-ui.mp4" type="video/mp4">
 Your browser does not support the video tag.
 </video>
 
+This screencast shows the Coder Agents chat interface, where a developer describes work for an agent to carry out.
+
 ## What Coder Agents is and isn't
 
-It is a standalone agent written in Go that implements standard
-agentic patterns — sub-agent delegation, context compaction, file editing, and
-shell execution — and works with any LLM provider you configure.
+It is a standalone agent written in Go.
+It implements standard agentic patterns, such as sub-agent delegation, context compaction, file editing, and shell execution.
+It works with any LLM provider you configure.
 
 It is not a wrapper around third-party agent tools like Claude Code
 or Codex.
@@ -71,17 +75,18 @@ providers and connects to workspaces only when tool execution is needed.</small>
 
 ### Automatic workspace provisioning
 
-Not every chat requires a workspace. The agent runs in the control plane and can
-answer questions, discuss architecture, or plan an approach without any
-infrastructure. Workspaces are only provisioned when the agent needs to take
-action — reading code, running commands, or editing files.
+Not every chat requires a workspace.
+The agent uses the conversation and available tools when they're sufficient for your request.
+If missing tools, skills, MCP integrations, or context block progress, the agent creates a suitable workspace and uses its capabilities to continue.
+Workspaces also support reading code, running commands, and editing files.
+Requests to fix a bug or build an app authorize the necessary workspace setup; you don't need to ask for a workspace separately.
+Questions and self-contained code examples don't need a workspace when the conversation and available tools are sufficient.
 
 This means:
 
 - **Faster responses** — conversations that don't require workspace access
   start immediately with no provisioning delay.
-- **Lower infrastructure cost** — workspaces are only created when the agent
-  needs to do real development work.
+- **Lower infrastructure cost**: the agent uses existing tools and context when they can complete your request without a workspace.
 
 When a workspace _is_ needed, the agent reads the templates available to that user —
 including their descriptions and parameters — selects the appropriate one, and
@@ -90,8 +95,16 @@ creates a workspace automatically. Template visibility is scoped to the user's r
 Platform teams control template routing by writing clear template descriptions.
 For example, a description like "Use this template for Python backend services
 in the payments repo" helps the agent select the correct infrastructure.
+Administrators can also block agents on a template, which hides it from the agent completely.
+Refer to [Platform Controls](./platform-controls/index.md#template-routing) for that setting.
 
 **Examples of what triggers workspace creation:**
+
+The examples in the first column assume the available tools and context are sufficient.
+Any request, including planning or Q&A, can require a workspace if the agent lacks the capabilities or context to complete it.
+Creating a workspace doesn't change the current mode's tool restrictions: workspace MCP tools remain unavailable in Plan Mode.
+Workspace skills, MCP tools, and context can finish loading after the workspace reports ready.
+The agent can continue with available file and shell tools, but provisioning doesn't guarantee immediate access to a missing MCP tool.
 
 | No workspace needed                                  | Workspace provisioned                                    |
 |------------------------------------------------------|----------------------------------------------------------|
@@ -125,17 +138,20 @@ are queued and delivered when the agent completes its current step, so there is
 no need to wait for a response before providing additional context or changing
 direction.
 
-### Image attachments
+### File attachments
 
-Users can attach images to chat messages by pasting from the clipboard, dragging
-files into the input area, or using the attachment button. Supported formats are
-PNG, JPEG, GIF, and WebP up to 10 MB per file. Images are sent to the model as
-multimodal content alongside the text prompt.
+Users can attach files to chat messages by pasting from the clipboard, dragging files into the input area, or using the attachment button.
+Supported types are PNG, JPEG, GIF, and WebP images, plus plain text, Markdown, CSV, JSON, SVG, and PDF files.
+Each upload can be up to 10&nbsp;MiB.
+By default, a chat can have up to 50 attachments.
+Adding more permanently deletes the earliest uploads, which then show as expired.
+You can change the limit with [`CODER_CHAT_MAX_ATTACHMENTS_PER_CHAT`](../../admin/setup/configuration-reference.md#max-attachments-per-chat).
+Attachments are sent to the model as multimodal content alongside the text prompt.
 
-This is useful for sharing screenshots of errors, UI mockups, terminal output,
-or other visual context that helps the agent understand the task. Messages can
-contain images alone or combined with text. Image attachments require a model
-that supports vision input.
+This is useful for sharing screenshots of errors, UI mockups, terminal output, logs, or other context that helps the agent understand the task.
+Messages can contain attachments alone or combined with text.
+Image attachments require a model that supports vision input, and Anthropic models (including Bedrock-hosted Claude) cap each inline image at 5&nbsp;MiB.
+Providers differ in which types they accept as native file content; a part the provider rejects is downgraded to text instead of being dropped.
 
 ## Security benefits of the control plane architecture
 
@@ -166,7 +182,7 @@ entirely:
   else. The workspace never needs to reach the internet for AI functionality.
 - **Centralized, enforced control.** Platform teams configure models, system
   prompts, and tool permissions from the control plane. These settings are
-  enforced server-side — they are not user preferences that developers can
+  enforced server-side, so they are not user preferences that developers can
   override.
 - **User identity is always attached.** Every action the agent takes — PRs
   opened, code pushed, commands run — is tied to the user who submitted the
@@ -217,110 +233,89 @@ and models from the Coder dashboard or API. Supported providers include:
 Most providers support custom base URLs, which allows integration with
 enterprise LLM proxies, self-hosted model endpoints, and internal gateways.
 
-Administrators can configure multiple providers simultaneously and set a default
-model. Developers select from enabled models when starting a chat.
+Administrators can configure multiple providers simultaneously and set a default model in each organization.
+Developers select from enabled models when starting a chat.
+Providers are deployment-wide, and models belong to an organization.
+Refer to [Organization scope](./platform-controls/organizations.md) for details.
 
-<img src="../../images/guides/ai-agents/llm-providers.png" alt="Screenshot of the provider/model configuration admin panel">
+<img src="../../images/guides/ai-agents/llm-providers.png" alt="Screenshot of the provider/model configuration in the Agents settings">
 
-<small>The model configuration panel in the Coder dashboard.</small>
+<small>The model configuration in the Agents settings panel.</small>
 
 ## Built-in tools
 
 The agent has access to a set of workspace tools that it uses to accomplish
 tasks:
 
-| Tool                                        | Description                                                              |
-|---------------------------------------------|--------------------------------------------------------------------------|
-| `list_templates`                            | Browse available workspace templates                                     |
-| `read_template`                             | Get template details and configurable parameters                         |
-| `create_workspace`                          | Create a workspace from a template                                       |
-| `start_workspace`                           | Start a stopped workspace for the current chat                           |
-| `propose_plan`                              | Present a Markdown plan file for user review                             |
-| `ask_user_question`                         | Ask the user structured clarification questions during plan mode         |
-| `read_file`                                 | Read file contents from the workspace                                    |
-| `write_file`                                | Write a file to the workspace                                            |
-| `edit_files`                                | Perform search-and-replace edits across files                            |
-| `execute`                                   | Run shell commands in the workspace                                      |
-| `process_output`                            | Retrieve output from a background process                                |
-| `process_list`                              | List all tracked processes in the workspace                              |
-| `process_signal`                            | Send a signal (terminate/kill) to a tracked process                      |
-| `spawn_agent` (`type=general` or `explore`) | Delegate a task to a sub-agent running in parallel                       |
-| `wait_agent`                                | Wait for a sub-agent to complete and collect its result                  |
-| `message_agent`                             | Send a follow-up message to a running sub-agent                          |
-| `close_agent`                               | Stop a running sub-agent                                                 |
-| `spawn_agent` (`type=computer_use`)         | Spawn a sub-agent with desktop interaction (screenshot, mouse, keyboard) |
-| `read_skill`                                | Read the instructions for a workspace skill by name                      |
-| `read_skill_file`                           | Read a supporting file from a skill's directory                          |
-| `web_search`                                | Search the internet (provider-native, when enabled)                      |
+| Tool                                        | Description                                                                                                                                                           |
+|---------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `list_templates`                            | Browse available workspace templates                                                                                                                                  |
+| `read_template`                             | Get template details and configurable parameters                                                                                                                      |
+| `create_workspace`                          | Create a workspace from a template                                                                                                                                    |
+| `start_workspace`                           | Start a stopped workspace for the current chat                                                                                                                        |
+| `stop_workspace`                            | Stop the current chat's workspace and wait for the stop build to finish                                                                                               |
+| `propose_plan`                              | Present a Markdown plan file for user review                                                                                                                          |
+| `ask_user_question`                         | Ask the user structured clarification questions during plan mode                                                                                                      |
+| `read_file`                                 | Read file contents from the workspace                                                                                                                                 |
+| `write_file`                                | Write a file to the workspace                                                                                                                                         |
+| `edit_files`                                | Replace `old_text` with `new_text` across files                                                                                                                       |
+| `execute`                                   | Run shell commands in the workspace                                                                                                                                   |
+| `process_output`                            | Retrieve output from a background process                                                                                                                             |
+| `process_list`                              | List all tracked processes in the workspace                                                                                                                           |
+| `process_signal`                            | Send a signal (terminate/kill) to a tracked process                                                                                                                   |
+| `attach_file`                               | Attach a workspace file to the chat as a durable downloadable attachment                                                                                              |
+| `spawn_agent` (`type=general` or `explore`) | Delegate a task to a sub-agent running in parallel, optionally on a specific model                                                                                    |
+| `list_subagent_models`                      | List the models available for `spawn_agent`'s `model_config_id` argument                                                                                              |
+| `wait_agent`                                | Wait for a sub-agent to complete and collect its result                                                                                                               |
+| `message_agent`                             | Send a follow-up message to a running sub-agent                                                                                                                       |
+| `interrupt_agent`                           | Halt a sub-agent's current turn; it transitions to waiting or running if there are queued messages                                                                    |
+| `spawn_agent` (`type=computer_use`)         | Spawn a sub-agent with desktop interaction (screenshot, mouse, keyboard)                                                                                              |
+| `list_agents`                               | List spawned child agents, most recently active first                                                                                                                 |
+| `read_skill`                                | Read the instructions for a workspace skill by name                                                                                                                   |
+| `read_skill_file`                           | Read a supporting file from a skill's directory                                                                                                                       |
+| `web_search`                                | Search the internet (provider-native, when enabled)                                                                                                                   |
+| `find_tools`                                | Search the deferred MCP tool catalog and activate matching tools. Only available when the `mcp-tool-search` experiment is enabled and the turn has MCP tools to defer |
+| `manage_automations`                        | Create and manage [automations](./automations.md). Only available when the `chat-automations` experiment is enabled and **Manage automations** is on for the chat     |
 
 These tools connect to the workspace over the same secure connection used for
 web terminals and IDE access. No additional ports or services are required in
 the workspace.
 
 Platform tools (`list_templates`, `read_template`, `create_workspace`,
-`start_workspace`, `propose_plan`, `ask_user_question`) and orchestration tools (`spawn_agent`,
-`wait_agent`, `message_agent`, `close_agent`)
+`start_workspace`, `stop_workspace`, `propose_plan`, `ask_user_question`) and orchestration tools (`spawn_agent`,
+`list_subagent_models`, `wait_agent`, `message_agent`, `interrupt_agent`, `list_agents`)
 are only available to root chats. Sub-agents do not have access to these
 tools and cannot create workspaces or spawn further sub-agents.
 
 `spawn_agent` with `type=computer_use` additionally requires an
-Anthropic provider and the virtual desktop feature to be enabled by an
-administrator.
+Anthropic or OpenAI provider and the virtual desktop feature to be
+enabled by an administrator.
 `read_skill` and `read_skill_file` are available when the workspace contains
 skills in its `.agents/skills/` directory.
 
-`propose_plan` and `ask_user_question` are only available while plan mode is
-active. In plan mode, the agent can still inspect the workspace and template
-metadata, execute shell commands for exploration, and read process output.
-`write_file` and `edit_files` remain available only for the chat-specific plan
-file under `.coder/plans/`. MCP, dynamic, provider-native, and computer-use
-tools are blocked.
+`propose_plan` and `ask_user_question` are only available while plan mode is active.
+In plan mode, the agent can still inspect the workspace and template metadata, execute shell commands for exploration, and read process output.
+`write_file` and `edit_files` remain available only for the chat-specific plan file under `.coder/plans/`.
+Workspace MCP tools are unavailable in plan mode, and plan-mode sub-agents receive no MCP tools.
 
 ## Plan mode
 
 Plan mode lets you ask the agent to investigate first and present a plan before
 implementation. Open the chat input menu and choose **Plan first** to enable it
-for the current chat. After you enable it, later turns in that chat stay in
-plan mode until you turn it off or click **Implement plan** after a proposed
-plan. Because the mode is stored on the chat, reloading the page preserves the
-current setting.
+for the current chat.
+After you enable it, later turns in that chat stay in plan mode until you turn it off or select **Implement plan** after a proposed plan.
+Because the mode is stored on the chat, reloading the page preserves the current setting.
 
 While plan mode is active:
 
-- the agent can inspect repository files, workspace state, and available
-  templates
-- `write_file` and `edit_files` can only modify the chat-specific plan file
-  under `.coder/plans/`
-- `ask_user_question` can gather structured clarification from the user before
-  a plan is proposed
-- `propose_plan` snapshots the current plan file into the transcript so you can
-  review it before implementation starts
-- `execute` and `process_output` remain available for exploration, such as
-  cloning repositories, searching code, and running inspection commands
-- MCP tools, dynamic tools, provider-native tools, and computer-use tools are
-  not available
+- The agent can inspect repository files, workspace state, and available templates.
+- `write_file` and `edit_files` can only modify the chat-specific plan file under `.coder/plans/`.
+- `ask_user_question` can gather structured clarification from the user before a plan is proposed.
+- `propose_plan` snapshots the current plan file into the transcript so you can review it before implementation starts.
+- `execute` and `process_output` remain available for exploration, such as cloning repositories, searching code, and running inspection commands.
+- External MCP tools are available to root chats only for the server configurations an administrator approved for plan mode; workspace MCP tools and MCP tools for plan-mode sub-agents are not available.
+- Dynamic tools, provider-native tools, and computer-use tools are not available.
+- Root plan-mode chats can also use external MCP tools that an administrator approved for plan mode.
 
-This keeps planning turns focused on analysis and plan authoring rather than
-implementation. Once you click **Implement plan**, the next turn runs in normal
-mode again.
-
-## Comparison to Coder Tasks
-
-Coder Agents is a new approach that differs from
-[Coder Tasks](../tasks.md) in several ways:
-
-| Aspect              | Coder Agents                         | Coder Tasks                                                    |
-|---------------------|--------------------------------------|----------------------------------------------------------------|
-| Agent execution     | Runs in the control plane            | Runs inside the workspace                                      |
-| Agent harness       | Built-in, no installation needed     | Requires Claude Code, Codex, or similar installed in workspace |
-| API keys            | Stored in control plane only         | Injected into workspace environment                            |
-| Chat state          | Persisted in database                | Stored in workspace                                            |
-| Workspace selection | Automatic, based on task description | Manual, user selects template                                  |
-| Sub-agents          | Built-in parallel delegation         | Not supported                                                  |
-| Modern chat UI      | Native chat with diffs, queuing      | Terminal-based interface                                       |
-
-## Product status
-
-Coder Agents is in Early Access. The feature is under active development and
-available for evaluation. See [Early Access](./early-access.md) for
-enablement instructions and program details.
+This keeps planning turns focused on analysis and plan authoring rather than implementation.
+Once you select **Implement plan**, the next turn runs in normal mode again.

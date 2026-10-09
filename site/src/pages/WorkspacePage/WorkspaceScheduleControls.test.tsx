@@ -2,7 +2,6 @@ import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import dayjs from "dayjs";
 import { HttpResponse, http } from "msw";
-import type { FC } from "react";
 import { useQuery } from "react-query";
 import { API } from "#/api/api";
 import { workspaceByOwnerAndName } from "#/api/queries/workspaces";
@@ -11,7 +10,7 @@ import { render } from "#/testHelpers/renderHelpers";
 import { server } from "#/testHelpers/server";
 import { WorkspaceScheduleControls } from "./WorkspaceScheduleControls";
 
-const Wrapper: FC = () => {
+const Wrapper: React.FC = () => {
 	const { data: workspace } = useQuery(
 		workspaceByOwnerAndName(MockWorkspace.owner_name, MockWorkspace.name),
 	);
@@ -63,7 +62,7 @@ test("add 3 hours to deadline", async () => {
 	await user.click(addButton);
 	await user.click(addButton);
 	await screen.findByText(
-		`Shutdown time for "Test-Workspace" updated successfully.`,
+		`Shutdown time for "test-workspace" updated successfully.`,
 	);
 	expect(await screen.findByText("Stop in 6 hours")).toBeInTheDocument();
 
@@ -91,7 +90,7 @@ test("remove 2 hours to deadline", async () => {
 	await user.click(subButton);
 	await user.click(subButton);
 	await screen.findByText(
-		`Shutdown time for "Test-Workspace" updated successfully.`,
+		`Shutdown time for "test-workspace" updated successfully.`,
 	);
 	expect(await screen.findByText("Stop in an hour")).toBeInTheDocument();
 
@@ -119,7 +118,7 @@ test("rollback to previous deadline on error", async () => {
 	await user.click(addButton);
 	await user.click(addButton);
 	await screen.findByText(
-		`Failed to update shutdown time for "Test-Workspace". Please try again.`,
+		`Failed to update shutdown time for "test-workspace". Please try again.`,
 	);
 	// In case of an error, the schedule message should remain unchanged
 	expect(screen.getByText(initialScheduleMessage)).toBeInTheDocument();
@@ -140,7 +139,7 @@ test("request is only sent once when clicking multiple times", async () => {
 	await user.click(addButton);
 	await user.click(addButton);
 	await screen.findByText(
-		`Shutdown time for "Test-Workspace" updated successfully.`,
+		`Shutdown time for "test-workspace" updated successfully.`,
 	);
 	expect(updateDeadlineSpy).toHaveBeenCalledTimes(1);
 });

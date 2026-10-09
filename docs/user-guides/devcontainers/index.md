@@ -1,4 +1,6 @@
-# Dev Containers
+---
+title: Dev Containers
+---
 
 [Dev containers](https://containers.dev/) define your development environment
 as code using a `devcontainer.json` file. Coder's Dev Containers integration
@@ -36,7 +38,9 @@ for setup details.
 - Direct SSH access to containers
 - Automatic port detection
 
-## Getting started
+<a id="getting-started"></a>
+
+## Get started
 
 ### Add a devcontainer.json
 

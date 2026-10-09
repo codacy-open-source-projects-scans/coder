@@ -1,28 +1,33 @@
-import type { FC } from "react";
 import type * as TypesGen from "#/api/typesGenerated";
 import { SectionHeader } from "./components/SectionHeader";
 import { UserCompactionThresholdSettings } from "./components/UserCompactionThresholdSettings";
 
-export interface AgentSettingsCompactionPageViewProps {
-	modelConfigsData: TypesGen.ChatModelConfig[] | undefined;
-	modelConfigsError: unknown;
-	isLoadingModelConfigs: boolean;
+export type AgentSettingsCompactionPageViewProps = {
+	models: readonly TypesGen.ChatModel[];
+	providerTypeByID: ReadonlyMap<string, string>;
+	organizations: readonly TypesGen.Organization[];
+	compactionModelIDByOrganization: ReadonlyMap<string, string>;
+	modelsError: unknown;
+	isLoadingModels: boolean;
 	thresholds: readonly TypesGen.UserChatCompactionThreshold[] | undefined;
 	isThresholdsLoading: boolean;
 	thresholdsError: unknown;
 	onSaveThreshold: (
-		modelConfigId: string,
+		modelId: string,
 		thresholdPercent: number,
 	) => Promise<unknown>;
-	onResetThreshold: (modelConfigId: string) => Promise<unknown>;
-}
+	onResetThreshold: (modelId: string) => Promise<unknown>;
+};
 
-export const AgentSettingsCompactionPageView: FC<
+export const AgentSettingsCompactionPageView: React.FC<
 	AgentSettingsCompactionPageViewProps
 > = ({
-	modelConfigsData,
-	modelConfigsError,
-	isLoadingModelConfigs,
+	models,
+	providerTypeByID,
+	organizations,
+	compactionModelIDByOrganization,
+	modelsError,
+	isLoadingModels,
 	thresholds,
 	isThresholdsLoading,
 	thresholdsError,
@@ -36,9 +41,12 @@ export const AgentSettingsCompactionPageView: FC<
 				description="Customize when conversations with models are automatically compacted."
 			/>
 			<UserCompactionThresholdSettings
-				modelConfigs={modelConfigsData ?? []}
-				modelConfigsError={modelConfigsError}
-				isLoadingModelConfigs={isLoadingModelConfigs}
+				models={models}
+				providerTypeByID={providerTypeByID}
+				organizations={organizations}
+				compactionModelIDByOrganization={compactionModelIDByOrganization}
+				modelsError={modelsError}
+				isLoadingModels={isLoadingModels}
 				thresholds={thresholds}
 				isThresholdsLoading={isThresholdsLoading}
 				thresholdsError={thresholdsError}

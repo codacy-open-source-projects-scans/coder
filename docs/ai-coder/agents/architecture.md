@@ -1,4 +1,6 @@
-# Architecture
+---
+title: Architecture
+---
 
 Coder's AI agent interacts with workspaces over the same
 connection path as a developer's IDE, web terminal, and SSH session already
@@ -70,8 +72,8 @@ Coder Agents does not change your workspace network requirements.
 When a user submits a prompt, the control plane processes it as a background
 job:
 
-1. The prompt is saved to the database and the chat is marked `pending`.
-1. The control plane picks up the chat and marks it `running`.
+1. The prompt is saved to the database and the chat is marked `running`.
+1. A chat worker in the control plane claims the chat and starts a turn.
 1. The control plane streams the conversation to the configured LLM provider.
 1. The model responds with text, reasoning, or tool calls.
 1. If the response includes tool calls, the control plane executes them
@@ -91,6 +93,16 @@ agent generates a compressed summary and inserts it as a new message. Earlier
 messages remain in the database and are still visible to users, but are excluded
 from the model's context window. This happens transparently and keeps
 long-running sessions productive.
+
+You can also trigger a compaction on demand by sending `/compact` while the
+agent is idle or in an error state, which clears the error. Manual compaction
+runs the same summarization regardless of current token usage and is labeled
+as manual in the conversation.
+
+To start over without a summary, send `/clear` while the agent is idle or in
+an error state. The transcript stays visible, but the next message runs with
+a fresh context, as if the conversation were new. A "Context cleared" marker
+shows where the reset happened.
 
 ### Message queuing
 
@@ -132,15 +144,24 @@ approach, discussing architecture) never provision or connect to a workspace.
 These tools execute inside the workspace via the workspace daemon's HTTP API.
 They traverse the same Tailnet tunnel used by web terminals and IDE connections.
 
-| Tool             | What it does                                                       |
-|------------------|--------------------------------------------------------------------|
-| `read_file`      | Reads file contents with line-number pagination.                   |
-| `write_file`     | Writes content to a file.                                          |
-| `edit_files`     | Performs atomic search-and-replace edits across one or more files. |
-| `execute`        | Runs a shell command, waiting for completion up to a timeout.      |
-| `process_output` | Retrieves output from a tracked process.                           |
-| `process_list`   | Lists all tracked processes in the workspace.                      |
-| `process_signal` | Sends a signal (SIGTERM or SIGKILL) to a tracked process.          |
+| Tool             | What it does                                                                                                                                                                                                                                                                       |
+|------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `read_file`      | Reads file contents with line-number pagination.                                                                                                                                                                                                                                   |
+| `write_file`     | Writes content to a file.                                                                                                                                                                                                                                                          |
+| `edit_files`     | Performs atomic, per-file edits across one or more files, replacing `old_text` with `new_text`.                                                                                                                                                                                    |
+| `execute`        | Runs a shell command, waiting for completion up to a timeout.                                                                                                                                                                                                                      |
+| `process_output` | Retrieves output from a tracked process.                                                                                                                                                                                                                                           |
+| `process_list`   | Lists all tracked processes in the workspace.                                                                                                                                                                                                                                      |
+| `process_signal` | Sends a signal (SIGTERM or SIGKILL) to a tracked process.                                                                                                                                                                                                                          |
+| `attach_file`    | Attach a workspace file to the current chat so the user can download it directly from the conversation. Use this when the user should receive an artifact such as a screenshot, log, patch, or document. Pass an absolute file path. The file must already exist in the workspace. |
+
+#### Windows workspace shell requirement
+
+Coder Agents run workspace commands through a POSIX-compatible shell (`sh`).
+Windows workspaces must provide `sh` on `PATH`, for example from
+[Git for Windows](https://gitforwindows.org/) (Git Bash), MSYS2, or WSL.
+PowerShell alone cannot run the `execute` tool. After installing a
+shell, restart the workspace to pick up the updated `PATH`.
 
 ### Platform tools
 
@@ -149,14 +170,16 @@ workspace connection. Platform and orchestration tools are only available to
 root chats — sub-agents spawned by `spawn_agent` do not have access to them
 and cannot create workspaces or spawn further sub-agents.
 
-| Tool                | What it does                                                                            |
-|---------------------|-----------------------------------------------------------------------------------------|
-| `list_templates`    | Browses available workspace templates, sorted by popularity.                            |
-| `read_template`     | Gets template details and configurable parameters.                                      |
-| `create_workspace`  | Creates a workspace from a template and waits for it to be ready.                       |
-| `start_workspace`   | Starts the chat's workspace if it is currently stopped. Idempotent if already running.  |
-| `propose_plan`      | Presents a Markdown plan file from the workspace for user review before implementation. |
-| `ask_user_question` | Asks the user structured clarification questions during plan mode.                      |
+| Tool                 | What it does                                                                                                                                                         |
+|----------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `list_templates`     | Browses available workspace templates, sorted by popularity.                                                                                                         |
+| `read_template`      | Gets template details and configurable parameters.                                                                                                                   |
+| `create_workspace`   | Creates a workspace from a template and waits for it to be ready.                                                                                                    |
+| `start_workspace`    | Starts the chat's workspace if it is currently stopped. Idempotent if already running.                                                                               |
+| `stop_workspace`     | Stops the chat's workspace and waits for the stop build to finish. Idempotent if already stopped.                                                                    |
+| `propose_plan`       | Presents a Markdown plan file from the workspace for user review before implementation.                                                                              |
+| `ask_user_question`  | Asks the user structured clarification questions during plan mode.                                                                                                   |
+| `manage_automations` | Creates and manages [automations](./automations.md). Available only when the `chat-automations` experiment is enabled and **Manage automations** is on for the chat. |
 
 `propose_plan` and `ask_user_question` are only exposed while plan mode is
 active. In that mode, `write_file` and `edit_files` are restricted to the
@@ -172,13 +195,15 @@ provider-native, and computer-use tools are not available.
 These tools manage sub-agents — child chats that work on independent tasks in
 parallel.
 
-| Tool                                        | What it does                                                                                                                                                                      |
-|---------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `spawn_agent` (`type=general` or `explore`) | Delegates a task to a sub-agent with its own context window.                                                                                                                      |
-| `wait_agent`                                | Waits for a sub-agent to finish and collects its result.                                                                                                                          |
-| `message_agent`                             | Sends a follow-up message to a running sub-agent.                                                                                                                                 |
-| `close_agent`                               | Stops a running sub-agent.                                                                                                                                                        |
-| `spawn_agent` (`type=computer_use`)         | Spawns a sub-agent with desktop interaction capabilities (screenshot, mouse, keyboard). Requires an Anthropic provider and the desktop feature to be enabled by an administrator. |
+| Tool                                        | What it does                                                                                                                                                                                                                                                         |
+|---------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `spawn_agent` (`type=general` or `explore`) | Delegates a task to a sub-agent with its own context window. Optionally accepts `model_config_id` and `reasoning_effort` to run the child on a specific enabled model instead of the configured default.                                                             |
+| `list_subagent_models`                      | Lists the enabled model configurations the agent can pass to `spawn_agent` as `model_config_id`.                                                                                                                                                                     |
+| `wait_agent`                                | Waits for a sub-agent to finish and collects its result.                                                                                                                                                                                                             |
+| `message_agent`                             | Sends a follow-up message to a running sub-agent.                                                                                                                                                                                                                    |
+| `interrupt_agent`                           | Halts a sub-agent's current turn; it transitions to waiting or running if there are queued messages.                                                                                                                                                                 |
+| `spawn_agent` (`type=computer_use`)         | Spawns a sub-agent with desktop interaction capabilities (screenshot, mouse, keyboard). Requires an administrator-configured computer-use provider (Anthropic or OpenAI) and the [virtual desktop experiment](./platform-controls/virtual-desktop.md) to be enabled. |
+| `list_agents`                               | Lists spawned child agents, most recently active first.                                                                                                                                                                                                              |
 
 ### Provider tools
 
@@ -198,6 +223,14 @@ These tools are conditionally available based on the workspace contents.
 |-------------------|--------------------------------------------------------------------------------------------------------------------------------|
 | `read_skill`      | Reads the instructions for a workspace skill by name. Available when the workspace has skills discovered in `.agents/skills/`. |
 | `read_skill_file` | Reads a supporting file from a skill's directory.                                                                              |
+
+### MCP tool search
+
+This tool runs in the control plane and replaces the full MCP tool schemas with a searchable catalog, so a large MCP surface does not consume the context window.
+
+| Tool         | What it does                                                                                                                                                                                           |
+|--------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `find_tools` | Searches the deferred MCP tool catalog by keyword or exact name and activates the matching tools. Available only when the `mcp-tool-search` experiment is enabled and the turn has MCP tools to defer. |
 
 ## What runs where
 
@@ -274,12 +307,14 @@ plane, not from the workspace's network.
 
 ### Centralized enforcement
 
-Administrators control which models are available, the system prompt, and tool
-configuration from the control plane. Developers can select from the set of
-admin-enabled models when starting or continuing a chat, but cannot add their
-own providers or override system prompts or tool permissions. When an
-administrator removes a model or modifies the system prompt, the change applies
-to all agent sessions immediately.
+Administrators control which models are available, the system prompt, and tool configuration from the control plane.
+The deployment system prompt and the tool configuration are deployment-wide.
+Organization administrators can add organization instructions, which Coder adds after the deployment system prompt in the chats of their organization.
+The model list belongs to an organization, so a chat can only use the models of its own organization.
+Developers can select from the set of admin-enabled models when starting or continuing a chat, but cannot add their own providers or override system prompts or tool permissions.
+When an administrator removes a model, the change applies to all affected agent sessions immediately.
+Coder stores the system prompt and the organization instructions when it creates a chat, so a change to either applies to chats created afterward.
+Refer to [Organization scope](./platform-controls/organizations.md) for the settings that belong to each scope.
 
 ### User identity on every action
 

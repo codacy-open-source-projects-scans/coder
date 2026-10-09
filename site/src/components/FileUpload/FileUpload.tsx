@@ -1,24 +1,26 @@
-import { css, type Interpolation, type Theme } from "@emotion/react";
-import CircularProgress from "@mui/material/CircularProgress";
+import { cn } from "cn";
 import { CloudUploadIcon, FolderIcon, TrashIcon } from "lucide-react";
-import { type DragEvent, type FC, type ReactNode, useRef } from "react";
+import { useRef } from "react";
 import { Button } from "#/components/Button/Button";
 import { useClickable } from "#/hooks/useClickable";
+import { Spinner } from "../Spinner/Spinner";
 
-interface FileUploadProps {
+type FileUploadProps = {
 	isUploading: boolean;
 	onUpload: (file: File) => void;
+	onUnsupportedFile?: (file: File) => void;
 	onRemove?: () => void;
 	file?: File;
 	removeLabel: string;
 	title: string;
-	description?: ReactNode;
+	description?: React.ReactNode;
 	extensions?: string[];
-}
+};
 
-export const FileUpload: FC<FileUploadProps> = ({
+export const FileUpload: React.FC<FileUploadProps> = ({
 	isUploading,
 	onUpload,
+	onUnsupportedFile,
 	onRemove,
 	file,
 	removeLabel,
@@ -26,7 +28,7 @@ export const FileUpload: FC<FileUploadProps> = ({
 	description,
 	extensions,
 }) => {
-	const fileDrop = useFileDrop(onUpload, extensions);
+	const fileDrop = useFileDrop(onUpload, extensions, onUnsupportedFile);
 	const inputRef = useRef<HTMLInputElement>(null);
 	const clickable = useClickable<HTMLDivElement>(() =>
 		inputRef.current?.click(),
@@ -34,12 +36,9 @@ export const FileUpload: FC<FileUploadProps> = ({
 
 	if (!isUploading && file) {
 		return (
-			<div
-				css={styles.file}
-				className="flex flex-row justify-between items-center gap-4"
-			>
+			<div className="flex flex-row items-center justify-between gap-4 rounded-lg border border-border bg-surface-primary p-4">
 				<div className="flex flex-row items-center gap-4">
-					<FolderIcon className="size-icon-sm" />
+					<FolderIcon className="size-icon-sm shrink-0" />
 					<span>{file.name}</span>
 				</div>
 
@@ -59,22 +58,28 @@ export const FileUpload: FC<FileUploadProps> = ({
 		<>
 			<div
 				data-testid="drop-zone"
-				css={[styles.root, isUploading && styles.disabled]}
+				className={cn(
+					"flex cursor-pointer items-center justify-center rounded-lg border-2",
+					"border-dashed border-border p-12 hover:bg-surface-primary",
+					isUploading && "pointer-events-none opacity-75",
+				)}
 				{...clickable}
 				{...fileDrop}
 			>
 				<div className="flex flex-col items-center gap-2">
-					<div css={styles.iconWrapper}>
+					<div className="flex size-16 items-center justify-center">
 						{isUploading ? (
-							<CircularProgress size={32} />
+							<Spinner size="lg" loading />
 						) : (
 							<CloudUploadIcon className="size-16" />
 						)}
 					</div>
 
 					<div className="flex flex-col items-center gap-1">
-						<span css={styles.title}>{title}</span>
-						<span css={styles.description}>{description}</span>
+						<span className="text-base leading-none">{title}</span>
+						<span className="mt-1 max-w-[400px] text-center text-sm leading-6 text-content-secondary">
+							{description}
+						</span>
 					</div>
 				</div>
 			</div>
@@ -83,7 +88,8 @@ export const FileUpload: FC<FileUploadProps> = ({
 				type="file"
 				data-testid="file-upload"
 				ref={inputRef}
-				css={styles.input}
+				className="hidden"
+				disabled={isUploading}
 				accept={extensions?.map((ext) => `.${ext}`).join(",")}
 				onChange={(event) => {
 					const file = event.currentTarget.files?.[0];
@@ -99,15 +105,16 @@ export const FileUpload: FC<FileUploadProps> = ({
 const useFileDrop = (
 	callback: (file: File) => void,
 	extensions?: string[],
+	onUnsupportedFile?: (file: File) => void,
 ): {
-	onDragOver: (e: DragEvent<HTMLDivElement>) => void;
-	onDrop: (e: DragEvent<HTMLDivElement>) => void;
+	onDragOver: (e: React.DragEvent<HTMLDivElement>) => void;
+	onDrop: (e: React.DragEvent<HTMLDivElement>) => void;
 } => {
-	const onDragOver = (e: DragEvent<HTMLDivElement>) => {
+	const onDragOver = (e: React.DragEvent<HTMLDivElement>) => {
 		e.preventDefault();
 	};
 
-	const onDrop = (e: DragEvent<HTMLDivElement>) => {
+	const onDrop = (e: React.DragEvent<HTMLDivElement>) => {
 		e.preventDefault();
 		const file = e.dataTransfer.files[0] as File | undefined;
 
@@ -120,15 +127,14 @@ const useFileDrop = (
 			return;
 		}
 
-		const extension = file.name.split(".").pop();
+		const extension = file.name.split(".").pop()?.toLowerCase();
 
-		if (!extension) {
-			throw new Error(`File has no extension to compare with ${extensions}`);
-		}
-
-		if (extensions.includes(extension)) {
+		if (extension && extensions.includes(extension)) {
 			callback(file);
+			return;
 		}
+
+		onUnsupportedFile?.(file);
 	};
 
 	return {
@@ -136,58 +142,3 @@ const useFileDrop = (
 		onDrop,
 	};
 };
-
-const styles = {
-	root: (theme) => css`
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		border-radius: 8px;
-		border: 2px dashed ${theme.palette.divider};
-		padding: 48px;
-		cursor: pointer;
-
-		&:hover {
-			background-color: ${theme.palette.background.paper};
-		}
-	`,
-
-	disabled: {
-		pointerEvents: "none",
-		opacity: 0.75,
-	},
-
-	// Used to maintain the size of icon and spinner
-	iconWrapper: {
-		width: 64,
-		height: 64,
-		display: "flex",
-		alignItems: "center",
-		justifyContent: "center",
-	},
-
-	title: {
-		fontSize: 16,
-		lineHeight: "1",
-	},
-
-	description: (theme) => ({
-		color: theme.palette.text.secondary,
-		textAlign: "center",
-		maxWidth: 400,
-		fontSize: 14,
-		lineHeight: "1.5",
-		marginTop: 4,
-	}),
-
-	input: {
-		display: "none",
-	},
-
-	file: (theme) => ({
-		borderRadius: 8,
-		border: `1px solid ${theme.palette.divider}`,
-		padding: 16,
-		background: theme.palette.background.paper,
-	}),
-} satisfies Record<string, Interpolation<Theme>>;

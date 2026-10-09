@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -92,7 +93,7 @@ func ResourceTarget[T Auditable](tgt T) string {
 	case database.GitSSHKey:
 		return typed.PublicKey
 	case database.AuditableGroup:
-		return typed.Group.Name
+		return typed.Name
 	case database.APIKey:
 		if typed.TokenName != "nil" {
 			return typed.TokenName
@@ -112,6 +113,8 @@ func ResourceTarget[T Auditable](tgt T) string {
 		return "" // no target?
 	case database.PrebuildsSettings:
 		return "" // no target?
+	case database.OAuth2ProviderSettings:
+		return "" // no target?
 	case database.OAuth2ProviderApp:
 		return typed.Name
 	case database.OAuth2ProviderAppSecret:
@@ -130,10 +133,18 @@ func ResourceTarget[T Auditable](tgt T) string {
 		return "Organization Group Sync"
 	case idpsync.RoleSyncSettings:
 		return "Organization Role Sync"
-	case database.TaskTable:
-		return typed.Name
-	case database.AiSeatState:
+	case database.AISeatState:
 		return "AI Seat"
+	case database.AIProvider:
+		return typed.Name
+	case database.AIProviderKey:
+		return typed.ID.String()
+	case database.AIGatewayKey:
+		return typed.Name
+	case database.AuditableGroupAIBudget:
+		return typed.GroupName
+	case database.AuditableUserAIBudgetOverride:
+		return typed.Username
 	case database.Chat:
 		// Chat titles can contain sensitive content (secrets, internal
 		// project names), so we use a short UUID prefix as a display
@@ -142,6 +153,30 @@ func ResourceTarget[T Auditable](tgt T) string {
 		// for display; collisions affect the display label and search
 		// filter but not the primary resource identifier.
 		return typed.ID.String()[:8]
+	case database.ChatProject:
+		return typed.Name
+	case database.ChatProjectMemory:
+		return typed.Name
+	case database.ChatModelConfig:
+		return cmp.Or(typed.DisplayName, typed.ID.String())
+	case database.ChatAutomation:
+		return typed.Name
+	case database.MCPServerConfig:
+		// Updates can persist an empty display name; fall back to the slug, or
+		// the ID if both are empty, so the audit entry stays identifiable.
+		return cmp.Or(typed.DisplayName, typed.Slug, typed.ID.String())
+	case database.UserSecret:
+		return typed.Name
+	case database.UserSkill:
+		return typed.Name
+	case database.ChatInstructionSettings:
+		return typed.Name
+	case database.ChatOperationalSettings:
+		return ""
+	case database.ChatOrganizationSystemPrompt:
+		return ""
+	case database.ExperimentRule:
+		return typed.Experiment
 	default:
 		panic(fmt.Sprintf("unknown resource %T for ResourceTarget", tgt))
 	}
@@ -151,6 +186,22 @@ func ResourceTarget[T Auditable](tgt T) string {
 // An example is singleton configuration resources.
 // 51A51C = "Static"
 var noID = uuid.MustParse("51A51C00-0000-0000-0000-000000000000")
+
+// Fixed IDs for the two chat instruction settings. History-by-setting works
+// only if every change to one setting carries the same resource ID, so
+// unlike the per-write artificial IDs of the other settings singletons,
+// these never change. C1A7 = "Chat".
+var (
+	ChatInstructionSystemPromptID = uuid.MustParse("C1A715C0-0000-0000-0000-000000000001")
+	ChatInstructionPlanModeID     = uuid.MustParse("C1A715C0-0000-0000-0000-000000000002")
+)
+
+// Human-readable targets for the two chat instruction settings, so an audit
+// row names the setting it concerns.
+const (
+	ChatInstructionSystemPromptName = "System prompt"
+	ChatInstructionPlanModeName     = "Plan mode instructions"
+)
 
 func ResourceID[T Auditable](tgt T) uuid.UUID {
 	switch typed := any(tgt).(type) {
@@ -167,7 +218,7 @@ func ResourceID[T Auditable](tgt T) uuid.UUID {
 	case database.GitSSHKey:
 		return typed.UserID
 	case database.AuditableGroup:
-		return typed.Group.ID
+		return typed.ID
 	case database.APIKey:
 		return typed.UserID
 	case database.License:
@@ -184,6 +235,9 @@ func ResourceID[T Auditable](tgt T) uuid.UUID {
 		// Artificial ID for auditing purposes
 		return typed.ID
 	case database.PrebuildsSettings:
+		// Artificial ID for auditing purposes
+		return typed.ID
+	case database.OAuth2ProviderSettings:
 		// Artificial ID for auditing purposes
 		return typed.ID
 	case database.OAuth2ProviderApp:
@@ -204,11 +258,43 @@ func ResourceID[T Auditable](tgt T) uuid.UUID {
 		return noID // Org field on audit log has org id
 	case idpsync.RoleSyncSettings:
 		return noID // Org field on audit log has org id
-	case database.TaskTable:
+	case database.AISeatState:
+		return typed.UserID
+	case database.AIProvider:
 		return typed.ID
-	case database.AiSeatState:
+	case database.AIProviderKey:
+		return typed.ID
+	case database.AIGatewayKey:
+		return typed.ID
+	case database.AuditableGroupAIBudget:
+		return typed.GroupID
+	case database.AuditableUserAIBudgetOverride:
 		return typed.UserID
 	case database.Chat:
+		return typed.ID
+	case database.ChatProject:
+		return typed.ID
+	case database.ChatProjectMemory:
+		return typed.ID
+	case database.ChatModelConfig:
+		return typed.ID
+	case database.ChatAutomation:
+		return typed.ID
+	case database.MCPServerConfig:
+		return typed.ID
+	case database.UserSecret:
+		return typed.ID
+	case database.UserSkill:
+		return typed.ID
+	case database.ChatInstructionSettings:
+		// Fixed ID per setting; see ChatInstructionSettings IDs.
+		return typed.ID
+	case database.ChatOperationalSettings:
+		return typed.ID
+	case database.ChatOrganizationSystemPrompt:
+		return typed.OrganizationID
+	case database.ExperimentRule:
+		// Derived from the experiment name by experiments.AuditRecord.
 		return typed.ID
 	default:
 		panic(fmt.Sprintf("unknown resource %T for ResourceID", tgt))
@@ -245,6 +331,8 @@ func ResourceType[T Auditable](tgt T) database.ResourceType {
 		return database.ResourceTypeNotificationsSettings
 	case database.PrebuildsSettings:
 		return database.ResourceTypePrebuildsSettings
+	case database.OAuth2ProviderSettings:
+		return database.ResourceTypeOauth2ProviderSettings
 	case database.OAuth2ProviderApp:
 		return database.ResourceTypeOauth2ProviderApp
 	case database.OAuth2ProviderAppSecret:
@@ -263,12 +351,42 @@ func ResourceType[T Auditable](tgt T) database.ResourceType {
 		return database.ResourceTypeIdpSyncSettingsRole
 	case idpsync.GroupSyncSettings:
 		return database.ResourceTypeIdpSyncSettingsGroup
-	case database.TaskTable:
-		return database.ResourceTypeTask
-	case database.AiSeatState:
-		return database.ResourceTypeAiSeat
+	case database.AISeatState:
+		return database.ResourceTypeAISeat
+	case database.AIProvider:
+		return database.ResourceTypeAIProvider
+	case database.AIProviderKey:
+		return database.ResourceTypeAIProviderKey
+	case database.AIGatewayKey:
+		return database.ResourceTypeAIGatewayKey
+	case database.AuditableGroupAIBudget:
+		return database.ResourceTypeGroupAIBudget
+	case database.AuditableUserAIBudgetOverride:
+		return database.ResourceTypeUserAIBudgetOverride
 	case database.Chat:
 		return database.ResourceTypeChat
+	case database.ChatProject:
+		return database.ResourceTypeChatProject
+	case database.ChatProjectMemory:
+		return database.ResourceTypeChatProjectMemory
+	case database.ChatModelConfig:
+		return database.ResourceTypeChatModelConfig
+	case database.ChatAutomation:
+		return database.ResourceTypeChatAutomation
+	case database.MCPServerConfig:
+		return database.ResourceTypeMCPServerConfig
+	case database.UserSecret:
+		return database.ResourceTypeUserSecret
+	case database.UserSkill:
+		return database.ResourceTypeUserSkill
+	case database.ChatInstructionSettings:
+		return database.ResourceTypeChatInstructionSettings
+	case database.ChatOperationalSettings:
+		return database.ResourceTypeChatOperationalSettings
+	case database.ChatOrganizationSystemPrompt:
+		return database.ResourceTypeChatOrganizationSystemPrompt
+	case database.ExperimentRule:
+		return database.ResourceTypeExperimentRule
 	default:
 		panic(fmt.Sprintf("unknown resource %T for ResourceType", typed))
 	}
@@ -307,6 +425,9 @@ func ResourceRequiresOrgID[T Auditable]() bool {
 	case database.PrebuildsSettings:
 		// Artificial ID for auditing purposes
 		return false
+	case database.OAuth2ProviderSettings:
+		// Artificial ID for auditing purposes
+		return false
 	case database.OAuth2ProviderApp:
 		return false
 	case database.OAuth2ProviderAppSecret:
@@ -325,14 +446,56 @@ func ResourceRequiresOrgID[T Auditable]() bool {
 		return true
 	case idpsync.RoleSyncSettings:
 		return true
-	case database.TaskTable:
-		return true
-	case database.AiSeatState:
+	case database.AISeatState:
 		return false
+	case database.AIProvider:
+		// AI providers are deployment-scoped, not org-scoped.
+		return false
+	case database.AIProviderKey:
+		// AI provider keys inherit the deployment scope of their parent
+		// provider.
+		return false
+	case database.AIGatewayKey:
+		// AI Gateway keys are deployment-scoped, not org-scoped.
+		return false
+	case database.AuditableGroupAIBudget:
+		// Group AI budgets are org-scoped through their parent group.
+		return true
+	case database.AuditableUserAIBudgetOverride:
+		// User AI budget overrides are org-scoped through their
+		// attributed group.
+		return true
 	case database.Chat:
 		// Chats always have a non-null organization_id (since
 		// migration 000467).
 		return true
+	case database.ChatProject:
+		return true
+	case database.ChatProjectMemory:
+		return true
+	case database.ChatModelConfig:
+		return true
+	case database.ChatAutomation:
+		return true
+	case database.MCPServerConfig:
+		// MCP server configs always carry a non-null organization_id.
+		return true
+	case database.UserSecret:
+		// User secrets are global to the user across organizations.
+		return false
+	case database.UserSkill:
+		// User skills are global to the user across organizations.
+		return false
+	case database.ChatInstructionSettings:
+		// Deployment settings, not scoped to any organization.
+		return false
+	case database.ChatOperationalSettings:
+		return false
+	case database.ChatOrganizationSystemPrompt:
+		return true
+	case database.ExperimentRule:
+		// Deployment settings, not scoped to any organization.
+		return false
 	default:
 		panic(fmt.Sprintf("unknown resource %T for ResourceRequiresOrgID", tgt))
 	}

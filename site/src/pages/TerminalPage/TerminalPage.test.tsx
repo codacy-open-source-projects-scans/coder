@@ -1,9 +1,9 @@
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { HttpResponse, http } from "msw";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { API } from "#/api/api";
-import type { Workspace } from "#/api/typesGenerated";
+import type { Workspace, WorkspaceApp } from "#/api/typesGenerated";
 import {
 	MockUserOwner,
 	MockWorkspace,
@@ -16,8 +16,13 @@ import TerminalPage from "./TerminalPage";
 
 const reconnectToken = "terminal-page-test-reconnect-token";
 
-vi.mock("uuid", () => ({
-	v4: () => "terminal-page-test-reconnect-token",
+const { mockSessionId } = vi.hoisted(() => ({
+	mockSessionId: "0123456789abcdef0123456789abcdef",
+}));
+
+vi.mock("#/utils/random", () => ({
+	generateUUID: () => "terminal-page-test-reconnect-token",
+	generateConnectionSessionId: () => mockSessionId,
 }));
 vi.stubGlobal("jest", vi);
 await import("jest-canvas-mock");
@@ -39,7 +44,7 @@ Object.defineProperty(window, "matchMedia", {
 
 const createWorkspaceTerminalWebSocket = () => {
 	const websocketProtocol = location.protocol === "https:" ? "wss" : "ws";
-	const websocketUrl = `${websocketProtocol}://${location.host}/api/v2/workspaceagents/${MockWorkspaceAgent.id}/pty?reconnect=${reconnectToken}&height=24&width=80`;
+	const websocketUrl = `${websocketProtocol}://${location.host}/api/v2/workspaceagents/${MockWorkspaceAgent.id}/pty?reconnect=${reconnectToken}&client_session_id=${mockSessionId}&height=24&width=80`;
 
 	return new WS(websocketUrl);
 };
@@ -78,6 +83,32 @@ const renderTerminalRaw = (
 		route,
 		path: "/:username/:workspace/terminal",
 	});
+};
+
+// Overrides the workspace response so the agent has a single app.
+const mockAgentApp = (app: Partial<WorkspaceApp>) => {
+	const workspaceWithApp: Workspace = {
+		...MockWorkspace,
+		latest_build: {
+			...MockWorkspace.latest_build,
+			resources: [
+				{
+					...MockWorkspace.latest_build.resources[0],
+					agents: [
+						{
+							...MockWorkspaceAgent,
+							apps: [{ ...MockWorkspaceApp, ...app }],
+						},
+					],
+				},
+			],
+		},
+	};
+	server.use(
+		http.get("/api/v2/users/:userId/workspace/:workspaceName", () => {
+			return HttpResponse.json(workspaceWithApp);
+		}),
+	);
 };
 
 const expectTerminalText = (container: HTMLElement, text: string) => {
@@ -220,7 +251,7 @@ describe("TerminalPage", () => {
 		const websocketProtocol =
 			window.location.protocol === "https:" ? "wss" : "ws";
 		const ws = new WS(
-			`${websocketProtocol}://${window.location.host}/api/v2/workspaceagents/${MockWorkspaceAgent.id}/pty?reconnect=${reconnectToken}&command=echo+hello&height=24&width=80`,
+			`${websocketProtocol}://${window.location.host}/api/v2/workspaceagents/${MockWorkspaceAgent.id}/pty?reconnect=${reconnectToken}&client_session_id=${mockSessionId}&command=echo+hello&height=24&width=80`,
 		);
 		renderTerminalRaw(
 			`/${MockUserOwner.username}/${MockWorkspace.name}/terminal?command=echo+hello`,
@@ -249,45 +280,95 @@ describe("TerminalPage", () => {
 		expect(closeSpy).toHaveBeenCalled();
 	});
 
+	describe("OSC 52 clipboard", () => {
+		let writeTextMock: ReturnType<typeof vi.fn>;
+		let originalClipboard: PropertyDescriptor | undefined;
+
+		beforeEach(() => {
+			originalClipboard = Object.getOwnPropertyDescriptor(
+				navigator,
+				"clipboard",
+			);
+			writeTextMock = vi.fn().mockResolvedValue(undefined);
+			Object.defineProperty(navigator, "clipboard", {
+				value: { writeText: writeTextMock, readText: vi.fn() },
+				writable: true,
+				configurable: true,
+			});
+		});
+
+		afterEach(() => {
+			if (originalClipboard) {
+				Object.defineProperty(navigator, "clipboard", originalClipboard);
+			}
+		});
+
+		it("copies to clipboard via OSC 52", async () => {
+			const ws = createWorkspaceTerminalWebSocket();
+			await renderTerminal();
+			await ws.nextMessage;
+
+			// OSC 52 sequence per #16577:
+			// printf "\033]52;c;$(echo -n 'Coder is Cool' | base64)\a"
+			const base64 = btoa("Coder is Cool");
+			ws.send(`\x1b]52;c;${base64}\x07`);
+
+			await waitFor(() => {
+				expect(writeTextMock).toHaveBeenCalledWith("Coder is Cool");
+			});
+		});
+
+		it("ignores OSC 52 with missing separator", async () => {
+			const ws = createWorkspaceTerminalWebSocket();
+			await renderTerminal();
+			await ws.nextMessage;
+
+			ws.send("\x1b]52;no-separator\x07");
+
+			// Give the parser time to process, then verify no clipboard write.
+			await new Promise((r) => setTimeout(r, 100));
+			expect(writeTextMock).not.toHaveBeenCalled();
+		});
+
+		it("ignores OSC 52 clipboard read query", async () => {
+			const ws = createWorkspaceTerminalWebSocket();
+			await renderTerminal();
+			await ws.nextMessage;
+
+			ws.send("\x1b]52;c;?\x07");
+
+			await new Promise((r) => setTimeout(r, 100));
+			expect(writeTextMock).not.toHaveBeenCalled();
+		});
+
+		it("ignores OSC 52 with invalid base64", async () => {
+			const ws = createWorkspaceTerminalWebSocket();
+			await renderTerminal();
+			await ws.nextMessage;
+
+			ws.send("\x1b]52;c;!!!invalid-base64!!!\x07");
+
+			await new Promise((r) => setTimeout(r, 100));
+			expect(writeTextMock).not.toHaveBeenCalled();
+		});
+	});
+
 	it("skips confirmation dialog for trusted app commands", async () => {
-		// Override the workspace response so the agent has an app with
-		// a command that matches the ?app= slug.
-		const appWithCommand = {
-			...MockWorkspaceApp,
-			slug: "my-app",
-			command: "echo trusted",
-		};
-		const workspaceWithApp: Workspace = {
-			...MockWorkspace,
-			latest_build: {
-				...MockWorkspace.latest_build,
-				resources: [
-					{
-						...MockWorkspace.latest_build.resources[0],
-						agents: [
-							{
-								...MockWorkspaceAgent,
-								apps: [appWithCommand],
-							},
-						],
-					},
-				],
-			},
-		};
-		server.use(
-			http.get("/api/v2/users/:userId/workspace/:workspaceName", () => {
-				return HttpResponse.json(workspaceWithApp);
-			}),
-		);
+		// Give the agent an app with a command that matches the ?app= slug.
+		mockAgentApp({ slug: "my-app", command: "echo trusted" });
 
 		const websocketProtocol =
 			window.location.protocol === "https:" ? "wss" : "ws";
 		const ws = new WS(
-			`${websocketProtocol}://${window.location.host}/api/v2/workspaceagents/${MockWorkspaceAgent.id}/pty?reconnect=${reconnectToken}&command=echo+trusted&height=24&width=80`,
+			`${websocketProtocol}://${window.location.host}/api/v2/workspaceagents/${MockWorkspaceAgent.id}/pty?reconnect=${reconnectToken}&client_session_id=${mockSessionId}&command=echo+trusted&height=24&width=80`,
 		);
 		await renderTerminal(
 			`/${MockUserOwner.username}/${MockWorkspace.name}/terminal?app=my-app`,
 		);
+
+		// The resolved command is sent to the PTY. The mock server matches
+		// URLs without the query string, so check the client's URL.
+		expect(ws.server.clients()[0].url).toContain("command=echo+trusted");
 
 		// No dialog should appear.
 		expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
@@ -297,5 +378,89 @@ describe("TerminalPage", () => {
 		const resizeReq = JSON.parse(new TextDecoder().decode(msg as Uint8Array));
 		expect(resizeReq.height).toBeGreaterThan(0);
 		expect(resizeReq.width).toBeGreaterThan(0);
+	});
+
+	describe("with static favicons like index.html's", () => {
+		let staticIcons: HTMLLinkElement[];
+
+		beforeEach(() => {
+			staticIcons = [
+				["alternate icon", "/favicons/favicon-dark.png"],
+				["icon", "/favicons/favicon-dark.svg"],
+			].map(([rel, href]) => {
+				const link = document.createElement("link");
+				link.rel = rel;
+				link.href = href;
+				link.media = "(prefers-color-scheme: light)";
+				return link;
+			});
+			document.head.append(...staticIcons);
+		});
+
+		afterEach(() => {
+			for (const link of staticIcons) {
+				link.remove();
+			}
+		});
+
+		it("uses the app's name and icon when opened via ?app=", async () => {
+			mockAgentApp({
+				slug: "my-app",
+				display_name: "My App",
+				icon: "/icon/my-app.svg",
+				command: "top",
+			});
+			createWorkspaceTerminalWebSocket();
+			const { unmount } = await renderTerminal(
+				`/${MockUserOwner.username}/${MockWorkspace.name}/terminal?app=my-app`,
+			);
+
+			await waitFor(() => {
+				expect(document.title).toBe(
+					`My App - ${MockWorkspace.owner_name}/${MockWorkspace.name} - Coder`,
+				);
+			});
+			const icons = document.head.querySelectorAll('link[rel~="icon"]');
+			expect(icons).toHaveLength(1);
+			expect(icons[0].getAttribute("href")).toBe("/icon/my-app.svg");
+
+			unmount();
+			expect([...document.head.querySelectorAll('link[rel~="icon"]')]).toEqual(
+				staticIcons,
+			);
+		});
+
+		it("keeps the default title and icon for an app without a command", async () => {
+			mockAgentApp({
+				slug: "my-app",
+				display_name: "My App",
+				icon: "/icon/my-app.svg",
+			});
+			createWorkspaceTerminalWebSocket();
+			await renderTerminal(
+				`/${MockUserOwner.username}/${MockWorkspace.name}/terminal?app=my-app`,
+			);
+
+			await waitFor(() => {
+				expect(document.title).toBe(
+					`Terminal - ${MockWorkspace.owner_name}/${MockWorkspace.name} - Coder`,
+				);
+			});
+			expect([...document.head.querySelectorAll('link[rel~="icon"]')]).toEqual(
+				staticIcons,
+			);
+		});
+	});
+
+	it("keeps the default title and icon without ?app=", async () => {
+		createWorkspaceTerminalWebSocket();
+		await renderTerminal();
+
+		await waitFor(() => {
+			expect(document.title).toBe(
+				`Terminal - ${MockWorkspace.owner_name}/${MockWorkspace.name} - Coder`,
+			);
+		});
+		expect(document.head.querySelector('link[rel="icon"]')).toBeNull();
 	});
 });

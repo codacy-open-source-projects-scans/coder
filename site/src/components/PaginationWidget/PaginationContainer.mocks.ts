@@ -2,8 +2,8 @@
  * @file Mock input props for use with PaginationContainer's tests and stories.
  *
  * Had to split this off into a separate file because housing these in the test
- * file and then importing them from the stories file was causing Chromatic's
- * Vite test environment to break
+ * file and then importing them from the stories file was breaking Storybook's
+ * build
  */
 import type { PaginationResult } from "./PaginationContainer";
 
@@ -13,7 +13,6 @@ type ResultBase = Omit<
 >;
 
 export const mockPaginationResultBase: ResultBase = {
-	isSuccess: false,
 	currentPage: 1,
 	limit: 25,
 	hasNextPage: false,
@@ -25,9 +24,8 @@ export const mockPaginationResultBase: ResultBase = {
 	onPageChange: () => {},
 };
 
-export const mockInitialRenderResult: PaginationResult = {
+export const mockInitialRenderResult = {
 	...mockPaginationResultBase,
-	isSuccess: false,
 	isPlaceholderData: false,
 	currentOffsetStart: undefined,
 	hasNextPage: false,
@@ -35,13 +33,12 @@ export const mockInitialRenderResult: PaginationResult = {
 	totalRecords: undefined,
 	totalPages: undefined,
 	countIsCapped: false,
-};
+} as const satisfies PaginationResult;
 
-export const mockSuccessResult: PaginationResult = {
+export const mockSuccessResult = {
 	...mockPaginationResultBase,
-	isSuccess: true,
 	isPlaceholderData: false,
 	currentOffsetStart: 1,
 	totalPages: 1,
 	totalRecords: 4,
-};
+} as const satisfies PaginationResult;

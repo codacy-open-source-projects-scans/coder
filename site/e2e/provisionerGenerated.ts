@@ -43,6 +43,20 @@ export enum AppSharingLevel {
   UNRECOGNIZED = -1,
 }
 
+/**
+ * ScriptDependencyRequirement is the outcome a prerequisite must reach
+ * before the dependent may run. It mirrors the `requires` attribute of
+ * coder_script_order. The provisioner never emits UNSPECIFIED.
+ */
+export enum ScriptDependencyRequirement {
+  SCRIPT_DEPENDENCY_REQUIREMENT_UNSPECIFIED = 0,
+  /** SCRIPT_DEPENDENCY_REQUIREMENT_SUCCESS - The prerequisite must exit successfully. */
+  SCRIPT_DEPENDENCY_REQUIREMENT_SUCCESS = 1,
+  /** SCRIPT_DEPENDENCY_REQUIREMENT_COMPLETION - The prerequisite must finish with any result other than canceled. */
+  SCRIPT_DEPENDENCY_REQUIREMENT_COMPLETION = 2,
+  UNRECOGNIZED = -1,
+}
+
 export enum AppOpenIn {
   /** @deprecated */
   WINDOW = 0,
@@ -306,6 +320,31 @@ export interface Script {
   runOnStop: boolean;
   timeoutSeconds: number;
   logPath: string;
+  /**
+   * Terraform address of the coder_script resource, such as
+   * "module.git_clone.coder_script.clone". Empty for legacy agent
+   * startup and shutdown scripts.
+   */
+  resourceAddress: string;
+  /**
+   * Direct prerequisites from coder_script_order rules, sorted by
+   * prerequisite_resource_address. Empty when the script has no prerequisites.
+   */
+  dependencies: ScriptDependency[];
+}
+
+/**
+ * ScriptDependency names one prerequisite script and the outcome required
+ * from it.
+ */
+export interface ScriptDependency {
+  /**
+   * Full Terraform address of the prerequisite script, equal to that
+   * script's resource_address, such as
+   * "module.git_clone.coder_script.clone". Never module-relative.
+   */
+  prerequisiteResourceAddress: string;
+  requirement: ScriptDependencyRequirement;
 }
 
 export interface Devcontainer {
@@ -387,16 +426,6 @@ export interface RunningAgentAuthToken {
   token: string;
 }
 
-export interface AITaskSidebarApp {
-  id: string;
-}
-
-export interface AITask {
-  id: string;
-  sidebarApp?: AITaskSidebarApp | undefined;
-  appId: string;
-}
-
 /** Metadata is information about a workspace used in the execution of a build */
 export interface Metadata {
   coderUrl: string;
@@ -421,8 +450,6 @@ export interface Metadata {
   /** Indicates that a prebuilt workspace is being built. */
   prebuiltWorkspaceBuildStage: PrebuiltWorkspaceBuildStage;
   runningAgentAuthTokens: RunningAgentAuthToken[];
-  taskId: string;
-  taskPrompt: string;
   templateVersionId: string;
   templateVersionModulesFile: string;
 }
@@ -477,35 +504,6 @@ export interface InitComplete {
   moduleFilesHash: Uint8Array;
 }
 
-/**
- * UserSecretValue carries a single user secret to a provisioner. env_name and
- * file_path describe the bindings the user requested when creating the secret.
- * The terraform provisioner exposes secrets via CODER_SECRET_ENV_* and
- * CODER_SECRET_FILE_* environment variables consumed by terraform-provider-coder's
- * coder_secret data source
- */
-export interface UserSecretValue {
-  /**
-   * Environment variable name the user selected (e.g. "GITHUB_TOKEN"). Intended
-   * to be treated as an opaque lookup key, i.e. consumers must preserve it
-   * verbatim when matching against a data.coder_secret.env_name attribute.
-   * Consumers can assume names are POSIX-compliant. Optional: env_name and
-   * file_path are independent.
-   */
-  envName: string;
-  /**
-   * Filesystem path the user requested this secret be bound to (e.g. "~/creds"
-   * or "/etc/creds"). This path is not expanded. Expansion happens only where
-   * the secret is actually materialized on disk. Intended to be treated as an
-   * opaque lookup key, i.e. consumers must preserve it verbatim when matching
-   * against a data.coder_secret.file attribute. Optional; env_name and
-   * file_path are independent.
-   */
-  filePath: string;
-  /** Secret value, which may be arbitrary binary data. */
-  value: Uint8Array;
-}
-
 /** PlanRequest asks the provisioner to plan what resources & parameters it will create */
 export interface PlanRequest {
   metadata: Metadata | undefined;
@@ -515,13 +513,6 @@ export interface PlanRequest {
   previousParameterValues: RichParameterValue[];
   /** state is the provisioner state (if any) */
   state: Uint8Array;
-  /**
-   * User secrets to make available during plan. Not carried on ApplyRequest
-   * because plan evaluates data.coder_secret references and bakes the
-   * resolved values into plan state, so apply does not need the raw secrets.
-   * Provisioner-specific handling is documented on the UserSecretValue message.
-   */
-  userSecrets: UserSecretValue[];
 }
 
 /** PlanComplete indicates a request to plan completed. */
@@ -531,7 +522,6 @@ export interface PlanComplete {
   plan: Uint8Array;
   dailyCost: number;
   resourceReplacements: ResourceReplacement[];
-  aiTaskCount: number;
 }
 
 /**
@@ -561,15 +551,6 @@ export interface GraphComplete {
   parameters: RichParameter[];
   externalAuthProviders: ExternalAuthProviderResource[];
   presets: Preset[];
-  /**
-   * Whether a template has any `coder_ai_task` resources defined, even if not planned for creation.
-   * During a template import, a plan is run which may not yield in any `coder_ai_task` resources, but nonetheless we
-   * still need to know that such resources are defined.
-   *
-   * See `hasAITaskResources` in provisioner/terraform/resources.go for more details.
-   */
-  hasAiTasks: boolean;
-  aiTasks: AITask[];
   hasExternalAgents: boolean;
 }
 
@@ -1130,6 +1111,24 @@ export const Script = {
     if (message.logPath !== "") {
       writer.uint32(74).string(message.logPath);
     }
+    if (message.resourceAddress !== "") {
+      writer.uint32(82).string(message.resourceAddress);
+    }
+    for (const v of message.dependencies) {
+      ScriptDependency.encode(v!, writer.uint32(90).fork()).ldelim();
+    }
+    return writer;
+  },
+};
+
+export const ScriptDependency = {
+  encode(message: ScriptDependency, writer: _m0.Writer = _m0.Writer.create()): _m0.Writer {
+    if (message.prerequisiteResourceAddress !== "") {
+      writer.uint32(10).string(message.prerequisiteResourceAddress);
+    }
+    if (message.requirement !== 0) {
+      writer.uint32(16).int32(message.requirement);
+    }
     return writer;
   },
 };
@@ -1323,30 +1322,6 @@ export const RunningAgentAuthToken = {
   },
 };
 
-export const AITaskSidebarApp = {
-  encode(message: AITaskSidebarApp, writer: _m0.Writer = _m0.Writer.create()): _m0.Writer {
-    if (message.id !== "") {
-      writer.uint32(10).string(message.id);
-    }
-    return writer;
-  },
-};
-
-export const AITask = {
-  encode(message: AITask, writer: _m0.Writer = _m0.Writer.create()): _m0.Writer {
-    if (message.id !== "") {
-      writer.uint32(10).string(message.id);
-    }
-    if (message.sidebarApp !== undefined) {
-      AITaskSidebarApp.encode(message.sidebarApp, writer.uint32(18).fork()).ldelim();
-    }
-    if (message.appId !== "") {
-      writer.uint32(26).string(message.appId);
-    }
-    return writer;
-  },
-};
-
 export const Metadata = {
   encode(message: Metadata, writer: _m0.Writer = _m0.Writer.create()): _m0.Writer {
     if (message.coderUrl !== "") {
@@ -1411,12 +1386,6 @@ export const Metadata = {
     }
     for (const v of message.runningAgentAuthTokens) {
       RunningAgentAuthToken.encode(v!, writer.uint32(170).fork()).ldelim();
-    }
-    if (message.taskId !== "") {
-      writer.uint32(178).string(message.taskId);
-    }
-    if (message.taskPrompt !== "") {
-      writer.uint32(186).string(message.taskPrompt);
     }
     if (message.templateVersionId !== "") {
       writer.uint32(194).string(message.templateVersionId);
@@ -1515,21 +1484,6 @@ export const InitComplete = {
   },
 };
 
-export const UserSecretValue = {
-  encode(message: UserSecretValue, writer: _m0.Writer = _m0.Writer.create()): _m0.Writer {
-    if (message.envName !== "") {
-      writer.uint32(10).string(message.envName);
-    }
-    if (message.filePath !== "") {
-      writer.uint32(18).string(message.filePath);
-    }
-    if (message.value.length !== 0) {
-      writer.uint32(26).bytes(message.value);
-    }
-    return writer;
-  },
-};
-
 export const PlanRequest = {
   encode(message: PlanRequest, writer: _m0.Writer = _m0.Writer.create()): _m0.Writer {
     if (message.metadata !== undefined) {
@@ -1549,9 +1503,6 @@ export const PlanRequest = {
     }
     if (message.state.length !== 0) {
       writer.uint32(50).bytes(message.state);
-    }
-    for (const v of message.userSecrets) {
-      UserSecretValue.encode(v!, writer.uint32(58).fork()).ldelim();
     }
     return writer;
   },
@@ -1573,9 +1524,6 @@ export const PlanComplete = {
     }
     for (const v of message.resourceReplacements) {
       ResourceReplacement.encode(v!, writer.uint32(42).fork()).ldelim();
-    }
-    if (message.aiTaskCount !== 0) {
-      writer.uint32(48).int32(message.aiTaskCount);
     }
     return writer;
   },
@@ -1636,12 +1584,6 @@ export const GraphComplete = {
     }
     for (const v of message.presets) {
       Preset.encode(v!, writer.uint32(50).fork()).ldelim();
-    }
-    if (message.hasAiTasks !== false) {
-      writer.uint32(56).bool(message.hasAiTasks);
-    }
-    for (const v of message.aiTasks) {
-      AITask.encode(v!, writer.uint32(66).fork()).ldelim();
     }
     if (message.hasExternalAgents !== false) {
       writer.uint32(72).bool(message.hasExternalAgents);

@@ -1,5 +1,3 @@
-import { useTheme } from "@emotion/react";
-import type { FC } from "react";
 import { useMutation } from "react-query";
 import { toast } from "sonner";
 import { API } from "#/api/api";
@@ -11,7 +9,7 @@ type TroubleshootingProps = {
 	canEdit?: boolean;
 };
 
-export const Troubleshooting: FC<TroubleshootingProps> = ({
+export const Troubleshooting: React.FC<TroubleshootingProps> = ({
 	canEdit = true,
 }) => {
 	const { mutate: sendTestNotificationApi, isPending } = useMutation({
@@ -23,17 +21,9 @@ export const Troubleshooting: FC<TroubleshootingProps> = ({
 			}),
 	});
 
-	const theme = useTheme();
 	return (
 		<>
-			<div
-				css={{
-					fontSize: 14,
-					color: theme.palette.text.secondary,
-					lineHeight: "160%",
-					marginBottom: 16,
-				}}
-			>
+			<div className="text-sm text-content-secondary leading-relaxed mb-4">
 				Send a test notification to troubleshoot your notification settings.
 			</div>
 			<div>

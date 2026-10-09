@@ -1,4 +1,4 @@
-import { type FC, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "react-query";
 import { toast } from "sonner";
 import { API } from "#/api/api";
@@ -22,7 +22,7 @@ import type * as TypesGen from "#/api/typesGenerated";
 import {
 	ConfirmDialog,
 	type ConfirmDialogProps,
-} from "#/components/Dialogs/ConfirmDialog/ConfirmDialog";
+} from "#/components/Dialog/ConfirmDialog/ConfirmDialog";
 import { useWorkspaceBuildLogs } from "#/hooks/useWorkspaceBuildLogs";
 import { EphemeralParametersDialog } from "#/modules/workspaces/EphemeralParametersDialog/EphemeralParametersDialog";
 import { WorkspaceErrorDialog } from "#/modules/workspaces/ErrorDialog/WorkspaceErrorDialog";
@@ -35,13 +35,13 @@ import {
 import { pageTitle } from "#/utils/page";
 import { Workspace } from "./Workspace";
 
-interface WorkspaceReadyPageProps {
+type WorkspaceReadyPageProps = {
 	template: TypesGen.Template;
 	workspace: TypesGen.Workspace;
 	permissions: WorkspacePermissions;
-}
+};
 
-export const WorkspaceReadyPage: FC<WorkspaceReadyPageProps> = ({
+export const WorkspaceReadyPage: React.FC<WorkspaceReadyPageProps> = ({
 	workspace,
 	template,
 	permissions,
@@ -106,7 +106,7 @@ export const WorkspaceReadyPage: FC<WorkspaceReadyPageProps> = ({
 	const favicon = getFaviconByStatus(workspace.latest_build);
 	const [faviconTheme, setFaviconTheme] = useState<"light" | "dark">("dark");
 	useEffect(() => {
-		if (typeof window === "undefined" || !window.matchMedia) {
+		if (!window.matchMedia) {
 			return;
 		}
 
@@ -226,10 +226,6 @@ export const WorkspaceReadyPage: FC<WorkspaceReadyPageProps> = ({
 	const checkEphemeralParameters = async (
 		buildParameters?: TypesGen.WorkspaceBuildParameter[],
 	) => {
-		if (workspace.template_use_classic_parameter_flow) {
-			return { hasEphemeral: false, ephemeralParameters: [] };
-		}
-
 		try {
 			const dynamicParameters = await API.getDynamicParameters(
 				workspace.latest_build.template_version_id,
@@ -433,13 +429,12 @@ export const WorkspaceReadyPage: FC<WorkspaceReadyPageProps> = ({
 				templateVersionId={workspace.latest_build.template_version_id}
 			/>
 
-			<WorkspaceUpdateDialogs {...workspaceUpdate.dialogs} />
+			<WorkspaceUpdateDialogs {...workspaceUpdate.dialogProps} />
 
 			<WorkspaceErrorDialog
 				open={workspaceErrorDialog.open}
 				error={workspaceErrorDialog.error}
 				onClose={() => setWorkspaceErrorDialog({ open: false })}
-				showDetail={workspace.template_use_classic_parameter_flow}
 				workspaceOwner={workspace.owner_name}
 				workspaceName={workspace.name}
 				templateVersionId={workspace.latest_build.template_version_id}
@@ -449,7 +444,7 @@ export const WorkspaceReadyPage: FC<WorkspaceReadyPageProps> = ({
 	);
 };
 
-const WarningDialog: FC<
+const WarningDialog: React.FC<
 	Pick<
 		ConfirmDialogProps,
 		"open" | "onClose" | "title" | "confirmText" | "description" | "onConfirm"

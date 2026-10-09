@@ -1,9 +1,8 @@
-import type { FC } from "react";
 import type { UseMutateFunction } from "react-query";
 import type * as TypesGen from "#/api/typesGenerated";
 import { Switch } from "#/components/Switch/Switch";
 
-interface UserChatDebugLoggingSettingsProps {
+type UserChatDebugLoggingSettingsProps = {
 	userSettings: TypesGen.UserChatDebugLoggingSettings | undefined;
 	onSaveUserSetting: UseMutateFunction<
 		void,
@@ -13,9 +12,9 @@ interface UserChatDebugLoggingSettingsProps {
 	>;
 	isSavingUserSetting: boolean;
 	isSaveUserSettingError: boolean;
-}
+};
 
-export const UserChatDebugLoggingSettings: FC<
+export const UserChatDebugLoggingSettings: React.FC<
 	UserChatDebugLoggingSettingsProps
 > = ({
 	userSettings,
@@ -36,7 +35,7 @@ export const UserChatDebugLoggingSettings: FC<
 				Record debug logs for my chats
 			</h3>
 			<div className="flex items-center justify-between gap-4">
-				<div className="!mt-0.5 m-0 flex-1 text-xs text-content-secondary">
+				<div className="mt-0.5! m-0 flex-1 text-xs text-content-secondary">
 					{forcedByDeployment ? (
 						<p className="m-0">
 							An administrator has enabled debug logging for every chat in this

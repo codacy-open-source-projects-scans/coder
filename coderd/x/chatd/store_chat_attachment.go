@@ -7,9 +7,9 @@ import (
 	"golang.org/x/xerrors"
 
 	"github.com/coder/coder/v2/coderd/database"
+	"github.com/coder/coder/v2/coderd/x/chatd/chatstate"
 	"github.com/coder/coder/v2/coderd/x/chatd/chattool"
 	"github.com/coder/coder/v2/coderd/x/chatfiles"
-	"github.com/coder/coder/v2/codersdk"
 )
 
 func (p *Server) newStoreChatAttachmentFunc(workspaceCtx *turnWorkspaceContext) chattool.StoreFileFunc {
@@ -35,7 +35,7 @@ func (p *Server) storeChatAttachment(
 	data []byte,
 ) (chattool.AttachmentMetadata, error) {
 	if !chatSnapshot.WorkspaceID.Valid {
-		return chattool.AttachmentMetadata{}, xerrors.New("no workspace is associated with this chat. Use the create_workspace tool to create one")
+		return chattool.AttachmentMetadata{}, xerrors.New("this tool requires a workspace and this chat does not have one. Use the create_workspace tool to create one")
 	}
 
 	storedName, mediaType, err := chatfiles.PrepareStoredFile(name, detectName, data)
@@ -61,6 +61,7 @@ func (p *Server) storeChatAttachment(
 			storedName,
 			mediaType,
 			data,
+			p.chatLimits.MaxAttachmentsPerChat,
 		)
 		return err
 	}, database.DefaultTXOptions().WithID("store_chat_attachment"))
@@ -79,6 +80,7 @@ func storeLinkedChatFileTx(
 	name string,
 	mediaType string,
 	data []byte,
+	maxLinks int,
 ) (chattool.AttachmentMetadata, error) {
 	row, err := tx.InsertChatFile(ctx, database.InsertChatFileParams{
 		OwnerID:        ownerID,
@@ -91,16 +93,8 @@ func storeLinkedChatFileTx(
 		return chattool.AttachmentMetadata{}, xerrors.Errorf("insert chat file: %w", err)
 	}
 
-	rejected, err := tx.LinkChatFiles(ctx, database.LinkChatFilesParams{
-		ChatID:       chatID,
-		MaxFileLinks: int32(codersdk.MaxChatFileIDs),
-		FileIds:      []uuid.UUID{row.ID},
-	})
-	if err != nil {
-		return chattool.AttachmentMetadata{}, xerrors.Errorf("link chat file: %w", err)
-	}
-	if rejected > 0 {
-		return chattool.AttachmentMetadata{}, xerrors.Errorf("chat already has the maximum of %d linked files", codersdk.MaxChatFileIDs)
+	if err := chatstate.LinkFiles(ctx, tx, chatID, []uuid.UUID{row.ID}, maxLinks); err != nil {
+		return chattool.AttachmentMetadata{}, err
 	}
 
 	return chattool.AttachmentMetadata{

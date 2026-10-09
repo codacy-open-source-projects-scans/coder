@@ -24,6 +24,9 @@ var (
 	//go:embed anthropic/single_injected_tool.txtar
 	AntSingleInjectedTool []byte
 
+	//go:embed anthropic/single_injected_tool_no_preamble.txtar
+	AntSingleInjectedToolNoPreamble []byte
+
 	//go:embed anthropic/fallthrough.txtar
 	AntFallthrough []byte
 
@@ -38,6 +41,18 @@ var (
 
 	//go:embed anthropic/haiku_simple.txtar
 	AntHaikuSimple []byte
+
+	//go:embed anthropic/max_tokens_truncated_tool.txtar
+	AntMaxTokensTruncatedTool []byte
+
+	//go:embed anthropic/max_tokens_truncated_tool_no_block_stop.txtar
+	AntMaxTokensTruncatedToolNoBlockStop []byte
+
+	//go:embed anthropic/max_tokens_truncated_injected_tool.txtar
+	AntMaxTokensTruncatedInjectedTool []byte
+
+	//go:embed anthropic/injected_tool_invalid_input.txtar
+	AntInjectedToolInvalidInput []byte
 )
 
 var (
@@ -64,6 +79,9 @@ var (
 
 	//go:embed openai/chatcompletions/streaming_injected_tool_nonzero_index.txtar
 	OaiChatStreamingInjectedToolNonzeroIndex []byte
+
+	//go:embed openai/chatcompletions/streaming_cumulative_usage_injected_tool.txtar
+	OaiChatStreamingCumulativeUsageInjectedTool []byte
 )
 
 var (
@@ -87,6 +105,9 @@ var (
 
 	//go:embed openai/responses/blocking/custom_tool.txtar
 	OaiResponsesBlockingCustomTool []byte
+
+	//go:embed openai/responses/blocking/web_search.txtar
+	OaiResponsesBlockingWebSearch []byte
 
 	//go:embed openai/responses/blocking/conversation.txtar
 	OaiResponsesBlockingConversation []byte
@@ -119,6 +140,9 @@ var (
 
 	//go:embed openai/responses/streaming/builtin_tool.txtar
 	OaiResponsesStreamingBuiltinTool []byte
+
+	//go:embed openai/responses/streaming/web_search.txtar
+	OaiResponsesStreamingWebSearch []byte
 
 	//go:embed openai/responses/streaming/multi_reasoning_builtin_tool.txtar
 	OaiResponsesStreamingMultiReasoningBuiltinTool []byte

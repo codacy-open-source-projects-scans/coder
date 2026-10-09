@@ -1,11 +1,6 @@
+import { cn } from "cn";
 import { ExternalLinkIcon } from "lucide-react";
-import {
-	type FC,
-	type HTMLProps,
-	type ReactNode,
-	useLayoutEffect,
-	useRef,
-} from "react";
+import { useLayoutEffect, useRef } from "react";
 import { Link, useSearchParams } from "react-router";
 import type {
 	ProvisionerJobLog,
@@ -30,28 +25,28 @@ import {
 	TabsList,
 	TabsTrigger,
 } from "#/components/Tabs/Tabs";
-import { BuildAvatar } from "#/modules/builds/BuildAvatar/BuildAvatar";
 import { DashboardFullPage } from "#/modules/dashboard/DashboardLayout";
 import { AgentLogs } from "#/modules/resources/AgentLogs/AgentLogs";
 import { useAgentLogs } from "#/modules/resources/useAgentLogs";
+import { BuildIcon } from "#/modules/workspaces/BuildIcon/BuildIcon";
 import {
 	WorkspaceBuildData,
 	WorkspaceBuildDataSkeleton,
 } from "#/modules/workspaces/WorkspaceBuildData/WorkspaceBuildData";
 import { WorkspaceBuildLogs } from "#/modules/workspaces/WorkspaceBuildLogs/WorkspaceBuildLogs";
-import { cn } from "#/utils/cn";
 import { formatDate } from "#/utils/time";
 import { displayWorkspaceBuildDuration } from "#/utils/workspace";
+import { WorkspaceDeletedBanner } from "../WorkspacePage/WorkspaceDeletedBanner";
 import { Sidebar, SidebarCaption, SidebarItem } from "./Sidebar";
 
 export const LOGS_TAB_KEY = "logs";
 
 type BuildStatsItemProps = Readonly<{
-	children?: ReactNode;
+	children?: React.ReactNode;
 	label: string;
 }>;
 
-const BuildStatsItem: FC<BuildStatsItemProps> = ({ children, label }) => {
+const BuildStatsItem: React.FC<BuildStatsItemProps> = ({ children, label }) => {
 	return (
 		<StatsItem
 			className="flex-col gap-0 p-0 [&>span:first-of-type]:text-xs [&>span:first-of-type]:font-medium md:p-0"
@@ -61,18 +56,25 @@ const BuildStatsItem: FC<BuildStatsItemProps> = ({ children, label }) => {
 	);
 };
 
-interface WorkspaceBuildPageViewProps {
+type DeletedWorkspaceBannerProps = Readonly<{
+	createWorkspaceLink: string;
+	templateName: string;
+}>;
+
+type WorkspaceBuildPageViewProps = {
 	logs: ProvisionerJobLog[] | undefined;
 	build: WorkspaceBuild | undefined;
 	buildError?: unknown;
+	deletedWorkspaceBanner?: DeletedWorkspaceBannerProps;
 	builds: WorkspaceBuild[] | undefined;
 	activeBuildNumber: number;
-}
+};
 
-export const WorkspaceBuildPageView: FC<WorkspaceBuildPageViewProps> = ({
+export const WorkspaceBuildPageView: React.FC<WorkspaceBuildPageViewProps> = ({
 	logs,
 	build,
 	buildError,
+	deletedWorkspaceBanner,
 	builds,
 	activeBuildNumber,
 }) => {
@@ -81,7 +83,13 @@ export const WorkspaceBuildPageView: FC<WorkspaceBuildPageViewProps> = ({
 	if (buildError) {
 		return (
 			<Margins>
-				<ErrorAlert error={buildError} className="my-4" />
+				{deletedWorkspaceBanner ? (
+					<div className="my-4">
+						<WorkspaceDeletedBanner {...deletedWorkspaceBanner} />
+					</div>
+				) : (
+					<ErrorAlert error={buildError} className="my-4" />
+				)}
 			</Margins>
 		);
 	}
@@ -101,7 +109,11 @@ export const WorkspaceBuildPageView: FC<WorkspaceBuildPageViewProps> = ({
 		<DashboardFullPage>
 			<FullWidthPageHeader sticky={false}>
 				<div className="flex flex-row gap-4">
-					<BuildAvatar build={build} size="lg" />
+					<BuildIcon
+						avatar
+						transition={build.transition}
+						jobStatus={build.job.status}
+					/>
 					<div>
 						<PageHeaderTitle>Build #{build.build_number}</PageHeaderTitle>
 						<PageHeaderSubtitle>{build.initiator_name}</PageHeaderSubtitle>
@@ -247,7 +259,10 @@ export const WorkspaceBuildPageView: FC<WorkspaceBuildPageViewProps> = ({
 	);
 };
 
-const ScrollArea: FC<HTMLProps<HTMLDivElement>> = ({ className, ...props }) => {
+const ScrollArea: React.FC<React.HTMLProps<HTMLDivElement>> = ({
+	className,
+	...props
+}) => {
 	/**
 	 * @todo 2024-10-03 - Use only CSS to set the height of the content.
 	 *
@@ -304,7 +319,7 @@ function sortLogsByCreatedAt(
 	});
 }
 
-const BuildLogsContent: FC<{
+const BuildLogsContent: React.FC<{
 	logs?: ProvisionerJobLog[];
 	build?: WorkspaceBuild;
 }> = ({ logs = [], build }) => {
@@ -327,7 +342,7 @@ type AgentLogsContentProps = {
 	agent: WorkspaceAgent;
 };
 
-const AgentLogsContent: FC<AgentLogsContentProps> = ({ agent }) => {
+const AgentLogsContent: React.FC<AgentLogsContentProps> = ({ agent }) => {
 	const logs = useAgentLogs({ agentId: agent.id });
 	return (
 		<AgentLogs

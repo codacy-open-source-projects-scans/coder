@@ -7,7 +7,10 @@ const (
 	RoleTemplateAdmin string = "template-admin"
 	RoleUserAdmin     string = "user-admin"
 	RoleAuditor       string = "auditor"
-	RoleAgentsAccess  string = "agents-access"
+	// RoleAgentsAccess is the organization role that grants Coder Agents
+	// chat access. Organizations include it in their default member roles
+	// unless an administrator removes it.
+	RoleAgentsAccess string = "agents-access"
 
 	RoleOrganizationAdmin                string = "organization-admin"
 	RoleOrganizationMember               string = "organization-member"
@@ -15,4 +18,5 @@ const (
 	RoleOrganizationTemplateAdmin        string = "organization-template-admin"
 	RoleOrganizationUserAdmin            string = "organization-user-admin"
 	RoleOrganizationWorkspaceCreationBan string = "organization-workspace-creation-ban"
+	RoleOrganizationWorkspaceAccess      string = "organization-workspace-access"
 )

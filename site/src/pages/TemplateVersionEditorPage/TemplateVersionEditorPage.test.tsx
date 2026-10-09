@@ -31,15 +31,6 @@ import TemplateVersionEditorPage, {
 
 const { API } = apiModule;
 
-// For some reason this component in Jest is throwing a MUI style warning so,
-// since we don't need it for this test, we can mock it out
-vi.mock(
-	"modules/templates/TemplateResourcesTable/TemplateResourcesTable",
-	() => ({
-		TemplateResourcesTable: () => <div></div>,
-	}),
-);
-
 // Monaco is a large and complicated codebase that slows tests down and we don't
 // need to test.
 vi.mock("#/pages/TemplateVersionEditorPage/MonacoEditor", () => ({
@@ -295,6 +286,78 @@ test("Preserves the currently open file path when building a template version", 
 	expect(router.state.location.search).toBe("?path=myfile.tf");
 });
 
+test("Creating a new file opens it in the editor", async () => {
+	const user = userEvent.setup();
+	const { router } = renderWithAuth(<TemplateVersionEditorPage />, {
+		route: `/templates/${MockTemplate.name}/versions/${MockTemplateVersion.name}/edit`,
+		path: "/templates/:template/versions/:version/edit",
+	});
+
+	// Wait for the default entrypoint file to load.
+	const editor = await screen.findByTestId("monaco-editor");
+	await waitFor(() => {
+		expect(editor).not.toHaveValue("");
+	});
+
+	const createButton = await screen.findByRole("button", {
+		name: "Create File",
+	});
+	await user.click(createButton);
+
+	const dialog = await screen.findByTestId("dialog");
+	const pathField = within(dialog).getByLabelText("File Path");
+	await user.type(pathField, "newfile.tf");
+	await user.click(within(dialog).getByRole("button", { name: "Create" }));
+
+	// The new (empty) file should be opened in the editor and the URL path
+	// query parameter should reflect the new file.
+	await waitFor(() => {
+		expect(screen.getByTestId("monaco-editor")).toHaveValue("");
+	});
+	expect(router.state.location.search).toBe("?path=newfile.tf");
+});
+
+test("Renaming a file does not throw and opens the new path", async () => {
+	const user = userEvent.setup();
+	const { router } = renderWithAuth(<TemplateVersionEditorPage />, {
+		route: `/templates/${MockTemplate.name}/versions/${MockTemplateVersion.name}/edit`,
+		path: "/templates/:template/versions/:version/edit",
+	});
+
+	// Wait for the default entrypoint file to load and capture its content so
+	// we can confirm the same content is shown after renaming.
+	const editor = await screen.findByTestId("monaco-editor");
+	await waitFor(() => {
+		expect(editor).not.toHaveValue("");
+	});
+	if (!(editor instanceof HTMLTextAreaElement)) {
+		throw new Error("editor is not a textarea");
+	}
+	const originalContent = editor.value;
+
+	// Open the file actions menu for the active file and click Rename.
+	const fileActions = await screen.findByRole("button", {
+		name: "File actions",
+	});
+	await user.click(fileActions);
+	await user.click(await screen.findByRole("menuitem", { name: /rename/i }));
+
+	const dialog = await screen.findByTestId("dialog");
+	const pathField = within(dialog).getByLabelText("File Path");
+	await user.clear(pathField);
+	await user.type(pathField, "renamed.tf");
+	await user.click(within(dialog).getByRole("button", { name: "Rename" }));
+
+	// The renamed file should still be open with its original content and
+	// the URL path query parameter should reflect the new name. Previously
+	// this path threw "File is not a text file" because the parent's stale
+	// file tree fell back to the old entrypoint name.
+	await waitFor(() => {
+		expect(screen.getByTestId("monaco-editor")).toHaveValue(originalContent);
+	});
+	expect(router.state.location.search).toBe("?path=renamed.tf");
+});
+
 describe.each([
 	{
 		testName: "Do not ask when template version has no errors",
@@ -330,49 +393,52 @@ describe.each([
 		],
 		askForVariables: true,
 	},
-])("Missing template variables", ({
-	testName,
-	initialVariables,
-	loadedVariables,
-	templateVersion,
-	askForVariables,
-}) => {
-	it(testName, async () => {
-		vi.resetAllMocks();
-		const queryClient = new QueryClient();
-		queryClient.setQueryData(
-			templateVersionVariablesKey(MockTemplateVersion.id),
-			initialVariables,
-		);
-
-		server.use(
-			http.get(
-				"/api/v2/organizations/:org/templates/:template/versions/:version",
-				() => {
-					return HttpResponse.json(templateVersion);
-				},
-			),
-		);
-
-		if (loadedVariables) {
-			server.use(
-				http.get("/api/v2/templateversions/:version/variables", () => {
-					return HttpResponse.json(loadedVariables);
-				}),
+])(
+	"Missing template variables",
+	({
+		testName,
+		initialVariables,
+		loadedVariables,
+		templateVersion,
+		askForVariables,
+	}) => {
+		it(testName, async () => {
+			vi.resetAllMocks();
+			const queryClient = new QueryClient();
+			queryClient.setQueryData(
+				templateVersionVariablesKey(MockTemplateVersion.id),
+				initialVariables,
 			);
-		}
 
-		renderEditorPage(queryClient);
-		await waitForLoaderToBeRemoved();
+			server.use(
+				http.get(
+					"/api/v2/organizations/:org/templates/:template/versions/:version",
+					() => {
+						return HttpResponse.json(templateVersion);
+					},
+				),
+			);
 
-		const dialogSelector = /template variables/i;
-		if (askForVariables) {
-			await screen.findByText(dialogSelector);
-		} else {
-			expect(screen.queryByText(dialogSelector)).not.toBeInTheDocument();
-		}
-	});
-});
+			if (loadedVariables) {
+				server.use(
+					http.get("/api/v2/templateversions/:version/variables", () => {
+						return HttpResponse.json(loadedVariables);
+					}),
+				);
+			}
+
+			renderEditorPage(queryClient);
+			await waitForLoaderToBeRemoved();
+
+			const dialogSelector = /template variables/i;
+			if (askForVariables) {
+				await screen.findByText(dialogSelector);
+			} else {
+				expect(screen.queryByText(dialogSelector)).not.toBeInTheDocument();
+			}
+		});
+	},
+);
 
 test("display pending badge and update it to running when status changes", async () => {
 	const MockPendingTemplateVersion = {

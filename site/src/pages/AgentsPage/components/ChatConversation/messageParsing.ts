@@ -1,4 +1,5 @@
 import type * as TypesGen from "#/api/typesGenerated";
+import { ChatAttachmentMediaTypes } from "#/api/typesGenerated";
 import { asRecord, asString } from "../ChatElements/runtimeTypeUtils";
 import {
 	getProvidedSubagentTitle,
@@ -15,6 +16,7 @@ import type {
 	ParsedToolCall,
 	ParsedToolResult,
 	RenderBlock,
+	StreamState,
 } from "./types";
 
 /** Concatenate text chunks, skipping whitespace-only values. */
@@ -71,6 +73,7 @@ const emptyParsedMessageContent = (): ParsedMessageContent => ({
 	tools: [],
 	blocks: [],
 	sources: [],
+	hookNotices: [],
 });
 
 export const ensureToolBlock = (
@@ -83,9 +86,76 @@ export const ensureToolBlock = (
 	return [...blocks, { type: "tool", id }];
 };
 
+const isToolCallPart = (
+	part: TypesGen.ChatMessagePart,
+): part is TypesGen.ChatToolCallPart => part.type === "tool-call";
+
+const isToolResultPart = (
+	part: TypesGen.ChatMessagePart,
+): part is TypesGen.ChatToolResultPart => part.type === "tool-result";
+
+const chatHasActiveToolCalls = (status: TypesGen.ChatStatus | null): boolean =>
+	status === "running" || status === "requires_action";
+
+export const getPendingToolCallIDs = (
+	messages: readonly TypesGen.ChatMessage[],
+	chatStatus: TypesGen.ChatStatus | null,
+): ReadonlySet<string> | undefined => {
+	if (!chatHasActiveToolCalls(chatStatus)) {
+		return undefined;
+	}
+
+	const resultIDs = new Set<string>();
+	for (const message of messages) {
+		for (const part of message.content ?? []) {
+			if (isToolResultPart(part) && part.tool_call_id) {
+				resultIDs.add(part.tool_call_id);
+			}
+		}
+	}
+
+	for (const message of messages.toReversed()) {
+		if (message.role === "user") {
+			return undefined;
+		}
+		if (message.role !== "assistant") {
+			continue;
+		}
+		const pendingToolCallIDs = (message.content ?? [])
+			.filter(isToolCallPart)
+			.map((part) => part.tool_call_id)
+			.filter((id): id is string => Boolean(id && !resultIDs.has(id)));
+		return pendingToolCallIDs.length > 0
+			? new Set(pendingToolCallIDs)
+			: undefined;
+	}
+
+	return undefined;
+};
+
+type MergeToolsOptions = {
+	pendingToolCallIDs?: ReadonlySet<string>;
+	// Live results for calls whose assistant message is already durable. The
+	// server persists that message before its tools run, so a streamed result
+	// has no live call to attach to and renders on the durable call instead.
+	// Absent when no stream is active.
+	liveToolResults?: StreamState["toolResults"];
+};
+
+export const getToolResultStatus = (result: {
+	isError: boolean;
+	isStreaming?: boolean;
+}): MergedTool["status"] => {
+	if (result.isStreaming) {
+		return "running";
+	}
+	return result.isError ? "error" : "completed";
+};
+
 export const mergeTools = (
 	calls: ParsedToolCall[],
 	results: ParsedToolResult[],
+	options: MergeToolsOptions = {},
 ): MergedTool[] => {
 	const resultById = new Map(results.map((r) => [r.id, r]));
 	const seen = new Set<string>();
@@ -93,22 +163,37 @@ export const mergeTools = (
 
 	for (const call of calls) {
 		seen.add(call.id);
-		const result = resultById.get(call.id);
+		const durableResult = resultById.get(call.id);
+		// A durable result is final; live data for the same call is stale.
+		const liveResult = durableResult
+			? undefined
+			: options.liveToolResults?.[call.id];
+		const result = durableResult ?? liveResult;
 		// Extract model_intent from the tool call args if present.
 		const callArgs = call.args as Record<string, unknown> | undefined;
 		const modelIntent =
 			typeof callArgs?.model_intent === "string"
 				? callArgs.model_intent
 				: undefined;
+		const status = result
+			? getToolResultStatus(result)
+			: options.pendingToolCallIDs?.has(call.id)
+				? "running"
+				: "completed";
 		merged.push({
 			id: call.id,
 			name: call.name,
 			args: call.args,
 			result: result?.result,
+			reasoning: liveResult?.reasoning,
 			isError: result?.isError ?? false,
-			status: result ? (result.isError ? "error" : "completed") : "completed",
+			isMedia: result?.isMedia,
+			status,
 			mcpServerConfigId: call.mcpServerConfigId || result?.mcpServerConfigId,
 			modelIntent,
+			parsedCommands: call.parsedCommands,
+			hookRewritten: call.hookRewritten,
+			startedAt: call.startedAt,
 		});
 	}
 
@@ -119,6 +204,7 @@ export const mergeTools = (
 				name: result.name,
 				result: result.result,
 				isError: result.isError,
+				isMedia: result.isMedia,
 				status: result.isError ? "error" : "completed",
 				mcpServerConfigId: result.mcpServerConfigId,
 			});
@@ -161,7 +247,10 @@ export const parseMessageContent = (
 					id,
 					name: part.tool_name || "Tool",
 					args: part.args,
+					parsedCommands: part.parsed_commands,
 					mcpServerConfigId: part.mcp_server_config_id,
+					hookRewritten: part.hook_rewritten,
+					startedAt: part.created_at,
 				});
 				parsed.blocks = ensureToolBlock(parsed.blocks, id);
 				break;
@@ -182,6 +271,7 @@ export const parseMessageContent = (
 					name,
 					result: part.result,
 					isError: parseToolResultIsError(name, part, part.result),
+					isMedia: part.is_media,
 					mcpServerConfigId: part.mcp_server_config_id,
 				});
 				parsed.blocks = ensureToolBlock(parsed.blocks, id);
@@ -209,7 +299,7 @@ export const parseMessageContent = (
 						!lastBlock.sources.some((s) => s.url === part.url)
 					) {
 						lastBlock.sources.push(source);
-					} else if (!lastBlock || lastBlock.type !== "sources") {
+					} else if (lastBlock?.type !== "sources") {
 						parsed.blocks.push({
 							type: "sources",
 							sources: [source],
@@ -228,6 +318,16 @@ export const parseMessageContent = (
 				// they are not rendered in the conversation timeline.
 				break;
 			}
+			case "hook-notice": {
+				if (part.text.trim()) {
+					parsed.hookNotices.push(part.text);
+				}
+				break;
+			}
+			case "workspace-file-reference": {
+				parsed.blocks.push(part);
+				break;
+			}
 			default: {
 				const _exhaustive: never = part;
 				break;
@@ -238,17 +338,15 @@ export const parseMessageContent = (
 };
 
 const isEditableAttachmentMediaType = (mediaType: string): boolean =>
-	mediaType.startsWith("image/") ||
-	mediaType === "text/plain" ||
-	mediaType === "text/markdown" ||
-	mediaType === "text/csv" ||
-	mediaType === "application/json" ||
-	mediaType === "application/pdf";
+	ChatAttachmentMediaTypes.some((allowed) => allowed === mediaType);
 
 const isEditableUserMessageFileBlock = (
 	block: RenderBlock,
-): block is TypesGen.ChatFilePart =>
-	block.type === "file" && isEditableAttachmentMediaType(block.media_type);
+): block is TypesGen.ChatFilePart | TypesGen.ChatWorkspaceFileReferencePart =>
+	(block.type === "file" && isEditableAttachmentMediaType(block.media_type)) ||
+	// Workspace file bytes already live in the workspace; editing
+	// preserves the reference (or drops it when the chip is removed).
+	block.type === "workspace-file-reference";
 
 export const getEditableUserMessagePayload = (
 	message: TypesGen.ChatMessage,
@@ -256,16 +354,23 @@ export const getEditableUserMessagePayload = (
 	text: string;
 	fileBlocks: readonly TypesGen.ChatMessagePart[] | undefined;
 } => {
+	// Concatenate text parts verbatim to match the server-side string_agg in
+	// GetChatUserPromptsByChatID; parseMessageContent/appendText is for streaming and drops whitespace-only chunks.
+	const text = (message.content ?? [])
+		.filter((part): part is TypesGen.ChatTextPart => part.type === "text")
+		.map((part) => part.text)
+		.join("");
 	const parsed = parseMessageContent(message.content);
 	const fileBlocks = parsed.blocks.filter(isEditableUserMessageFileBlock);
 	return {
-		text: parsed.markdown || "",
+		text,
 		fileBlocks: fileBlocks.length > 0 ? fileBlocks : undefined,
 	};
 };
 
 export const parseMessagesWithMergedTools = (
 	messages: readonly TypesGen.ChatMessage[],
+	options: MergeToolsOptions = {},
 ): ParsedMessageEntry[] => {
 	const rawParsed = messages.map((message) => ({
 		message,
@@ -295,11 +400,13 @@ export const parseMessagesWithMergedTools = (
 		parsed.tools = mergeTools(
 			parsed.toolCalls,
 			Array.from(resultById.values()),
+			options,
 		);
 	}
 
 	// Annotate execute/process_output tools whose process was
-	// later killed or terminated via process_signal.
+	// later killed or terminated via process_signal, and execute
+	// tools an interrupt canceled.
 	const signaledProcesses = new Map<string, "kill" | "terminate">();
 	for (const { parsed } of rawParsed) {
 		for (const tool of parsed.tools) {
@@ -313,19 +420,21 @@ export const parseMessagesWithMergedTools = (
 				signaledProcesses.set(pid, sig);
 		}
 	}
-	if (signaledProcesses.size > 0) {
-		for (const { parsed } of rawParsed) {
-			for (const tool of parsed.tools) {
-				if (tool.name !== "execute" && tool.name !== "process_output") continue;
-				const rec = asRecord(tool.result);
-				const args = asRecord(tool.args);
-				const pid =
-					(rec ? asString(rec.background_process_id) : "") ||
-					(rec ? asString(rec.process_id) : "") ||
-					(args ? asString(args.process_id) : "");
-				const sig = pid ? signaledProcesses.get(pid) : undefined;
-				if (sig) tool.killedBySignal = sig;
+	for (const { parsed } of rawParsed) {
+		for (const tool of parsed.tools) {
+			if (tool.name !== "execute" && tool.name !== "process_output") continue;
+			const rec = asRecord(tool.result);
+			if (tool.name === "execute" && rec?.canceled === true) {
+				tool.killedBySignal = "kill";
+				continue;
 			}
+			const args = asRecord(tool.args);
+			const pid =
+				(rec ? asString(rec.background_process_id) : "") ||
+				(rec ? asString(rec.process_id) : "") ||
+				(args ? asString(args.process_id) : "");
+			const sig = pid ? signaledProcesses.get(pid) : undefined;
+			if (sig) tool.killedBySignal = sig;
 		}
 	}
 

@@ -1,63 +1,55 @@
 import {
 	ArrowLeftIcon,
+	CopyIcon,
 	ExternalLinkIcon,
 	GitBranchIcon,
-	GitMergeIcon,
-	GitPullRequestClosedIcon,
-	GitPullRequestDraftIcon,
-	GitPullRequestIcon,
 } from "lucide-react";
-import { type FC, type RefObject, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery } from "react-query";
 import { chatDiffContents } from "#/api/queries/chats";
 import type * as TypesGen from "#/api/typesGenerated";
-import { cn } from "#/utils/cn";
+import { CheckIcon } from "#/components/AnimatedIcons/Check";
+import {
+	Tooltip,
+	TooltipContent,
+	TooltipTrigger,
+} from "#/components/Tooltip/Tooltip";
+import { useClipboard } from "#/hooks/useClipboard";
 import { parsePullRequestUrl } from "../../utils/pullRequest";
 import type { ChatMessageInputRef } from "../AgentChatInput";
 import { CommentableDiffViewer } from "../DiffViewer/CommentableDiffViewer";
 import { DiffStatBadge } from "../DiffViewer/DiffStats";
 import type { DiffStyle } from "../DiffViewer/DiffViewer";
-import { getDiffCacheKeyPrefix } from "../DiffViewer/diffCacheKey";
-import { useParsedDiff } from "../DiffViewer/useParsedDiff";
+import { parseDiffString } from "../DiffViewer/parseDiff";
 
 export { InlinePromptInput } from "../DiffViewer/CommentableDiffViewer";
 
 // -------------------------------------------------------------------
-// PR state badge
+// Branch copy button
 // -------------------------------------------------------------------
 
-const PullRequestStateBadge: FC<{
-	state?: string;
-	draft?: boolean;
-}> = ({ state, draft }) => {
-	let Icon = GitPullRequestIcon;
-	let label = "Open";
-	let colorClasses = "bg-surface-git-added text-git-added-bright";
-
-	if (state === "merged") {
-		Icon = GitMergeIcon;
-		label = "Merged";
-		colorClasses = "bg-surface-git-merged text-git-merged-bright";
-	} else if (state === "closed") {
-		Icon = GitPullRequestClosedIcon;
-		label = "Closed";
-		colorClasses = "bg-surface-git-deleted text-git-deleted-bright";
-	} else if (draft) {
-		Icon = GitPullRequestDraftIcon;
-		label = "Draft";
-		colorClasses = "text-content-secondary";
-	}
-
+const BranchCopyButton: React.FC<{ branch: string }> = ({ branch }) => {
+	const { copyToClipboard, showCopiedSuccess } = useClipboard();
 	return (
-		<span
-			className={cn(
-				"inline-flex shrink-0 items-center gap-1 rounded-sm border border-solid border-border-default px-2 text-[13px] font-medium leading-5",
-				colorClasses,
-			)}
-		>
-			<Icon className="size-3" />
-			{label}
-		</span>
+		<Tooltip>
+			<TooltipTrigger asChild>
+				<button
+					type="button"
+					onClick={() => copyToClipboard(branch)}
+					aria-label={`Copy branch name: ${branch}`}
+					className="inline-flex shrink-0 cursor-pointer items-center justify-center rounded-sm border-0 bg-transparent p-0.5 text-content-secondary transition-colors hover:bg-surface-secondary hover:text-content-primary"
+				>
+					{showCopiedSuccess ? (
+						<CheckIcon className="size-3" />
+					) : (
+						<CopyIcon className="size-3" />
+					)}
+				</button>
+			</TooltipTrigger>
+			<TooltipContent side="bottom">
+				{showCopiedSuccess ? "Copied" : "Copy branch name"}
+			</TooltipContent>
+		</Tooltip>
 	);
 };
 
@@ -65,41 +57,37 @@ const PullRequestStateBadge: FC<{
 // Main component
 // -------------------------------------------------------------------
 
-interface RemoteDiffPanelProps {
+type RemoteDiffPanelProps = {
 	chatId: string;
-	isExpanded?: boolean;
-	chatInputRef?: RefObject<ChatMessageInputRef | null>;
+	isExpanded: boolean;
+	chatInputRef: React.RefObject<ChatMessageInputRef | null>;
 	diffStyle: DiffStyle;
 	diffStatus?: TypesGen.ChatDiffStatus;
-}
+	remoteRef?: TypesGen.DiffStatusRef;
+};
 
-export const RemoteDiffPanel: FC<RemoteDiffPanelProps> = ({
+export const RemoteDiffPanel: React.FC<RemoteDiffPanelProps> = ({
 	chatId,
 	isExpanded,
 	chatInputRef,
 	diffStyle,
 	diffStatus,
+	remoteRef,
 }) => {
 	// ---------------------------------------------------------------
 	// Data fetching
 	// ---------------------------------------------------------------
+	// A ref without a PR URL still has a fetchable branch diff.
+	const hasPrUrl = Boolean(diffStatus?.url);
+	const hasRefSelector = remoteRef !== undefined;
 	const diffContentsQuery = useQuery({
-		...chatDiffContents(chatId),
-		enabled: Boolean(diffStatus?.url),
+		...chatDiffContents(chatId, remoteRef),
+		enabled: hasPrUrl || hasRefSelector,
 	});
 
 	const diffContent = diffContentsQuery.data?.diff;
-	const dataUpdatedAt = diffContentsQuery.dataUpdatedAt;
 
-	// The @pierre/diffs worker pool only keys cached highlighted
-	// ASTs by `cacheKey`, so the key must change whenever the diff
-	// query updates. React Query's `dataUpdatedAt` survives panel
-	// remounts, which prevents stale cache hits from pairing a new
-	// FileDiffMetadata with an older highlighted AST.
-	const parsedFiles = useParsedDiff(
-		diffContent,
-		getDiffCacheKeyPrefix(`chat-${chatId}`, dataUpdatedAt),
-	);
+	const parsedFiles = parseDiffString(diffContent);
 
 	// ---------------------------------------------------------------
 	// Scroll-to-file from chat input chip clicks
@@ -125,19 +113,21 @@ export const RemoteDiffPanel: FC<RemoteDiffPanelProps> = ({
 	// ---------------------------------------------------------------
 	const pullRequestUrl = diffStatus?.url;
 	const parsedPr = pullRequestUrl ? parsePullRequestUrl(pullRequestUrl) : null;
-	const prState = diffStatus?.pull_request_state;
-	const prDraft = diffStatus?.pull_request_draft;
+	// The server synthesizes /tree/<branch> URLs for refs without
+	// a PR, so classify before rendering the PR link.
+	const hasPullRequest = Boolean(diffStatus?.pr_number ?? parsedPr);
 	const baseBranch = diffStatus?.base_branch;
-	const headBranch = diffStatus?.head_branch;
+	// A cleared PR clears head_branch but keeps git_branch.
+	const headBranch = diffStatus?.head_branch || diffStatus?.git_branch;
 
 	// ---------------------------------------------------------------
 	// Render
 	// ---------------------------------------------------------------
 	return (
 		<div className="flex h-full flex-col">
-			{/* Compact PR sub-header */}
-			{pullRequestUrl && (
-				<div className="flex shrink-0 items-center gap-2 border-0 border-b border-solid border-border-default px-3 py-1.5">
+			{/* Compact PR/branch sub-header */}
+			{(pullRequestUrl || baseBranch || headBranch) && (
+				<div className="flex shrink-0 items-center gap-2 border-0 border-b border-solid border-border px-3 py-1.5">
 					<div className="flex min-w-0 items-center gap-1.5 text-[13px] text-content-secondary">
 						{baseBranch || headBranch ? (
 							<>
@@ -146,7 +136,12 @@ export const RemoteDiffPanel: FC<RemoteDiffPanelProps> = ({
 								{headBranch && baseBranch && (
 									<ArrowLeftIcon className="size-3 shrink-0 opacity-50" />
 								)}
-								{headBranch && <span className="truncate"> {headBranch}</span>}
+								{headBranch && (
+									<>
+										<span className="truncate"> {headBranch}</span>
+										<BranchCopyButton branch={headBranch} />
+									</>
+								)}
 							</>
 						) : parsedPr ? (
 							<span className="truncate">
@@ -157,22 +152,23 @@ export const RemoteDiffPanel: FC<RemoteDiffPanelProps> = ({
 						)}
 					</div>
 					<div className="ml-auto flex shrink-0 items-center gap-1.5">
-						<PullRequestStateBadge state={prState} draft={prDraft} />
 						{diffStatus?.additions || diffStatus?.deletions ? (
 							<DiffStatBadge
 								additions={diffStatus.additions}
 								deletions={diffStatus.deletions}
 							/>
 						) : null}
-						<a
-							href={pullRequestUrl}
-							target="_blank"
-							rel="noreferrer"
-							className="inline-flex items-center gap-1 rounded-sm border border-solid border-border-default px-2 text-[13px] font-medium leading-5 text-content-secondary no-underline transition-colors hover:bg-surface-secondary hover:text-content-primary"
-						>
-							View PR
-							<ExternalLinkIcon className="size-3" />
-						</a>
+						{pullRequestUrl && hasPullRequest && (
+							<a
+								href={pullRequestUrl}
+								target="_blank"
+								rel="noreferrer"
+								className="inline-flex items-center gap-1 rounded-sm border border-solid border-border px-2 text-[13px] font-medium leading-5 text-content-primary no-underline transition-colors hover:bg-surface-secondary"
+							>
+								View PR
+								<ExternalLinkIcon className="size-3" />
+							</a>
+						)}
 					</div>
 				</div>
 			)}

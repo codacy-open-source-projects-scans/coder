@@ -12,12 +12,12 @@ type AnnotationSide = "additions" | "deletions";
  * crosses from one side to the other (e.g. deletions -> additions in
  * a split diff).
  */
-interface LineSelectionRange {
+type LineSelectionRange = {
 	start: number;
 	end: number;
 	side?: AnnotationSide;
 	endSide?: AnnotationSide;
-}
+};
 
 /**
  * Internal state tracked for an active inline comment input.
@@ -27,13 +27,13 @@ interface LineSelectionRange {
  * equal; for cross-side selections they refer to line numbers in
  * different file versions and MUST NOT be compared with min/max.
  */
-export interface CommentBoxState {
+export type CommentBoxState = {
 	fileName: string;
 	start: number;
 	startSide: AnnotationSide;
 	end: number;
 	endSide: AnnotationSide;
-}
+};
 
 // -------------------------------------------------------------------
 // Pure helpers
@@ -45,23 +45,16 @@ export interface CommentBoxState {
  *
  * Returns:
  * - `null`        when the range is null (selection cleared).
- * - `"ignore"`    when the range is a same-side single-line click
- *                 (these are handled by `handleLineNumberClick`
- *                 instead).
  * - A `CommentBoxState` otherwise.
  */
 export function commentBoxFromRange(
 	fileName: string,
 	range: LineSelectionRange | null,
-): CommentBoxState | null | "ignore" {
+): CommentBoxState | null {
 	if (!range) return null;
 
 	const startSide = range.side ?? "additions";
 	const endSide = range.endSide ?? startSide;
-
-	// Single-line same-side selections are handled by the line
-	// number click handler, not the range selection handler.
-	if (range.start === range.end && startSide === endSide) return "ignore";
 
 	return {
 		fileName,

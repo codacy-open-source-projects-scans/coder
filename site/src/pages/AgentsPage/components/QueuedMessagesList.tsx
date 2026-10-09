@@ -1,12 +1,13 @@
+import { cn } from "cn";
 import {
 	ArrowUpIcon,
 	CornerDownLeftIcon,
-	ImageIcon,
-	PencilIcon,
+	InfoIcon,
+	PaperclipIcon,
 	Trash2Icon,
 } from "lucide-react";
-import { type FC, useEffect, useState } from "react";
-import type { ChatMessagePart, ChatQueuedMessage } from "#/api/typesGenerated";
+import { useEffect, useState } from "react";
+import type { ChatQueuedMessage } from "#/api/typesGenerated";
 import { Button } from "#/components/Button/Button";
 import { Spinner } from "#/components/Spinner/Spinner";
 import {
@@ -14,73 +15,66 @@ import {
 	TooltipContent,
 	TooltipTrigger,
 } from "#/components/Tooltip/Tooltip";
-import { cn } from "#/utils/cn";
+import {
+	AutomationLabel,
+	type ChatAutomationNames,
+} from "./ChatConversation/AutomationLabel";
 
-interface QueuedMessagesListProps {
+type QueuedMessagesListProps = {
 	messages: readonly ChatQueuedMessage[];
+	automationNames: ChatAutomationNames;
 	onDelete: (id: number) => Promise<void> | void;
 	onPromote: (id: number) => Promise<void> | void;
-	onEdit?: (
-		id: number,
-		text: string,
-		fileBlocks: readonly ChatMessagePart[],
-	) => void;
-	editingMessageID?: number | null;
 	className?: string;
-}
+};
 
-interface QueuedMessageInfo {
+type QueuedMessageInfo = {
 	displayText: string;
-	rawText: string;
 	attachmentCount: number;
-	fileBlocks: readonly ChatMessagePart[];
-}
+	hookNotices: string[];
+};
 
 export const getQueuedMessageInfo = (
 	message: ChatQueuedMessage,
 ): QueuedMessageInfo => {
-	const { content } = message;
-	const fileBlocks = content.filter((p) => p.type === "file");
-	const rawText = content
-		.filter((p) => p.type === "text")
-		.map((p) => p.text)
-		.filter((t): t is string => Boolean(t?.trim()))
-		.join(" ")
-		.trim();
-
-	if (rawText) {
-		return {
-			displayText: rawText,
-			rawText,
-			attachmentCount: fileBlocks.length,
-			fileBlocks,
-		};
+	let attachmentCount = 0;
+	const textParts: string[] = [];
+	const hookNotices: string[] = [];
+	for (const part of message.content) {
+		if (part.type === "file" || part.type === "workspace-file-reference") {
+			attachmentCount++;
+		} else if (part.type === "text" && part.text?.trim()) {
+			textParts.push(part.text);
+		} else if (part.type === "hook-notice" && part.text?.trim()) {
+			hookNotices.push(part.text);
+		}
 	}
+	const rawText = textParts.join(" ").trim();
+
 	return {
-		displayText: "[Queued message]",
-		rawText: "",
-		attachmentCount: fileBlocks.length,
-		fileBlocks,
+		displayText: rawText || "[Queued message]",
+		attachmentCount,
+		hookNotices,
 	};
 };
 
-export const QueuedMessagesList: FC<QueuedMessagesListProps> = ({
+export const QueuedMessagesList: React.FC<QueuedMessagesListProps> = ({
 	messages,
+	automationNames,
 	onDelete,
 	onPromote,
-	onEdit,
-	editingMessageID = null,
 	className,
 }) => {
 	const items = messages.map((message) => {
-		const { displayText, rawText, attachmentCount, fileBlocks } =
+		const { displayText, attachmentCount, hookNotices } =
 			getQueuedMessageInfo(message);
 		return {
 			id: message.id,
 			displayText,
-			rawText,
 			attachmentCount,
-			fileBlocks,
+			hookNotices,
+			automationId: message.automation_id,
+			inputId: message.input_id,
 		};
 	});
 
@@ -170,30 +164,38 @@ export const QueuedMessagesList: FC<QueuedMessagesListProps> = ({
 	const isBusy = busyItem !== null;
 
 	return (
-		<div className={cn("flex w-full flex-col", className)}>
+		<div
+			className={cn(
+				"flex w-full flex-col max-h-[40svh] overflow-y-auto scrollbar-gutter-stable scrollbar-thin",
+				className,
+			)}
+		>
 			{visibleItems.map((item, index) => {
-				const isEditing = item.id === editingMessageID;
 				const isFirst = index === 0;
 				const isItemBusy = busyItem !== null && busyItem.id === item.id;
 				const isHovered = hoveredID === item.id;
-				// Show actions when: first and nothing else hovered,
-				// or this item is hovered, or being edited.
-				const showActions =
-					isEditing || isHovered || (isFirst && hoveredID === null);
+				const showActions = isHovered || (isFirst && hoveredID === null);
 
 				return (
 					<div
 						key={item.id}
-						className={cn(
-							"my-1 opacity-40 hover:opacity-80 transition-opacity",
-							isEditing && "rounded-lg opacity-100 ring-2 ring-content-link/40",
-						)}
+						className="my-1 opacity-40 transition-opacity hover:opacity-80"
 						onMouseEnter={() => setHoveredID(item.id)}
 						onMouseLeave={() =>
 							setHoveredID((current) => (current === item.id ? null : current))
 						}
 					>
-						<div className="flex items-center gap-2 rounded-lg border border-solid border-border-default bg-surface-secondary px-3 py-2 font-sans text-sm leading-relaxed text-content-primary shadow-sm">
+						{item.automationId && (
+							<div className="mb-1 flex">
+								<AutomationLabel
+									automationId={item.automationId}
+									inputId={item.inputId}
+									automationName={automationNames.names.get(item.automationId)}
+									nameStatus={automationNames.status}
+								/>
+							</div>
+						)}
+						<div className="flex items-center gap-2 rounded-lg border border-solid border-border bg-surface-secondary px-3 py-2 font-sans text-sm leading-relaxed text-content-primary shadow-xs">
 							<span className="min-w-0 flex-1 truncate">
 								{item.displayText.split("\n")[0]}
 								{item.displayText.includes("\n") ? "…" : ""}
@@ -201,21 +203,38 @@ export const QueuedMessagesList: FC<QueuedMessagesListProps> = ({
 							{item.attachmentCount > 0 && (
 								<span
 									role="img"
-									aria-label={`${item.attachmentCount} image attachment${item.attachmentCount !== 1 ? "s" : ""}`}
+									aria-label={`${item.attachmentCount} attachment${item.attachmentCount !== 1 ? "s" : ""}`}
 									className="flex shrink-0 items-center gap-1 text-xs text-content-secondary"
 								>
-									<ImageIcon className="h-3 w-3" aria-hidden="true" />
+									<PaperclipIcon className="size-3" aria-hidden="true" />
 									<span aria-hidden="true">{item.attachmentCount}</span>
 								</span>
+							)}
+							{item.hookNotices.length > 0 && (
+								<Tooltip>
+									<TooltipTrigger asChild>
+										<button
+											type="button"
+											aria-label={`Lifecycle hook notice: ${item.hookNotices.join(" ")}`}
+											className="flex shrink-0 cursor-default items-center border-none bg-transparent p-0 text-highlight-sky"
+										>
+											<InfoIcon className="size-3" aria-hidden="true" />
+										</button>
+									</TooltipTrigger>
+									<TooltipContent side="top">
+										{item.hookNotices.join(" ")}
+									</TooltipContent>
+								</Tooltip>
 							)}
 							{isFirst && (
 								<span
 									className={cn(
-										"flex shrink-0 items-center gap-1 text-xs text-content-secondary transition-opacity",
+										"hidden shrink-0 items-center gap-1 text-xs text-content-secondary transition-opacity sm:flex",
 										showActions ? "opacity-100" : "opacity-0",
 									)}
 								>
-									<CornerDownLeftIcon className="h-3 w-3" />
+									<CornerDownLeftIcon className="size-3" aria-hidden="true" />
+									<span className="sr-only">Enter</span>
 									to send
 								</span>
 							)}
@@ -225,25 +244,6 @@ export const QueuedMessagesList: FC<QueuedMessagesListProps> = ({
 									showActions ? "opacity-100" : "opacity-0",
 								)}
 							>
-								{onEdit && (
-									<Tooltip>
-										<TooltipTrigger asChild>
-											<Button
-												variant="subtle"
-												size="icon"
-												aria-label="Edit"
-												disabled={isBusy}
-												onClick={() =>
-													onEdit(item.id, item.rawText, item.fileBlocks)
-												}
-												className="size-6 rounded text-content-secondary hover:bg-surface-tertiary hover:text-content-primary"
-											>
-												<PencilIcon className="h-3.5 w-3.5" />
-											</Button>
-										</TooltipTrigger>
-										<TooltipContent side="top">Edit</TooltipContent>
-									</Tooltip>
-								)}
 								<Tooltip>
 									<TooltipTrigger asChild>
 										<Button
@@ -257,7 +257,7 @@ export const QueuedMessagesList: FC<QueuedMessagesListProps> = ({
 											{isItemBusy && busyItem.action === "promote" ? (
 												<Spinner className="h-3.5 w-3.5" loading />
 											) : (
-												<ArrowUpIcon className="h-3.5 w-3.5" />
+												<ArrowUpIcon className="size-3.5" />
 											)}
 										</Button>
 									</TooltipTrigger>
@@ -276,7 +276,7 @@ export const QueuedMessagesList: FC<QueuedMessagesListProps> = ({
 											{isItemBusy && busyItem.action === "delete" ? (
 												<Spinner className="h-3.5 w-3.5" loading />
 											) : (
-												<Trash2Icon className="h-3.5 w-3.5" />
+												<Trash2Icon className="size-3.5" />
 											)}
 										</Button>
 									</TooltipTrigger>

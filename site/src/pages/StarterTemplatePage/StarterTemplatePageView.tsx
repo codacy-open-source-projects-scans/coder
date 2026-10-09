@@ -1,6 +1,4 @@
-import { useTheme } from "@emotion/react";
 import { ExternalLinkIcon, PlusIcon } from "lucide-react";
-import type { FC } from "react";
 import { Link } from "react-router";
 import type { TemplateExample } from "#/api/typesGenerated";
 import { ErrorAlert } from "#/components/Alert/ErrorAlert";
@@ -15,17 +13,14 @@ import {
 	PageHeaderTitle,
 } from "#/components/PageHeader/PageHeader";
 
-interface StarterTemplatePageViewProps {
+type StarterTemplatePageViewProps = {
 	starterTemplate?: TemplateExample;
 	error?: unknown;
-}
+};
 
-export const StarterTemplatePageView: FC<StarterTemplatePageViewProps> = ({
-	starterTemplate,
-	error,
-}) => {
-	const theme = useTheme();
-
+export const StarterTemplatePageView: React.FC<
+	StarterTemplatePageViewProps
+> = ({ starterTemplate, error }) => {
 	if (error) {
 		return (
 			<Margins>
@@ -59,12 +54,12 @@ export const StarterTemplatePageView: FC<StarterTemplatePageViewProps> = ({
 				}
 			>
 				<div className="flex flex-row gap-6 items-center">
-					<div className="h-12 w-12 flex items-center justify-center [&_img]:w-full">
+					<div className="size-12 flex items-center justify-center [&_img]:w-full">
 						<ExternalImage src={starterTemplate.icon} />
 					</div>
 					<div>
 						<PageHeaderTitle>{starterTemplate.name}</PageHeaderTitle>
-						<PageHeaderSubtitle condensed>
+						<PageHeaderSubtitle>
 							{starterTemplate.description}
 						</PageHeaderSubtitle>
 					</div>
@@ -72,14 +67,10 @@ export const StarterTemplatePageView: FC<StarterTemplatePageViewProps> = ({
 			</PageHeader>
 
 			<div
-				css={{
-					background: theme.palette.background.paper,
-					border: `1px solid ${theme.palette.divider}`,
-					borderRadius: 8,
-				}}
+				className="bg-surface-secondary border border-solid border-border rounded-lg"
 				id="readme"
 			>
-				<div className="px-10 pt-10 pb-16 max-w-[800px] mx-auto">
+				<div className="px-8 pt-2 pb-12 max-w-[860px]">
 					<MemoizedMarkdown>{starterTemplate.markdown}</MemoizedMarkdown>
 				</div>
 			</div>

@@ -1,7 +1,8 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { type FC, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { Outlet } from "react-router";
-import { expect, userEvent, waitFor, within } from "storybook/test";
+import { userEvent, within } from "storybook/test";
+import { pixelWithPhone } from "#/testHelpers/pixel";
 import { withDashboardProvider } from "#/testHelpers/storybook";
 import { AgentPageHeader } from "./AgentPageHeader";
 import { ChimeButton } from "./ChimeButton";
@@ -44,15 +45,15 @@ const createMatchMediaController = (initialDesktop: boolean) => {
 	const dispatch = (): void => {
 		const event = {
 			matches: desktop,
-			media: "(min-width: 768px)",
+			media: "(min-width: 640px)",
 		} as MediaQueryListEvent;
 		for (const listener of listeners) {
 			listener(event);
 		}
 	};
 
-	const matchMedia = ((query: string): MediaQueryList => {
-		const isDesktopQuery = /\(\s*min-width\s*:\s*768px\s*\)/.test(query);
+	const matchMedia = (query: string): MediaQueryList => {
+		const isDesktopQuery = /\(\s*min-width\s*:\s*640px\s*\)/.test(query);
 		return {
 			matches: isDesktopQuery ? desktop : false,
 			media: query,
@@ -94,7 +95,7 @@ const createMatchMediaController = (initialDesktop: boolean) => {
 				}
 			},
 		};
-	}) as typeof window.matchMedia;
+	};
 
 	return {
 		matchMedia,
@@ -105,7 +106,7 @@ const createMatchMediaController = (initialDesktop: boolean) => {
 	};
 };
 
-const HeaderStateHarness: FC = () => {
+const HeaderStateHarness: React.FC = () => {
 	const [chimeEnabled, setChimeEnabled] = useState(true);
 	const [webpushSubscribed, setWebpushSubscribed] = useState(false);
 	const [webpushLoading, setWebpushLoading] = useState(false);
@@ -173,6 +174,46 @@ const meta: Meta<typeof AgentPageHeader> = {
 export default meta;
 type Story = StoryObj<typeof AgentPageHeader>;
 
+export const MobileActionsExcludeAnalytics: Story = {
+	beforeEach: () => {
+		const originalMatchMedia = window.matchMedia;
+		window.matchMedia = createMatchMediaController(false).matchMedia;
+
+		return () => {
+			window.matchMedia = originalMatchMedia;
+		};
+	},
+	render: () => <HeaderStateHarness />,
+	parameters: {
+		layout: "fullscreen",
+		viewport: { defaultViewport: "mobile1" },
+		pixel: { matrix: pixelWithPhone },
+		reactRouter: {
+			location: {
+				path: "/agents",
+			},
+			routing: [
+				{
+					path: "/",
+					element: (
+						<Outlet
+							context={{
+								isSidebarCollapsed: false,
+								onExpandSidebar: () => undefined,
+							}}
+						/>
+					),
+					children: [{ path: "agents", useStoryElement: true }],
+				},
+			],
+		},
+	},
+	play: async ({ canvasElement }) => {
+		const canvas = within(canvasElement);
+		await userEvent.click(canvas.getByRole("button", { name: "More options" }));
+	},
+};
+
 export const ToggleStateStaysInSyncAcrossBreakpoints: Story = {
 	render: () => <HeaderStateHarness />,
 	parameters: {
@@ -203,29 +244,14 @@ export const ToggleStateStaysInSyncAcrossBreakpoints: Story = {
 			name: "Mute completion chime",
 		});
 		await userEvent.click(desktopSoundButton);
-		await waitFor(() => {
-			expect(
-				canvas.getByRole("button", { name: "Enable completion chime" }),
-			).toBeVisible();
-		});
 
 		const desktopNotificationButton = canvas.getByRole("button", {
 			name: "Enable notifications",
 		});
 		await userEvent.click(desktopNotificationButton);
-		await waitFor(() => {
-			expect(
-				canvas.getByRole("button", { name: "Disable notifications" }),
-			).toBeVisible();
-		});
 
 		await userEvent.click(
 			canvas.getByRole("button", { name: "Disable notifications" }),
 		);
-		await waitFor(() => {
-			expect(
-				canvas.getByRole("button", { name: "Enable notifications" }),
-			).toBeVisible();
-		});
 	},
 };

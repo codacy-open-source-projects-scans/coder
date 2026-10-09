@@ -11,18 +11,13 @@ import (
 )
 
 type Reason struct {
-	EventType   database.AiSeatUsageReason
+	EventType   database.AISeatUsageReason
 	Description string
 }
 
 // ReasonAIBridge constructs a reason for usage originating from AI Bridge.
 func ReasonAIBridge(description string) Reason {
-	return Reason{EventType: database.AiSeatUsageReasonAibridge, Description: description}
-}
-
-// ReasonTask constructs a reason for usage originating from tasks.
-func ReasonTask(description string) Reason {
-	return Reason{EventType: database.AiSeatUsageReasonTask, Description: description}
+	return Reason{EventType: database.AISeatUsageReasonAibridge, Description: description}
 }
 
 // SeatTracker records AI seat consumption state.

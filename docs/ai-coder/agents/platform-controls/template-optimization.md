@@ -1,48 +1,41 @@
-# Template Optimization
+---
+title: Template optimization
+---
 
-Not every chat with Coder Agents requires a workspace. A workspace is only provisioned when the
-agent decides it needs compute — to read files, write code, run commands, or
-execute builds.
+Not every chat with Coder Agents requires a workspace.
+The agent provisions one when missing tools, skills, MCP integrations, or context block progress, or when it needs to work with files or run commands.
 
-When a workspace is needed, the agent reads the available templates, selects
-the appropriate one based on its name and description, and provisions a
-workspace automatically. Administrators can restrict which templates the agent
-can see using the [template allowlist](#restrict-available-templates).
+When a workspace is needed, the agent reads the available templates, selects the appropriate one based on its name and description, and provisions a workspace automatically.
+Administrators can [restrict which templates the agent can use](#restrict-available-templates).
 
 This guide covers best practices for creating templates that are discoverable
 and useful to Coder Agents.
 
 ## Restrict available templates
 
-By default, the agent can see and provision any template in the deployment.
-Administrators can restrict this to a specific set of templates using the
-template allowlist.
+By default, every template allows Coder Agents.
+Administrators can block individual templates from the template list or from each template's settings page.
 
-To configure the allowlist:
+To change which templates agents can use:
 
-1. Navigate to **Agents** > **Settings** > **Templates**.
-2. Select the templates you want agents to be able to use.
-3. Click **Save**.
+1. Navigate to **Admin settings** > **AI** > **Coder Agents** > **Templates**.
+2. Toggle the switch for each template.
 
-When the allowlist is configured, the agent's `list_templates`,
-`read_template`, and `create_workspace` tools are filtered to only include
-the selected templates. The agent cannot see or provision templates that are
-not on the list.
+The same control is available on each template's settings page as **Allow Coder Agents to create workspaces using this template**.
 
-When no templates are selected, the allowlist is inactive and all templates
-are available to agents.
+When a template does not allow agents, the agent's `list_templates`, `read_template`, and `create_workspace` tools exclude it.
+The agent cannot read the template or provision workspaces from it.
 
-The allowlist only affects agent-created workspaces. Developers can still
-manually create workspaces from any template they have access to. This lets
-platform teams apply stricter policies to agent workloads without affecting
-the manual workspace experience.
+The setting only affects agent-created workspaces.
+Developers can still manually create workspaces from any template to which they have access.
+With this setting, platform teams can apply stricter policies to agent workloads without affecting the manual workspace experience.
 
 ## Write discoverable template descriptions
 
-The agent selects templates by reading their names and descriptions — the same
-metadata shown on the templates page in the Coder dashboard, sorted by number
-of active developers. It does not inspect the template's Terraform to
-understand what infrastructure is inside.
+The agent selects templates by reading their names and descriptions, the same metadata shown on the templates page in the Coder dashboard.
+The agent's `list_templates` tool ranks matches by query relevance first, then by an affinity score that weights the developer's own recent template usage far more heavily than organization popularity.
+It does not inspect the template's Terraform to understand what infrastructure is inside.
+For the ranking details, refer to [list_templates](../tools.md#how-templates-are-ranked).
 
 This means the template description is the single most important factor in
 whether the agent picks the right template for a given task.
@@ -73,10 +66,8 @@ A good template description tells the agent:
 | Default            | Tells the agent nothing                                                 |
 
 > [!TIP]
-> If many developers already use a template, the agent is more likely to
-> select it because templates are sorted by active developer count. A
-> well-written description on a popular template is the strongest routing
-> signal you can provide.
+> If many developers already use a template, the agent is more likely to select it, because organization popularity contributes to the affinity score that orders the shortlist.
+> A well-written description on a popular template is the strongest routing signal you can provide.
 
 ### Template display names
 
@@ -84,6 +75,42 @@ Display names appear in the template selector and in the agent's tool output.
 Use readable, descriptive names rather than slugs or internal codes. A display
 name like "Python Backend (Payments)" is more useful to both humans and the
 agent than `py-be-pay-v3`.
+
+### Put routing context near the top of the README
+
+The short `description` also appears on the dashboard templates page, so it is
+intentionally limited to fewer than 128 characters. When that is not enough
+room to fully describe a template for the agent, put the most important routing
+context at the top of the template's `README.md` body, immediately after any
+frontmatter block.
+
+The chat agent's template listing includes a bounded README excerpt (roughly the
+first 1,000 characters), and template detail includes the README (up to roughly
+8,000 characters). Both are reduced to plain text: frontmatter is stripped,
+link text is kept while link URLs are dropped, images and badges are dropped
+entirely, and code blocks and tables are preserved as text. Use the opening
+section to explain when to choose this template, what it is *not* for, and the
+specific stack or services it provides.
+
+```md
+---
+display_name: Kubernetes (Deployment)
+description: Provision Kubernetes Deployments as Coder workspaces
+tags: [kubernetes, container]
+---
+
+# Kubernetes Deployment
+
+Kubernetes Deployment workspaces are for container-native development on an
+existing cluster. Use this template when the work should run as a pod with
+cluster access and configurable CPU, memory, and persistent storage. It is not
+intended for standalone VM or local Docker workflows.
+```
+
+The README is stored with the template version when you run
+`coder templates push`, so updating it is part of your normal template
+workflow. The short `description` still drives the initial template listing, so
+keep it accurate and specific as well.
 
 ## Create dedicated agent templates
 
@@ -162,7 +189,7 @@ required:
   only the permissions the agent needs (e.g., read/write access to specific
   repositories, no admin access).
 - **Configure external auth at the template level.** Use Coder's
-  [external authentication](../../../admin/external-auth/index.md) to provide scoped
+  [external authentication](../../../admin/external-auth.md) to provide scoped
   git credentials. The agent uses the same external auth flow as any other
   workspace, so credentials are managed centrally.
 - **Avoid injecting long-lived secrets.** Prefer short-lived tokens or
@@ -200,7 +227,7 @@ The agent reads `display_name` and `description` fields to understand what a
 parameter controls. Treat these the same way you treat template descriptions —
 be specific and use natural language.
 
-```hcl
+```tf
 data "coder_parameter" "region" {
   name         = "region"
   display_name = "Deployment Region"
@@ -252,7 +279,7 @@ For guidance on building and maintaining workspace images, see
 If the template targets a specific repository, pre-clone it and set the
 working directory so the agent starts in the right place:
 
-```hcl
+```tf
 resource "coder_agent" "main" {
   os   = "linux"
   arch = "amd64"
@@ -283,6 +310,8 @@ Agents:
 
 - Template has a specific, natural-language description that includes
   language, framework, and target project or service.
+- README opening section provides longer routing context when the short
+  description is not enough.
 - Display name is readable and descriptive.
 - Network egress is restricted to the control plane and git provider.
 - External service credentials use minimal-scope tokens.

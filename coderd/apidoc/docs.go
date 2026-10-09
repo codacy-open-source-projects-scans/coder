@@ -24,26 +24,6 @@ const docTemplate = `{
     "host": "{{.Host}}",
     "basePath": "{{.BasePath}}",
     "paths": {
-        "/": {
-            "get": {
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "General"
-                ],
-                "summary": "API root handler",
-                "operationId": "api-root-handler",
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/codersdk.Response"
-                        }
-                    }
-                }
-            }
-        },
         "/.well-known/oauth-authorization-server": {
             "get": {
                 "produces": [
@@ -84,25 +64,250 @@ const docTemplate = `{
                 }
             }
         },
-        "/aibridge/clients": {
+        "/api/experimental/ai/model-prices": {
             "get": {
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
-                    "AI Bridge"
+                    "Enterprise"
                 ],
-                "summary": "List AI Bridge clients",
-                "operationId": "list-ai-bridge-clients",
+                "summary": "List AI model prices",
+                "operationId": "list-ai-model-prices",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Only return prices for this provider",
+                        "name": "provider",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Only return prices for this model",
+                        "name": "model",
+                        "in": "query"
+                    },
+                    {
+                        "enum": [
+                            "default",
+                            "custom",
+                            "all"
+                        ],
+                        "type": "string",
+                        "description": "Only return prices from this source, or all to return every price a model holds",
+                        "name": "source",
+                        "in": "query"
+                    }
+                ],
                 "responses": {
                     "200": {
                         "description": "OK",
                         "schema": {
                             "type": "array",
                             "items": {
-                                "type": "string"
+                                "$ref": "#/definitions/codersdk.AIModelPrice"
                             }
                         }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            },
+            "post": {
+                "consumes": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Enterprise"
+                ],
+                "summary": "Upsert AI model prices",
+                "operationId": "upsert-ai-model-prices",
+                "parameters": [
+                    {
+                        "description": "Prices to set",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.UpsertAIModelPricesRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            }
+        },
+        "/api/experimental/chat-automations/{automation}/events": {
+            "post": {
+                "description": "Delivers an event to a webhook automation. The caller authenticates with the automation's webhook secret as a bearer token, not with a Coder session. The body can be any JSON value up to 256 KiB. The automation owner's saved prompt and the event data are sent as the owner to the target chat, where a running turn is never interrupted, or as the first message of a new chat.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Deliver chat automation webhook event",
+                "operationId": "deliver-chat-automation-event",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Automation ID",
+                        "name": "automation",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Bearer followed by the webhook secret",
+                        "name": "Authorization",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "description": "Event data: any JSON value up to 256 KiB",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {}
+                    }
+                ],
+                "responses": {
+                    "202": {
+                        "description": "Accepted",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.ChatAutomationEventResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.Response"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.Response"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.Response"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.Response"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.Response"
+                        }
+                    },
+                    "413": {
+                        "description": "Request Entity Too Large",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.Response"
+                        }
+                    },
+                    "429": {
+                        "description": "Too Many Requests",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.Response"
+                        }
+                    },
+                    "502": {
+                        "description": "Bad Gateway",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.Response"
+                        }
+                    }
+                },
+                "x-apidocgen": {
+                    "skip": true
+                }
+            }
+        },
+        "/api/experimental/chats/projects": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "List chat projects",
+                "operationId": "list-chat-projects",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/codersdk.ChatProject"
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            }
+        },
+        "/api/experimental/chats/{chat}/stream/desktop": {
+            "get": {
+                "description": "Raw binary WebSocket stream of the chat workspace desktop.\nExperimental: this endpoint is subject to change.",
+                "produces": [
+                    "application/octet-stream"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Connect to chat workspace desktop via WebSockets",
+                "operationId": "connect-to-chat-workspace-desktop-via-websockets",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Chat ID",
+                        "name": "chat",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "101": {
+                        "description": "Switching Protocols"
                     }
                 },
                 "security": [
@@ -112,39 +317,206 @@ const docTemplate = `{
                 ]
             }
         },
-        "/aibridge/interceptions": {
+        "/api/experimental/experiments/rules": {
             "get": {
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
-                    "AI Bridge"
+                    "General"
                 ],
-                "summary": "List AI Bridge interceptions",
-                "operationId": "list-ai-bridge-interceptions",
-                "deprecated": true,
+                "summary": "List experiment rules",
+                "operationId": "list-experiment-rules",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/codersdk.ExperimentRuleEntry"
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            }
+        },
+        "/api/experimental/experiments/rules/{experiment}": {
+            "put": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "General"
+                ],
+                "summary": "Update experiment rule",
+                "operationId": "update-experiment-rule",
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "Search query in the format ` + "`" + `key:value` + "`" + `. Available keys are: initiator, provider, model, started_after, started_before.",
-                        "name": "q",
+                        "description": "Experiment name",
+                        "name": "experiment",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Experiment rule",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.PutExperimentRuleRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.ExperimentRule"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            }
+        },
+        "/api/experimental/mcp/servers/{mcpServer}/oauth2/callback": {
+            "get": {
+                "produces": [
+                    "text/html"
+                ],
+                "tags": [
+                    "MCP"
+                ],
+                "summary": "Handle MCP server OAuth2 callback",
+                "operationId": "handle-mcp-server-oauth2-callback",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "MCP server config ID",
+                        "name": "mcpServer",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Authorization code issued by the provider. Required together with state on success.",
+                        "name": "code",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Opaque state issued by the connect endpoint. Required together with code on success.",
+                        "name": "state",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Provider error code. Present instead of code when authorization fails.",
+                        "name": "error",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Provider error description accompanying error.",
+                        "name": "error_description",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK"
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            }
+        },
+        "/api/experimental/organizations/{organization}/ai/spend/users": {
+            "get": {
+                "description": "Returns one page of per-user AI spend for the organization, most expensive first, built from the same raw AI Gateway token usage as the CSV export so the two reconcile. Each user lists the providers and clients they spent through, and the response carries the user count, total spend, and unpriced usage count over every matching user.\nThe optional period_start and period_end query parameters bound the period and are interpreted as UTC. They must be provided together and span at most 31 days. When both are omitted, the current UTC monthly period is used.\nAn explicit period_start must fall within the configured AI Gateway data retention window, since older token usage is purged. The default period is narrowed to that window instead. The response echoes the applied bounds and, when retention is enabled, the start of the retention window.\nThe optional provider_name, model, and client query parameters restrict the spend report to usage matching all supplied filters. Use client=Unknown for usage with an unknown or missing client.\nUnknown query parameters are rejected.\nRequires organization-level administrator permissions.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Enterprise"
+                ],
+                "summary": "List organization AI spend by user",
+                "operationId": "list-organization-ai-spend-by-user",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Organization ID",
+                        "name": "organization",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "format": "date-time",
+                        "description": "Inclusive lower bound (RFC3339)",
+                        "name": "period_start",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "format": "date-time",
+                        "description": "Exclusive upper bound (RFC3339)",
+                        "name": "period_end",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Only include usage through this provider configuration name",
+                        "name": "provider_name",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Only include usage of this model",
+                        "name": "model",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Only include usage from this client. Unknown matches usage without a recorded client.",
+                        "name": "client",
                         "in": "query"
                     },
                     {
                         "type": "integer",
-                        "description": "Page limit",
+                        "description": "Page size (default 10, maximum 100)",
                         "name": "limit",
                         "in": "query"
                     },
                     {
-                        "type": "string",
-                        "description": "Cursor pagination after ID (cannot be used with offset)",
-                        "name": "after_id",
-                        "in": "query"
-                    },
-                    {
                         "type": "integer",
-                        "description": "Offset pagination (cannot be used with after_id)",
+                        "description": "Page offset",
                         "name": "offset",
                         "in": "query"
                     }
@@ -153,7 +525,1163 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/codersdk.AIBridgeListInterceptionsResponse"
+                            "$ref": "#/definitions/codersdk.OrganizationAISpendReport"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            }
+        },
+        "/api/experimental/organizations/{organization}/chat-automations": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "List chat automations",
+                "operationId": "list-chat-automations",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Organization ID",
+                        "name": "organization",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/codersdk.ChatAutomation"
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            },
+            "post": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Create chat automation",
+                "operationId": "create-chat-automation",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Organization ID",
+                        "name": "organization",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Chat automation",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.CreateChatAutomationRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.CreateChatAutomationResponse"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            }
+        },
+        "/api/experimental/organizations/{organization}/chat-automations/schedule-preview": {
+            "post": {
+                "description": "Validates a schedule like chat automation create does and returns its next run times. Nothing is stored.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Preview chat automation schedule",
+                "operationId": "preview-chat-automation-schedule",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Organization ID",
+                        "name": "organization",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Schedule",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.ChatAutomationSchedulePreviewRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.ChatAutomationSchedulePreviewResponse"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            }
+        },
+        "/api/experimental/organizations/{organization}/chat-automations/{automation}": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Get chat automation",
+                "operationId": "get-chat-automation",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Organization ID",
+                        "name": "organization",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Automation ID",
+                        "name": "automation",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.ChatAutomation"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            },
+            "delete": {
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Delete chat automation",
+                "operationId": "delete-chat-automation",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Organization ID",
+                        "name": "organization",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Automation ID",
+                        "name": "automation",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            },
+            "patch": {
+                "description": "Only the owner of an automation can update it, except that anyone allowed to update it can send a request that only sets enabled to false. Disabling removes the messages the automation queued that have not started. Re-enabling a schedule resumes at its next future occurrence. The kind and target mode of an automation cannot change.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Update chat automation",
+                "operationId": "update-chat-automation",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Organization ID",
+                        "name": "organization",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Automation ID",
+                        "name": "automation",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Chat automation changes",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.UpdateChatAutomationRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.ChatAutomation"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            }
+        },
+        "/api/experimental/organizations/{organization}/chat-automations/{automation}/runs": {
+            "post": {
+                "description": "Sends the saved prompt of an enabled schedule automation to its target now, like a scheduled run, as the owner. The schedule's next run does not change. Only the owner can run an automation.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Run chat automation now",
+                "operationId": "run-chat-automation",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Organization ID",
+                        "name": "organization",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Automation ID",
+                        "name": "automation",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "202": {
+                        "description": "Accepted",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.ChatAutomationRunResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.Response"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.Response"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.Response"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.Response"
+                        }
+                    },
+                    "429": {
+                        "description": "Too Many Requests",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.Response"
+                        }
+                    },
+                    "502": {
+                        "description": "Bad Gateway",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.Response"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            }
+        },
+        "/api/experimental/organizations/{organization}/chat-automations/{automation}/secret/rotate": {
+            "post": {
+                "description": "Only the owner of a webhook automation can rotate its secret. The previous secret stops working, and the new secret is returned only in this response.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Rotate chat automation webhook secret",
+                "operationId": "rotate-chat-automation-secret",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Organization ID",
+                        "name": "organization",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Automation ID",
+                        "name": "automation",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.RotateChatAutomationSecretResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.Response"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.Response"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.Response"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            }
+        },
+        "/api/experimental/organizations/{organization}/chats/projects": {
+            "post": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Create chat project",
+                "operationId": "create-chat-project",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Organization ID",
+                        "name": "organization",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Create chat project request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.CreateChatProjectRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.ChatProject"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            }
+        },
+        "/api/experimental/organizations/{organization}/chats/projects/{project}": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Get chat project",
+                "operationId": "get-chat-project",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Organization ID",
+                        "name": "organization",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Chat project ID",
+                        "name": "project",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.ChatProject"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            },
+            "delete": {
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Delete chat project",
+                "operationId": "delete-chat-project",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Organization ID",
+                        "name": "organization",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Chat project ID",
+                        "name": "project",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            },
+            "patch": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Update chat project",
+                "operationId": "update-chat-project",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Organization ID",
+                        "name": "organization",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Chat project ID",
+                        "name": "project",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Update chat project request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.UpdateChatProjectRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.ChatProject"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            }
+        },
+        "/api/experimental/organizations/{organization}/chats/projects/{project}/memories": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "List chat project memories",
+                "operationId": "list-chat-project-memories",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Organization ID",
+                        "name": "organization",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Chat project ID",
+                        "name": "project",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/codersdk.ChatProjectMemory"
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            },
+            "post": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Create chat project memory",
+                "operationId": "create-chat-project-memory",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Organization ID",
+                        "name": "organization",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Chat project ID",
+                        "name": "project",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Create memory request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.CreateChatProjectMemoryRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.ChatProjectMemory"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            }
+        },
+        "/api/experimental/organizations/{organization}/chats/projects/{project}/memories/{memory}": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Get chat project memory",
+                "operationId": "get-chat-project-memory",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Organization ID",
+                        "name": "organization",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Chat project ID",
+                        "name": "project",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Chat project memory ID",
+                        "name": "memory",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.ChatProjectMemory"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            },
+            "delete": {
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Delete chat project memory",
+                "operationId": "delete-chat-project-memory",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Organization ID",
+                        "name": "organization",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Chat project ID",
+                        "name": "project",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Chat project memory ID",
+                        "name": "memory",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            }
+        },
+        "/api/experimental/users/email": {
+            "put": {
+                "consumes": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Users"
+                ],
+                "summary": "Update user email",
+                "operationId": "update-user-email-experimental",
+                "parameters": [
+                    {
+                        "description": "Update email request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.UpdateUserEmailRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            }
+        },
+        "/api/experimental/users/{user}/skills": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Users"
+                ],
+                "summary": "List user skills",
+                "operationId": "list-user-skills",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "User ID, username, or me",
+                        "name": "user",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/codersdk.UserSkillMetadata"
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            },
+            "post": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Users"
+                ],
+                "summary": "Create a user skill",
+                "operationId": "create-a-user-skill",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "User ID, username, or me",
+                        "name": "user",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Create user skill request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.CreateUserSkillRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.UserSkill"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            }
+        },
+        "/api/experimental/users/{user}/skills/{skillName}": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Users"
+                ],
+                "summary": "Get a user skill by name",
+                "operationId": "get-a-user-skill-by-name",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "User ID, username, or me",
+                        "name": "user",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Skill name",
+                        "name": "skillName",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.UserSkill"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            },
+            "delete": {
+                "tags": [
+                    "Users"
+                ],
+                "summary": "Delete a user skill",
+                "operationId": "delete-a-user-skill",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "User ID, username, or me",
+                        "name": "user",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Skill name",
+                        "name": "skillName",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            },
+            "patch": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Users"
+                ],
+                "summary": "Update a user skill",
+                "operationId": "update-a-user-skill",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "User ID, username, or me",
+                        "name": "user",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Skill name",
+                        "name": "skillName",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Update user skill request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.UpdateUserSkillRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.UserSkill"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            }
+        },
+        "/api/experimental/watch-all-workspacebuilds": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Workspaces"
+                ],
+                "summary": "Watch all workspace builds",
+                "operationId": "watch-all-workspace-builds",
+                "responses": {
+                    "101": {
+                        "description": "Switching Protocols"
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            }
+        },
+        "/api/v2/": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "General"
+                ],
+                "summary": "API root handler",
+                "operationId": "api-root-handler",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.Response"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v2/agent-firewall/sessions/{id}": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Enterprise"
+                ],
+                "summary": "Get agent firewall session by ID",
+                "operationId": "get-agent-firewall-session-by-id",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Agent firewall session ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.AgentFirewallSession"
                         }
                     }
                 },
@@ -164,16 +1692,70 @@ const docTemplate = `{
                 ]
             }
         },
-        "/aibridge/models": {
+        "/api/v2/agent-firewall/sessions/{id}/logs": {
             "get": {
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
-                    "AI Bridge"
+                    "Enterprise"
                 ],
-                "summary": "List AI Bridge models",
-                "operationId": "list-ai-bridge-models",
+                "summary": "Get agent firewall session logs",
+                "operationId": "get-agent-firewall-session-logs",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Agent firewall session ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Inclusive lower bound on sequence number",
+                        "name": "seq_after",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Exclusive upper bound on sequence number",
+                        "name": "seq_before",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Maximum number of logs to return (default 100)",
+                        "name": "limit",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.AgentFirewallSessionLogsResponse"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/ai-gateway/clients": {
+            "get": {
+                "description": "Alias: also available at /api/v2/aibridge/clients for backward compatibility.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "AI Gateway"
+                ],
+                "summary": "List AI Gateway clients",
+                "operationId": "list-ai-gateway-clients",
                 "responses": {
                     "200": {
                         "description": "OK",
@@ -192,20 +1774,205 @@ const docTemplate = `{
                 ]
             }
         },
-        "/aibridge/sessions": {
+        "/api/v2/ai-gateway/keys": {
             "get": {
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
-                    "AI Bridge"
+                    "Enterprise"
                 ],
-                "summary": "List AI Bridge sessions",
-                "operationId": "list-ai-bridge-sessions",
+                "summary": "List AI Gateway keys",
+                "operationId": "list-ai-gateway-keys",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/codersdk.AIGatewayKey"
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            },
+            "post": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Enterprise"
+                ],
+                "summary": "Create AI Gateway key",
+                "operationId": "create-ai-gateway-key",
+                "parameters": [
+                    {
+                        "description": "Create AI Gateway key request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.CreateAIGatewayKeyRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.CreateAIGatewayKeyResponse"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/ai-gateway/keys/{key}": {
+            "delete": {
+                "tags": [
+                    "Enterprise"
+                ],
+                "summary": "Delete AI Gateway key",
+                "operationId": "delete-ai-gateway-key",
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "Search query in the format ` + "`" + `key:value` + "`" + `. Available keys are: initiator, provider, model, client, session_id, started_after, started_before.",
+                        "format": "uuid",
+                        "description": "Key ID",
+                        "name": "key",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/ai-gateway/models": {
+            "get": {
+                "description": "Alias: also available at /api/v2/aibridge/models for backward compatibility.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "AI Gateway"
+                ],
+                "summary": "List AI Gateway models",
+                "operationId": "list-ai-gateway-models",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Search query in the format ` + "`" + `key:value` + "`" + `. Available keys are: model. A bare term searches by model prefix.",
+                        "name": "q",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Literal model identifier prefix. Cannot be combined with q.",
+                        "name": "model",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/ai-gateway/providers": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "AI Gateway"
+                ],
+                "summary": "List AI Gateway providers",
+                "operationId": "list-ai-gateway-providers",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/codersdk.AIBridgeProvider"
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/ai-gateway/serve": {
+            "get": {
+                "tags": [
+                    "Enterprise"
+                ],
+                "summary": "AI Gateway serve",
+                "operationId": "ai-gateway-serve",
+                "responses": {
+                    "101": {
+                        "description": "Switching Protocols"
+                    }
+                },
+                "security": [
+                    {
+                        "AIGatewayKey": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/ai-gateway/sessions": {
+            "get": {
+                "description": "Alias: also available at /api/v2/aibridge/sessions for backward compatibility.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "AI Gateway"
+                ],
+                "summary": "List AI Gateway sessions",
+                "operationId": "list-ai-gateway-sessions",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Search query in the format ` + "`" + `key:value` + "`" + `. Available keys are: initiator, provider, provider_name, model, client, session_id, started_after, started_before.",
                         "name": "q",
                         "in": "query"
                     },
@@ -243,16 +2010,17 @@ const docTemplate = `{
                 ]
             }
         },
-        "/aibridge/sessions/{session_id}": {
+        "/api/v2/ai-gateway/sessions/{session_id}": {
             "get": {
+                "description": "Alias: also available at /api/v2/aibridge/sessions/{session_id} for backward compatibility.",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
-                    "AI Bridge"
+                    "AI Gateway"
                 ],
-                "summary": "Get AI Bridge session threads",
-                "operationId": "get-ai-bridge-session-threads",
+                "summary": "Get AI Gateway session threads",
+                "operationId": "get-ai-gateway-session-threads",
                 "parameters": [
                     {
                         "type": "string",
@@ -295,7 +2063,176 @@ const docTemplate = `{
                 ]
             }
         },
-        "/appearance": {
+        "/api/v2/ai/providers": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "AI Providers"
+                ],
+                "summary": "List AI providers",
+                "operationId": "list-ai-providers",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/codersdk.AIProvider"
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            },
+            "post": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "AI Providers"
+                ],
+                "summary": "Create an AI provider",
+                "operationId": "create-an-ai-provider",
+                "parameters": [
+                    {
+                        "description": "Create AI provider request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.CreateAIProviderRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.AIProvider"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/ai/providers/{idOrName}": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "AI Providers"
+                ],
+                "summary": "Get an AI provider",
+                "operationId": "get-an-ai-provider",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Provider ID or name",
+                        "name": "idOrName",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.AIProvider"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            },
+            "delete": {
+                "tags": [
+                    "AI Providers"
+                ],
+                "summary": "Delete an AI provider",
+                "operationId": "delete-an-ai-provider",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Provider ID or name",
+                        "name": "idOrName",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            },
+            "patch": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "AI Providers"
+                ],
+                "summary": "Update an AI provider",
+                "operationId": "update-an-ai-provider",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Provider ID or name",
+                        "name": "idOrName",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Update AI provider request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.UpdateAIProviderRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.AIProvider"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/appearance": {
             "get": {
                 "produces": [
                     "application/json"
@@ -357,7 +2294,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/applications/auth-redirect": {
+        "/api/v2/applications/auth-redirect": {
             "get": {
                 "tags": [
                     "Applications"
@@ -384,7 +2321,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/applications/host": {
+        "/api/v2/applications/host": {
             "get": {
                 "produces": [
                     "application/json"
@@ -410,7 +2347,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/applications/reconnecting-pty-signed-token": {
+        "/api/v2/applications/reconnecting-pty-signed-token": {
             "post": {
                 "consumes": [
                     "application/json"
@@ -452,7 +2389,7 @@ const docTemplate = `{
                 }
             }
         },
-        "/audit": {
+        "/api/v2/audit": {
             "get": {
                 "produces": [
                     "application/json"
@@ -498,7 +2435,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/audit/testgenerate": {
+        "/api/v2/audit/testgenerate": {
             "post": {
                 "consumes": [
                     "application/json"
@@ -534,7 +2471,7 @@ const docTemplate = `{
                 }
             }
         },
-        "/auth/scopes": {
+        "/api/v2/auth/scopes": {
             "get": {
                 "produces": [
                     "application/json"
@@ -554,7 +2491,7 @@ const docTemplate = `{
                 }
             }
         },
-        "/authcheck": {
+        "/api/v2/authcheck": {
             "post": {
                 "consumes": [
                     "application/json"
@@ -593,7 +2530,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/buildinfo": {
+        "/api/v2/buildinfo": {
             "get": {
                 "produces": [
                     "application/json"
@@ -613,7 +2550,7 @@ const docTemplate = `{
                 }
             }
         },
-        "/chats/insights/pull-requests": {
+        "/api/v2/chats": {
             "get": {
                 "produces": [
                     "application/json"
@@ -621,70 +2558,56 @@ const docTemplate = `{
                 "tags": [
                     "Chats"
                 ],
-                "summary": "Get PR insights",
-                "operationId": "get-pr-insights",
+                "summary": "List chats",
+                "operationId": "list-chats",
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "Start date (RFC3339)",
-                        "name": "start_date",
-                        "in": "query",
-                        "required": true
+                        "description": "Search query. Supports ` + "`" + `title:\u003csubstring\u003e` + "`" + ` (case-insensitive, quote multi-word values), ` + "`" + `archived:bool` + "`" + ` (` + "`" + `archived:any` + "`" + ` matches archived and active chats), ` + "`" + `has_unread:bool` + "`" + `, ` + "`" + `status:\u003cwaiting\\|running\\|error\\|requires_action\\|interrupting\u003e` + "`" + ` (chat status, repeated or comma-separated), ` + "`" + `pr_status:\u003cdraft\\|open\\|merged\\|closed\\|none\u003e` + "`" + ` (none matches chats with no pull request) as repeated or comma-separated values, ` + "`" + `source:\u003ccreated_by_me\\|shared_with_me\u003e` + "`" + `, ` + "`" + `diff_url:\u003curl\u003e` + "`" + ` (quote values containing colons), ` + "`" + `pr:\u003cnumber\u003e` + "`" + ` (exact PR number match), ` + "`" + `repo:\u003cowner/repo\u003e` + "`" + ` (case-insensitive substring match against git remote origin or URL), ` + "`" + `pr_title:\u003ctext\u003e` + "`" + ` (case-insensitive PR title substring), ` + "`" + `search:\u003ctext\u003e` + "`" + ` (full-text search across chat titles, PR titles, PR numbers, and message bodies; message bodies match English word stems, e.g. ` + "`" + `refactor` + "`" + ` matches ` + "`" + `refactoring` + "`" + `, and ignore English stopwords; titles and PR titles match whole words case-insensitively without stemming; quote multi-word values; cannot be combined with title, pr_title, or pr; a value that tokenizes to no searchable words, e.g. punctuation only, returns an empty list). Bare terms are not supported; use ` + "`" + `title:\u003cvalue\u003e` + "`" + ` or ` + "`" + `search:\u003cvalue\u003e` + "`" + `.",
+                        "name": "q",
+                        "in": "query"
+                    },
+                    {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "collectionFormat": "multi",
+                        "description": "Filter by label as key:value. Repeat for multiple (AND logic).",
+                        "name": "label",
+                        "in": "query"
                     },
                     {
                         "type": "string",
-                        "description": "End date (RFC3339)",
-                        "name": "end_date",
-                        "in": "query",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/codersdk.PRInsightsResponse"
-                        }
-                    }
-                },
-                "security": [
-                    {
-                        "CoderSessionToken": []
-                    }
-                ],
-                "x-apidocgen": {
-                    "skip": true
-                }
-            }
-        },
-        "/connectionlog": {
-            "get": {
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "Enterprise"
-                ],
-                "summary": "Get connection logs",
-                "operationId": "get-connection-logs",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Search query",
-                        "name": "q",
+                        "format": "uuid",
+                        "description": "After ID",
+                        "name": "after_id",
                         "in": "query"
                     },
                     {
                         "type": "integer",
                         "description": "Page limit",
                         "name": "limit",
-                        "in": "query",
-                        "required": true
+                        "in": "query"
                     },
                     {
                         "type": "integer",
                         "description": "Page offset",
                         "name": "offset",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Filter to chats the automation created or sent messages to. Ignored unless the chat-automations experiment is enabled for the caller.",
+                        "name": "automation_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Only chats in this project. Requires the chat-projects experiment.",
+                        "name": "project_id",
                         "in": "query"
                     }
                 ],
@@ -692,89 +2615,9 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/codersdk.ConnectionLogResponse"
-                        }
-                    }
-                },
-                "security": [
-                    {
-                        "CoderSessionToken": []
-                    }
-                ]
-            }
-        },
-        "/csp/reports": {
-            "post": {
-                "consumes": [
-                    "application/json"
-                ],
-                "tags": [
-                    "General"
-                ],
-                "summary": "Report CSP violations",
-                "operationId": "report-csp-violations",
-                "parameters": [
-                    {
-                        "description": "Violation report",
-                        "name": "request",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "$ref": "#/definitions/coderd.cspViolation"
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK"
-                    }
-                },
-                "security": [
-                    {
-                        "CoderSessionToken": []
-                    }
-                ]
-            }
-        },
-        "/debug/coordinator": {
-            "get": {
-                "produces": [
-                    "text/html"
-                ],
-                "tags": [
-                    "Debug"
-                ],
-                "summary": "Debug Info Wireguard Coordinator",
-                "operationId": "debug-info-wireguard-coordinator",
-                "responses": {
-                    "200": {
-                        "description": "OK"
-                    }
-                },
-                "security": [
-                    {
-                        "CoderSessionToken": []
-                    }
-                ]
-            }
-        },
-        "/debug/derp/traffic": {
-            "get": {
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "Debug"
-                ],
-                "summary": "Debug DERP traffic",
-                "operationId": "debug-derp-traffic",
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
                             "type": "array",
                             "items": {
-                                "$ref": "#/definitions/derp.BytesSentRecv"
+                                "$ref": "#/definitions/codersdk.Chat"
                             }
                         }
                     }
@@ -783,64 +2626,48 @@ const docTemplate = `{
                     {
                         "CoderSessionToken": []
                     }
+                ]
+            },
+            "post": {
+                "consumes": [
+                    "application/json"
                 ],
-                "x-apidocgen": {
-                    "skip": true
-                }
-            }
-        },
-        "/debug/expvar": {
-            "get": {
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
-                    "Debug"
+                    "Chats"
                 ],
-                "summary": "Debug expvar",
-                "operationId": "debug-expvar",
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "object",
-                            "additionalProperties": true
-                        }
-                    }
-                },
-                "security": [
-                    {
-                        "CoderSessionToken": []
-                    }
-                ],
-                "x-apidocgen": {
-                    "skip": true
-                }
-            }
-        },
-        "/debug/health": {
-            "get": {
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "Debug"
-                ],
-                "summary": "Debug Info Deployment Health",
-                "operationId": "debug-info-deployment-health",
+                "summary": "Create chat",
+                "operationId": "create-chat",
                 "parameters": [
                     {
-                        "type": "boolean",
-                        "description": "Force a healthcheck to run",
-                        "name": "force",
-                        "in": "query"
+                        "description": "Create chat request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.CreateChatRequest"
+                        }
                     }
                 ],
                 "responses": {
-                    "200": {
-                        "description": "OK",
+                    "201": {
+                        "description": "Created",
                         "schema": {
-                            "$ref": "#/definitions/healthsdk.HealthcheckReport"
+                            "$ref": "#/definitions/codersdk.Chat"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.Response"
+                        }
+                    },
+                    "413": {
+                        "description": "Request body exceeds 256 KiB",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.Response"
                         }
                     }
                 },
@@ -851,21 +2678,54 @@ const docTemplate = `{
                 ]
             }
         },
-        "/debug/health/settings": {
+        "/api/v2/chats/by-workspace": {
             "get": {
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
-                    "Debug"
+                    "Chats"
                 ],
-                "summary": "Get health settings",
-                "operationId": "get-health-settings",
+                "summary": "List chats by workspace",
+                "operationId": "list-chats-by-workspace",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Comma-separated workspace IDs",
+                        "name": "workspace_ids",
+                        "in": "query"
+                    }
+                ],
                 "responses": {
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/healthsdk.HealthSettings"
+                            "$ref": "#/definitions/coderd.chatsByWorkspaceResponse"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/chats/config/auto-archive-days": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Get chat auto archive days",
+                "operationId": "get-chat-auto-archive-days",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.ChatAutoArchiveDaysResponse"
                         }
                     }
                 },
@@ -879,31 +2739,25 @@ const docTemplate = `{
                 "consumes": [
                     "application/json"
                 ],
-                "produces": [
-                    "application/json"
-                ],
                 "tags": [
-                    "Debug"
+                    "Chats"
                 ],
-                "summary": "Update health settings",
-                "operationId": "update-health-settings",
+                "summary": "Update chat auto archive days",
+                "operationId": "update-chat-auto-archive-days",
                 "parameters": [
                     {
-                        "description": "Update health settings",
+                        "description": "Request body",
                         "name": "request",
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/healthsdk.UpdateHealthSettings"
+                            "$ref": "#/definitions/codersdk.UpdateChatAutoArchiveDaysRequest"
                         }
                     }
                 ],
                 "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/healthsdk.UpdateHealthSettings"
-                        }
+                    "204": {
+                        "description": "No Content"
                     }
                 },
                 "security": [
@@ -913,197 +2767,21 @@ const docTemplate = `{
                 ]
             }
         },
-        "/debug/metrics": {
-            "get": {
-                "tags": [
-                    "Debug"
-                ],
-                "summary": "Debug metrics",
-                "operationId": "debug-metrics",
-                "responses": {
-                    "200": {
-                        "description": "OK"
-                    }
-                },
-                "security": [
-                    {
-                        "CoderSessionToken": []
-                    }
-                ],
-                "x-apidocgen": {
-                    "skip": true
-                }
-            }
-        },
-        "/debug/pprof": {
-            "get": {
-                "tags": [
-                    "Debug"
-                ],
-                "summary": "Debug pprof index",
-                "operationId": "debug-pprof-index",
-                "responses": {
-                    "200": {
-                        "description": "OK"
-                    }
-                },
-                "security": [
-                    {
-                        "CoderSessionToken": []
-                    }
-                ],
-                "x-apidocgen": {
-                    "skip": true
-                }
-            }
-        },
-        "/debug/pprof/cmdline": {
-            "get": {
-                "tags": [
-                    "Debug"
-                ],
-                "summary": "Debug pprof cmdline",
-                "operationId": "debug-pprof-cmdline",
-                "responses": {
-                    "200": {
-                        "description": "OK"
-                    }
-                },
-                "security": [
-                    {
-                        "CoderSessionToken": []
-                    }
-                ],
-                "x-apidocgen": {
-                    "skip": true
-                }
-            }
-        },
-        "/debug/pprof/profile": {
-            "get": {
-                "tags": [
-                    "Debug"
-                ],
-                "summary": "Debug pprof profile",
-                "operationId": "debug-pprof-profile",
-                "responses": {
-                    "200": {
-                        "description": "OK"
-                    }
-                },
-                "security": [
-                    {
-                        "CoderSessionToken": []
-                    }
-                ],
-                "x-apidocgen": {
-                    "skip": true
-                }
-            }
-        },
-        "/debug/pprof/symbol": {
-            "get": {
-                "tags": [
-                    "Debug"
-                ],
-                "summary": "Debug pprof symbol",
-                "operationId": "debug-pprof-symbol",
-                "responses": {
-                    "200": {
-                        "description": "OK"
-                    }
-                },
-                "security": [
-                    {
-                        "CoderSessionToken": []
-                    }
-                ],
-                "x-apidocgen": {
-                    "skip": true
-                }
-            }
-        },
-        "/debug/pprof/trace": {
-            "get": {
-                "tags": [
-                    "Debug"
-                ],
-                "summary": "Debug pprof trace",
-                "operationId": "debug-pprof-trace",
-                "responses": {
-                    "200": {
-                        "description": "OK"
-                    }
-                },
-                "security": [
-                    {
-                        "CoderSessionToken": []
-                    }
-                ],
-                "x-apidocgen": {
-                    "skip": true
-                }
-            }
-        },
-        "/debug/profile": {
-            "post": {
-                "tags": [
-                    "Debug"
-                ],
-                "summary": "Collect debug profiles",
-                "operationId": "collect-debug-profiles",
-                "responses": {
-                    "200": {
-                        "description": "OK"
-                    }
-                },
-                "security": [
-                    {
-                        "CoderSessionToken": []
-                    }
-                ],
-                "x-apidocgen": {
-                    "skip": true
-                }
-            }
-        },
-        "/debug/tailnet": {
-            "get": {
-                "produces": [
-                    "text/html"
-                ],
-                "tags": [
-                    "Debug"
-                ],
-                "summary": "Debug Info Tailnet",
-                "operationId": "debug-info-tailnet",
-                "responses": {
-                    "200": {
-                        "description": "OK"
-                    }
-                },
-                "security": [
-                    {
-                        "CoderSessionToken": []
-                    }
-                ]
-            }
-        },
-        "/debug/ws": {
+        "/api/v2/chats/config/debug-logging": {
             "get": {
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
-                    "Debug"
+                    "Chats"
                 ],
-                "summary": "Debug Info Websocket Test",
-                "operationId": "debug-info-websocket-test",
+                "summary": "Get chat debug logging setting",
+                "operationId": "get-chat-debug-logging-setting",
                 "responses": {
-                    "201": {
-                        "description": "Created",
+                    "200": {
+                        "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/codersdk.Response"
+                            "$ref": "#/definitions/codersdk.ChatDebugLoggingAdminSettings"
                         }
                     }
                 },
@@ -1111,58 +2789,55 @@ const docTemplate = `{
                     {
                         "CoderSessionToken": []
                     }
+                ]
+            },
+            "put": {
+                "consumes": [
+                    "application/json"
                 ],
-                "x-apidocgen": {
-                    "skip": true
-                }
-            }
-        },
-        "/debug/{user}/debug-link": {
-            "get": {
                 "tags": [
-                    "Agents"
+                    "Chats"
                 ],
-                "summary": "Debug OIDC context for a user",
-                "operationId": "debug-oidc-context-for-a-user",
+                "summary": "Update chat debug logging setting",
+                "operationId": "update-chat-debug-logging-setting",
                 "parameters": [
                     {
-                        "type": "string",
-                        "description": "User ID, name, or me",
-                        "name": "user",
-                        "in": "path",
-                        "required": true
+                        "description": "Request body",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.UpdateChatDebugLoggingAllowUsersRequest"
+                        }
                     }
                 ],
                 "responses": {
-                    "200": {
-                        "description": "Success"
+                    "204": {
+                        "description": "No Content"
                     }
                 },
                 "security": [
                     {
                         "CoderSessionToken": []
                     }
-                ],
-                "x-apidocgen": {
-                    "skip": true
-                }
+                ]
             }
         },
-        "/deployment/config": {
+        "/api/v2/chats/config/debug-retention-days": {
             "get": {
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
-                    "General"
+                    "Chats"
                 ],
-                "summary": "Get deployment config",
-                "operationId": "get-deployment-config",
+                "summary": "Get chat debug retention days",
+                "operationId": "get-chat-debug-retention-days",
                 "responses": {
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/codersdk.DeploymentConfig"
+                            "$ref": "#/definitions/codersdk.ChatDebugRetentionDaysResponse"
                         }
                     }
                 },
@@ -1171,23 +2846,54 @@ const docTemplate = `{
                         "CoderSessionToken": []
                     }
                 ]
+            },
+            "put": {
+                "consumes": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Update chat debug retention days",
+                "operationId": "update-chat-debug-retention-days",
+                "parameters": [
+                    {
+                        "description": "Request body",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.UpdateChatDebugRetentionDaysRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
             }
         },
-        "/deployment/ssh": {
+        "/api/v2/chats/config/personal-model-overrides": {
             "get": {
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
-                    "General"
+                    "Chats"
                 ],
-                "summary": "SSH Config",
-                "operationId": "ssh-config",
+                "summary": "Get chat personal model override settings",
+                "operationId": "get-chat-personal-model-override-settings",
                 "responses": {
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/codersdk.SSHConfigResponse"
+                            "$ref": "#/definitions/codersdk.ChatPersonalModelOverridesAdminSettings"
                         }
                     }
                 },
@@ -1196,23 +2902,54 @@ const docTemplate = `{
                         "CoderSessionToken": []
                     }
                 ]
+            },
+            "put": {
+                "consumes": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Update chat personal model override settings",
+                "operationId": "update-chat-personal-model-override-settings",
+                "parameters": [
+                    {
+                        "description": "Request body",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.UpdateChatPersonalModelOverridesAdminSettingsRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
             }
         },
-        "/deployment/stats": {
+        "/api/v2/chats/config/plan-mode-instructions": {
             "get": {
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
-                    "General"
+                    "Chats"
                 ],
-                "summary": "Get deployment stats",
-                "operationId": "get-deployment-stats",
+                "summary": "Get chat plan mode instructions",
+                "operationId": "get-chat-plan-mode-instructions",
                 "responses": {
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/codersdk.DeploymentStats"
+                            "$ref": "#/definitions/codersdk.ChatPlanModeInstructionsResponse"
                         }
                     }
                 },
@@ -1221,43 +2958,30 @@ const docTemplate = `{
                         "CoderSessionToken": []
                     }
                 ]
-            }
-        },
-        "/derp-map": {
-            "get": {
-                "tags": [
-                    "Agents"
-                ],
-                "summary": "Get DERP map updates",
-                "operationId": "get-derp-map-updates",
-                "responses": {
-                    "101": {
-                        "description": "Switching Protocols"
-                    }
-                },
-                "security": [
-                    {
-                        "CoderSessionToken": []
-                    }
-                ]
-            }
-        },
-        "/entitlements": {
-            "get": {
-                "produces": [
+            },
+            "put": {
+                "consumes": [
                     "application/json"
                 ],
                 "tags": [
-                    "Enterprise"
+                    "Chats"
                 ],
-                "summary": "Get entitlements",
-                "operationId": "get-entitlements",
-                "responses": {
-                    "200": {
-                        "description": "OK",
+                "summary": "Update chat plan mode instructions",
+                "operationId": "update-chat-plan-mode-instructions",
+                "parameters": [
+                    {
+                        "description": "Request body",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
                         "schema": {
-                            "$ref": "#/definitions/codersdk.Entitlements"
+                            "$ref": "#/definitions/codersdk.UpdateChatPlanModeInstructionsRequest"
                         }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
                     }
                 },
                 "security": [
@@ -1267,7 +2991,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/experimental/chats/config/retention-days": {
+        "/api/v2/chats/config/retention-days": {
             "get": {
                 "produces": [
                     "application/json"
@@ -1329,19 +3053,78 @@ const docTemplate = `{
                 }
             }
         },
-        "/experimental/watch-all-workspacebuilds": {
+        "/api/v2/chats/config/system-prompt": {
             "get": {
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
-                    "Workspaces"
+                    "Chats"
                 ],
-                "summary": "Watch all workspace builds",
-                "operationId": "watch-all-workspace-builds",
+                "summary": "Get chat system prompt",
+                "operationId": "get-chat-system-prompt",
                 "responses": {
-                    "101": {
-                        "description": "Switching Protocols"
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.ChatSystemPromptResponse"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            },
+            "put": {
+                "consumes": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Update chat system prompt",
+                "operationId": "update-chat-system-prompt",
+                "parameters": [
+                    {
+                        "description": "Request body",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.UpdateChatSystemPromptRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/chats/config/user-compaction-thresholds": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Get user chat compaction thresholds",
+                "operationId": "get-user-chat-compaction-thresholds",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.UserChatCompactionThresholds"
+                        }
                     }
                 },
                 "security": [
@@ -1354,7 +3137,2146 @@ const docTemplate = `{
                 }
             }
         },
-        "/experiments": {
+        "/api/v2/chats/config/user-compaction-thresholds/{modelConfig}": {
+            "put": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Update user chat compaction threshold",
+                "operationId": "update-user-chat-compaction-threshold",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Model config ID",
+                        "name": "modelConfig",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Request body",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.UpdateUserChatCompactionThresholdRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.UserChatCompactionThreshold"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            },
+            "delete": {
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Delete user chat compaction threshold",
+                "operationId": "delete-user-chat-compaction-threshold",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Model config ID",
+                        "name": "modelConfig",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            }
+        },
+        "/api/v2/chats/config/user-debug-logging": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Get user chat debug logging setting",
+                "operationId": "get-user-chat-debug-logging-setting",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.UserChatDebugLoggingSettings"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            },
+            "put": {
+                "consumes": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Update user chat debug logging setting",
+                "operationId": "update-user-chat-debug-logging-setting",
+                "parameters": [
+                    {
+                        "description": "Request body",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.UpdateUserChatDebugLoggingRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/chats/config/user-prompt": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Get user chat custom prompt",
+                "operationId": "get-user-chat-custom-prompt",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.UserChatCustomPrompt"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            },
+            "put": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Update user chat custom prompt",
+                "operationId": "update-user-chat-custom-prompt",
+                "parameters": [
+                    {
+                        "description": "Request body",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.UserChatCustomPrompt"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.UserChatCustomPrompt"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/chats/config/workspace-ttl": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Get chat workspace time to live",
+                "operationId": "get-chat-workspace-time-to-live",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.ChatWorkspaceTTLResponse"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            },
+            "put": {
+                "consumes": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Update chat workspace time to live",
+                "operationId": "update-chat-workspace-time-to-live",
+                "parameters": [
+                    {
+                        "description": "Request body",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.UpdateChatWorkspaceTTLRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/chats/files": {
+            "post": {
+                "consumes": [
+                    "image/png",
+                    "image/jpeg",
+                    "image/gif",
+                    "image/webp",
+                    "image/svg+xml",
+                    "text/plain",
+                    "text/markdown",
+                    "text/csv",
+                    "application/json",
+                    "application/pdf"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Upload chat file",
+                "operationId": "upload-chat-file",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Organization ID",
+                        "name": "organization",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "example": "attachment; filename=\"image.png\"",
+                        "description": "Attachment disposition carrying the file name",
+                        "name": "Content-Disposition",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "description": "Raw file binary data",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.UploadChatFileResponse"
+                        }
+                    },
+                    "413": {
+                        "description": "Request body exceeds 10 MiB",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.Response"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "rawBodyFile": "image.png"
+                }
+            }
+        },
+        "/api/v2/chats/files/{file}": {
+            "get": {
+                "produces": [
+                    "image/png",
+                    "image/jpeg",
+                    "image/gif",
+                    "image/webp",
+                    "image/svg+xml",
+                    "text/plain",
+                    "text/markdown",
+                    "text/csv",
+                    "application/json",
+                    "application/pdf"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Get chat file",
+                "operationId": "get-chat-file",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "File ID",
+                        "name": "file",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK"
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/chats/files/{file}/download": {
+            "get": {
+                "produces": [
+                    "image/png",
+                    "image/jpeg",
+                    "image/gif",
+                    "image/webp",
+                    "image/svg+xml",
+                    "text/plain",
+                    "text/markdown",
+                    "text/csv",
+                    "application/json",
+                    "application/pdf"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Download chat file with signed token",
+                "operationId": "download-chat-file-with-signed-token",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "File ID",
+                        "name": "file",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Signed download token",
+                        "name": "token",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK"
+                    }
+                },
+                "x-apidocgen": {
+                    "skip": true
+                }
+            }
+        },
+        "/api/v2/chats/files/{file}/download-url": {
+            "post": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Create chat file download URL",
+                "operationId": "create-chat-file-download-url",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "File ID",
+                        "name": "file",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.ChatFileDownloadURLResponse"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            }
+        },
+        "/api/v2/chats/watch": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Watch chat events for a user via WebSockets",
+                "operationId": "watch-chat-events-for-a-user-via-websockets",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.ChatWatchEvent"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/chats/{chat}": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Get chat by ID",
+                "operationId": "get-chat-by-id",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Chat ID",
+                        "name": "chat",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.Chat"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            },
+            "patch": {
+                "consumes": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Update chat",
+                "operationId": "update-chat",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Chat ID",
+                        "name": "chat",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Update chat request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.UpdateChatRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.Response"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/chats/{chat}/acl": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Get chat ACLs",
+                "operationId": "get-chat-acls",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Chat ID",
+                        "name": "chat",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.ChatACL"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            },
+            "patch": {
+                "consumes": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Update chat ACL",
+                "operationId": "update-chat-acl",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Chat ID",
+                        "name": "chat",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Update chat ACL request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.UpdateChatACL"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            }
+        },
+        "/api/v2/chats/{chat}/clear": {
+            "post": {
+                "description": "Resets the model context of an idle or errored chat,\nclearing any stored error. The reset commits\nsynchronously with no model call: the transcript is\npreserved and the next prompt starts from a fresh\ncontext.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Clear chat context",
+                "operationId": "clear-chat-context",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Chat ID",
+                        "name": "chat",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.Chat"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            }
+        },
+        "/api/v2/chats/{chat}/compact": {
+            "post": {
+                "description": "Requests a manual context compaction on an idle or errored\nchat, clearing any stored error. The compaction runs\nasynchronously through the chat worker and bypasses the\nautomatic usage threshold.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Compact chat",
+                "operationId": "compact-chat",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Chat ID",
+                        "name": "chat",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.Chat"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            }
+        },
+        "/api/v2/chats/{chat}/context": {
+            "put": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Refresh chat context",
+                "operationId": "refresh-chat-context",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Chat ID",
+                        "name": "chat",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.Chat"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/chats/{chat}/cost": {
+            "get": {
+                "description": "Cost covers the whole chat tree: the root chat plus every\nsubagent chat beneath it. Requesting cost for a subagent chat\nreturns that same total.\n\nCost is derived from AI Gateway data, which is subject to its\nown retention period, 60 days by default, configured\nindependently of chat retention. Spend for requests older than\nthat period is no longer reported, so a chat whose requests\nhave all been purged reports zero cost.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Get chat cost",
+                "operationId": "get-chat-cost",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Chat ID",
+                        "name": "chat",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.ChatCost"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/chats/{chat}/diff": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Get chat diff contents",
+                "operationId": "get-chat-diff-contents",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Chat ID",
+                        "name": "chat",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Remote origin selecting the ref to diff",
+                        "name": "origin",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Git branch selecting the ref to diff",
+                        "name": "branch",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.ChatDiffContents"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/chats/{chat}/interrupt": {
+            "post": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Interrupt chat",
+                "operationId": "interrupt-chat",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Chat ID",
+                        "name": "chat",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.Chat"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/chats/{chat}/messages": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "List chat messages",
+                "operationId": "list-chat-messages",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Chat ID",
+                        "name": "chat",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Return messages with id \u003c before_id",
+                        "name": "before_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Return messages with id \u003e after_id",
+                        "name": "after_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page size, 1 to 200. Defaults to 50.",
+                        "name": "limit",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.ChatMessagesResponse"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            },
+            "post": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Send chat message",
+                "operationId": "send-chat-message",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Chat ID",
+                        "name": "chat",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Create chat message request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.CreateChatMessageRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.CreateChatMessageResponse"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/chats/{chat}/messages/{message}": {
+            "patch": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Edit chat message",
+                "operationId": "edit-chat-message",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Chat ID",
+                        "name": "chat",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Message ID",
+                        "name": "message",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Edit chat message request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.EditChatMessageRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.EditChatMessageResponse"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/chats/{chat}/prompts": {
+            "get": {
+                "description": "Returns the user-authored prompts in a chat, newest first,\nwith each prompt's text parts concatenated in the order they\nwere authored. Used by the composer to power the up/down\narrow prompt-history cycle without paging through every\nmessage in the chat.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "List chat user prompts",
+                "operationId": "list-chat-user-prompts",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Chat ID",
+                        "name": "chat",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page size, 0 to 2000. 0 (the default) means the server-side default of 500.",
+                        "name": "limit",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.ChatPromptsResponse"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/chats/{chat}/queue/{queuedMessage}": {
+            "delete": {
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Delete chat queued message",
+                "operationId": "delete-chat-queued-message",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Chat ID",
+                        "name": "chat",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Queued message ID",
+                        "name": "queuedMessage",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/chats/{chat}/queue/{queuedMessage}/promote": {
+            "post": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Promote chat queued message",
+                "operationId": "promote-chat-queued-message",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Chat ID",
+                        "name": "chat",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Queued message ID",
+                        "name": "queuedMessage",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "202": {
+                        "description": "Accepted",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.Response"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/chats/{chat}/reconcile-invalid": {
+            "post": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Reconcile invalid chat state",
+                "operationId": "reconcile-invalid-chat-state",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Chat ID",
+                        "name": "chat",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.Chat"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/chats/{chat}/stream": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Stream chat events via WebSockets",
+                "operationId": "stream-chat-events-via-websockets",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Chat ID",
+                        "name": "chat",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Skip snapshot messages with id at or before this cursor",
+                        "name": "after_id",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/codersdk.ChatStreamEvent"
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/chats/{chat}/stream/git": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Watch chat workspace git state via WebSockets",
+                "operationId": "watch-chat-workspace-git-state-via-websockets",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Chat ID",
+                        "name": "chat",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.WorkspaceAgentGitServerMessage"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/chats/{chat}/stream/parts": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Stream chat parts via WebSockets",
+                "operationId": "stream-chat-parts-via-websockets",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Chat ID",
+                        "name": "chat",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/codersdk.ChatStreamEvent"
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            }
+        },
+        "/api/v2/chats/{chat}/title/propose": {
+            "post": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Propose chat title",
+                "operationId": "propose-chat-title",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Chat ID",
+                        "name": "chat",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.ProposeChatTitleResponse"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/chats/{chat}/tool-results": {
+            "post": {
+                "consumes": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Submit chat tool results",
+                "operationId": "submit-chat-tool-results",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Chat ID",
+                        "name": "chat",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Request body",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.SubmitToolResultsRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/chats/{chat}/workspace-files": {
+            "post": {
+                "description": "Streams the request body into the chat workspace's\nupload directory. The request Content-Type header is\nrecorded as the file's media type. There is no\nserver-imposed size cap; client cancellation aborts the\nstream and the agent leaves no partial target file behind.",
+                "consumes": [
+                    "*/*"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Upload a file to a chat's workspace",
+                "operationId": "upload-a-file-to-a-chats-workspace",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Chat ID",
+                        "name": "chat",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filename of the file (attachment; filename=...)",
+                        "name": "Content-Disposition",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "description": "Raw file binary data",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.UploadChatWorkspaceFileResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.Response"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.Response"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.Response"
+                        }
+                    },
+                    "429": {
+                        "description": "Too Many Requests",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.Response"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.Response"
+                        }
+                    },
+                    "502": {
+                        "description": "Bad Gateway",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.Response"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "rawBodyFile": "archive.zip"
+                }
+            }
+        },
+        "/api/v2/connectionlog": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Enterprise"
+                ],
+                "summary": "Get connection logs",
+                "operationId": "get-connection-logs",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Search query",
+                        "name": "q",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page limit",
+                        "name": "limit",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page offset",
+                        "name": "offset",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.ConnectionLogResponse"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/csp/reports": {
+            "post": {
+                "consumes": [
+                    "application/json"
+                ],
+                "tags": [
+                    "General"
+                ],
+                "summary": "Report CSP violations",
+                "operationId": "report-csp-violations",
+                "parameters": [
+                    {
+                        "description": "Violation report",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/coderd.cspViolation"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK"
+                    },
+                    "413": {
+                        "description": "Request body exceeds 64 KiB",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.Response"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/debug/coordinator": {
+            "get": {
+                "produces": [
+                    "text/html"
+                ],
+                "tags": [
+                    "Debug"
+                ],
+                "summary": "Debug Info Wireguard Coordinator",
+                "operationId": "debug-info-wireguard-coordinator",
+                "responses": {
+                    "200": {
+                        "description": "OK"
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/debug/derp/traffic": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Debug"
+                ],
+                "summary": "Debug DERP traffic",
+                "operationId": "debug-derp-traffic",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/derp.BytesSentRecv"
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            }
+        },
+        "/api/v2/debug/expvar": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Debug"
+                ],
+                "summary": "Debug expvar",
+                "operationId": "debug-expvar",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            }
+        },
+        "/api/v2/debug/health": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Debug"
+                ],
+                "summary": "Debug Info Deployment Health",
+                "operationId": "debug-info-deployment-health",
+                "parameters": [
+                    {
+                        "type": "boolean",
+                        "description": "Force a healthcheck to run",
+                        "name": "force",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/healthsdk.HealthcheckReport"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/debug/health/settings": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Debug"
+                ],
+                "summary": "Get health settings",
+                "operationId": "get-health-settings",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/healthsdk.HealthSettings"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            },
+            "put": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Debug"
+                ],
+                "summary": "Update health settings",
+                "operationId": "update-health-settings",
+                "parameters": [
+                    {
+                        "description": "Update health settings",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/healthsdk.UpdateHealthSettings"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/healthsdk.UpdateHealthSettings"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/debug/metrics": {
+            "get": {
+                "tags": [
+                    "Debug"
+                ],
+                "summary": "Debug metrics",
+                "operationId": "debug-metrics",
+                "responses": {
+                    "200": {
+                        "description": "OK"
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            }
+        },
+        "/api/v2/debug/pprof": {
+            "get": {
+                "tags": [
+                    "Debug"
+                ],
+                "summary": "Debug pprof index",
+                "operationId": "debug-pprof-index",
+                "responses": {
+                    "200": {
+                        "description": "OK"
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            }
+        },
+        "/api/v2/debug/pprof/cmdline": {
+            "get": {
+                "tags": [
+                    "Debug"
+                ],
+                "summary": "Debug pprof cmdline",
+                "operationId": "debug-pprof-cmdline",
+                "responses": {
+                    "200": {
+                        "description": "OK"
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            }
+        },
+        "/api/v2/debug/pprof/profile": {
+            "get": {
+                "tags": [
+                    "Debug"
+                ],
+                "summary": "Debug pprof profile",
+                "operationId": "debug-pprof-profile",
+                "responses": {
+                    "200": {
+                        "description": "OK"
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            }
+        },
+        "/api/v2/debug/pprof/symbol": {
+            "get": {
+                "tags": [
+                    "Debug"
+                ],
+                "summary": "Debug pprof symbol",
+                "operationId": "debug-pprof-symbol",
+                "responses": {
+                    "200": {
+                        "description": "OK"
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            }
+        },
+        "/api/v2/debug/pprof/trace": {
+            "get": {
+                "tags": [
+                    "Debug"
+                ],
+                "summary": "Debug pprof trace",
+                "operationId": "debug-pprof-trace",
+                "responses": {
+                    "200": {
+                        "description": "OK"
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            }
+        },
+        "/api/v2/debug/profile": {
+            "post": {
+                "tags": [
+                    "Debug"
+                ],
+                "summary": "Collect debug profiles",
+                "operationId": "collect-debug-profiles",
+                "responses": {
+                    "200": {
+                        "description": "OK"
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            }
+        },
+        "/api/v2/debug/tailnet": {
+            "get": {
+                "produces": [
+                    "text/html"
+                ],
+                "tags": [
+                    "Debug"
+                ],
+                "summary": "Debug Info Tailnet",
+                "operationId": "debug-info-tailnet",
+                "responses": {
+                    "200": {
+                        "description": "OK"
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/debug/ws": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Debug"
+                ],
+                "summary": "Debug Info Websocket Test",
+                "operationId": "debug-info-websocket-test",
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.Response"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            }
+        },
+        "/api/v2/debug/{user}/debug-link": {
+            "get": {
+                "tags": [
+                    "Agents"
+                ],
+                "summary": "Debug OIDC context for a user",
+                "operationId": "debug-oidc-context-for-a-user",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "User ID, name, or me",
+                        "name": "user",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Success"
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            }
+        },
+        "/api/v2/deployment/config": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "General"
+                ],
+                "summary": "Get deployment config",
+                "operationId": "get-deployment-config",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.DeploymentConfig"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/deployment/premium-funnel-events": {
+            "post": {
+                "consumes": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Enterprise"
+                ],
+                "summary": "Report a premium paywall click",
+                "operationId": "report-a-premium-paywall-click",
+                "parameters": [
+                    {
+                        "description": "Premium funnel event",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.PremiumFunnelEventRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/deployment/ssh": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "General"
+                ],
+                "summary": "SSH Config",
+                "operationId": "ssh-config",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.SSHConfigResponse"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/deployment/stats": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "General"
+                ],
+                "summary": "Get deployment stats",
+                "operationId": "get-deployment-stats",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.DeploymentStats"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/deployment/user-secrets/capabilities": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "General"
+                ],
+                "summary": "Get user secrets capabilities",
+                "operationId": "get-user-secrets-capabilities",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.UserSecretsCapabilities"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/derp-map": {
+            "get": {
+                "tags": [
+                    "Agents"
+                ],
+                "summary": "Get DERP map updates",
+                "operationId": "get-derp-map-updates",
+                "responses": {
+                    "101": {
+                        "description": "Switching Protocols"
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/entitlements": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Enterprise"
+                ],
+                "summary": "Get entitlements",
+                "operationId": "get-entitlements",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.Entitlements"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/experiments": {
             "get": {
                 "produces": [
                     "application/json"
@@ -1382,7 +5304,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/experiments/available": {
+        "/api/v2/experiments/available": {
             "get": {
                 "produces": [
                     "application/json"
@@ -1410,7 +5332,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/external-auth": {
+        "/api/v2/external-auth": {
             "get": {
                 "produces": [
                     "application/json"
@@ -1435,7 +5357,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/external-auth/{externalauth}": {
+        "/api/v2/external-auth/{externalauth}": {
             "get": {
                 "produces": [
                     "application/json"
@@ -1503,7 +5425,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/external-auth/{externalauth}/device": {
+        "/api/v2/external-auth/{externalauth}/device": {
             "get": {
                 "produces": [
                     "application/json"
@@ -1565,7 +5487,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/files": {
+        "/api/v2/files": {
             "post": {
                 "description": "Swagger notice: Swagger 2.0 doesn't support file upload with a ` + "`" + `content-type` + "`" + ` different than ` + "`" + `application/x-www-form-urlencoded` + "`" + `.",
                 "consumes": [
@@ -1608,6 +5530,12 @@ const docTemplate = `{
                         "schema": {
                             "$ref": "#/definitions/codersdk.UploadResponse"
                         }
+                    },
+                    "413": {
+                        "description": "Request body exceeds 100 MiB, or a .zip archive exceeds it once expanded",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.Response"
+                        }
                     }
                 },
                 "security": [
@@ -1617,7 +5545,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/files/{fileID}": {
+        "/api/v2/files/{fileID}": {
             "get": {
                 "tags": [
                     "Files"
@@ -1646,7 +5574,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/groups": {
+        "/api/v2/groups": {
             "get": {
                 "produces": [
                     "application/json"
@@ -1697,7 +5625,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/groups/{group}": {
+        "/api/v2/groups/{group}": {
             "get": {
                 "produces": [
                     "application/json"
@@ -1813,7 +5741,150 @@ const docTemplate = `{
                 ]
             }
         },
-        "/groups/{group}/members": {
+        "/api/v2/groups/{group}/ai/budget": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Enterprise"
+                ],
+                "summary": "Get group AI budget",
+                "operationId": "get-group-ai-budget",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Group ID",
+                        "name": "group",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.GroupAIBudget"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            },
+            "put": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Enterprise"
+                ],
+                "summary": "Upsert group AI budget",
+                "operationId": "upsert-group-ai-budget",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Group ID",
+                        "name": "group",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Upsert group AI budget request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.UpsertGroupAIBudgetRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.GroupAIBudget"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            },
+            "delete": {
+                "tags": [
+                    "Enterprise"
+                ],
+                "summary": "Delete group AI budget",
+                "operationId": "delete-group-ai-budget",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Group ID",
+                        "name": "group",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/groups/{group}/ai/spend": {
+            "get": {
+                "description": "Returns the AI spend limit and aggregate spend for the group.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Enterprise"
+                ],
+                "summary": "Get group AI spend",
+                "operationId": "get-group-ai-spend",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Group ID",
+                        "name": "group",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.GroupAISpend"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/groups/{group}/members": {
             "get": {
                 "produces": [
                     "application/json"
@@ -1872,7 +5943,50 @@ const docTemplate = `{
                 ]
             }
         },
-        "/init-script/{os}/{arch}": {
+        "/api/v2/groups/{group}/members/ai/spend": {
+            "get": {
+                "description": "Returns aggregate AI spend attributed to the group per requested user.\nA maximum of 100 user IDs may be requested per call, and requests with more are rejected, so callers are expected to batch across multiple requests.\nUser IDs that are not members of the group, or that the caller has no read access to, are silently omitted.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Enterprise"
+                ],
+                "summary": "Get group members AI spend",
+                "operationId": "get-group-members-ai-spend",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Group ID",
+                        "name": "group",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Comma-separated list of user IDs (maximum 100)",
+                        "name": "user_ids",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.GroupMembersAISpend"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/init-script/{os}/{arch}": {
             "get": {
                 "produces": [
                     "text/plain"
@@ -1905,7 +6019,7 @@ const docTemplate = `{
                 }
             }
         },
-        "/insights/daus": {
+        "/api/v2/insights/daus": {
             "get": {
                 "produces": [
                     "application/json"
@@ -1939,7 +6053,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/insights/templates": {
+        "/api/v2/insights/templates": {
             "get": {
                 "produces": [
                     "application/json"
@@ -2003,7 +6117,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/insights/user-activity": {
+        "/api/v2/insights/user-activity": {
             "get": {
                 "produces": [
                     "application/json"
@@ -2056,7 +6170,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/insights/user-latency": {
+        "/api/v2/insights/user-latency": {
             "get": {
                 "produces": [
                     "application/json"
@@ -2109,7 +6223,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/insights/user-status-counts": {
+        "/api/v2/insights/user-status-counts": {
             "get": {
                 "produces": [
                     "application/json"
@@ -2148,7 +6262,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/licenses": {
+        "/api/v2/licenses": {
             "get": {
                 "produces": [
                     "application/json"
@@ -2213,7 +6327,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/licenses/refresh-entitlements": {
+        "/api/v2/licenses/refresh-entitlements": {
             "post": {
                 "produces": [
                     "application/json"
@@ -2238,7 +6352,46 @@ const docTemplate = `{
                 ]
             }
         },
-        "/licenses/{id}": {
+        "/api/v2/licenses/trial": {
+            "post": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Enterprise"
+                ],
+                "summary": "Request a trial license",
+                "operationId": "request-a-trial-license",
+                "parameters": [
+                    {
+                        "description": "Trial license request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.CreateTrialLicenseRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.License"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/licenses/{id}": {
             "delete": {
                 "produces": [
                     "application/json"
@@ -2270,7 +6423,45 @@ const docTemplate = `{
                 ]
             }
         },
-        "/notifications/custom": {
+        "/api/v2/mcp/servers/{mcpServer}/oauth2/disconnect": {
+            "delete": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "MCP"
+                ],
+                "summary": "Disconnect MCP server OAuth2 token",
+                "operationId": "disconnect-mcp-server-oauth2-token",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "MCP server config ID",
+                        "name": "mcpServer",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.MCPServerOAuth2DisconnectResponse"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            }
+        },
+        "/api/v2/notifications/custom": {
             "post": {
                 "consumes": [
                     "application/json"
@@ -2324,7 +6515,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/notifications/dispatch-methods": {
+        "/api/v2/notifications/dispatch-methods": {
             "get": {
                 "produces": [
                     "application/json"
@@ -2352,7 +6543,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/notifications/inbox": {
+        "/api/v2/notifications/inbox": {
             "get": {
                 "produces": [
                     "application/json"
@@ -2404,7 +6595,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/notifications/inbox/mark-all-as-read": {
+        "/api/v2/notifications/inbox/mark-all-as-read": {
             "put": {
                 "tags": [
                     "Notifications"
@@ -2423,7 +6614,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/notifications/inbox/watch": {
+        "/api/v2/notifications/inbox/watch": {
             "get": {
                 "produces": [
                     "application/json"
@@ -2478,7 +6669,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/notifications/inbox/{id}/read-status": {
+        "/api/v2/notifications/inbox/{id}/read-status": {
             "put": {
                 "produces": [
                     "application/json"
@@ -2512,7 +6703,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/notifications/settings": {
+        "/api/v2/notifications/settings": {
             "get": {
                 "produces": [
                     "application/json"
@@ -2577,7 +6768,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/notifications/templates/custom": {
+        "/api/v2/notifications/templates/custom": {
             "get": {
                 "produces": [
                     "application/json"
@@ -2611,7 +6802,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/notifications/templates/system": {
+        "/api/v2/notifications/templates/system": {
             "get": {
                 "produces": [
                     "application/json"
@@ -2645,7 +6836,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/notifications/templates/{notification_template}/method": {
+        "/api/v2/notifications/templates/{notification_template}/method": {
             "put": {
                 "produces": [
                     "application/json"
@@ -2679,7 +6870,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/notifications/test": {
+        "/api/v2/notifications/test": {
             "post": {
                 "tags": [
                     "Notifications"
@@ -2698,7 +6889,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/oauth2-provider/apps": {
+        "/api/v2/oauth2-provider/apps": {
             "get": {
                 "produces": [
                     "application/json"
@@ -2771,7 +6962,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/oauth2-provider/apps/{app}": {
+        "/api/v2/oauth2-provider/apps/{app}": {
             "get": {
                 "produces": [
                     "application/json"
@@ -2875,7 +7066,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/oauth2-provider/apps/{app}/secrets": {
+        "/api/v2/oauth2-provider/apps/{app}/secrets": {
             "get": {
                 "produces": [
                     "application/json"
@@ -2938,6 +7129,12 @@ const docTemplate = `{
                                 "$ref": "#/definitions/codersdk.OAuth2ProviderAppSecretFull"
                             }
                         }
+                    },
+                    "400": {
+                        "description": "Public clients cannot have secrets",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.Response"
+                        }
                     }
                 },
                 "security": [
@@ -2947,7 +7144,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/oauth2-provider/apps/{app}/secrets/{secretID}": {
+        "/api/v2/oauth2-provider/apps/{app}/secrets/{secretID}": {
             "delete": {
                 "tags": [
                     "Enterprise"
@@ -2982,150 +7179,29 @@ const docTemplate = `{
                 ]
             }
         },
-        "/oauth2/authorize": {
+        "/api/v2/oauth2-provider/settings": {
             "get": {
-                "tags": [
-                    "Enterprise"
-                ],
-                "summary": "OAuth2 authorization request (GET - show authorization page).",
-                "operationId": "oauth2-authorization-request-get",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Client ID",
-                        "name": "client_id",
-                        "in": "query",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "A random unguessable string",
-                        "name": "state",
-                        "in": "query",
-                        "required": true
-                    },
-                    {
-                        "enum": [
-                            "code",
-                            "token"
-                        ],
-                        "type": "string",
-                        "description": "Response type",
-                        "name": "response_type",
-                        "in": "query",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "Redirect here after authorization",
-                        "name": "redirect_uri",
-                        "in": "query"
-                    },
-                    {
-                        "type": "string",
-                        "description": "Token scopes (currently ignored)",
-                        "name": "scope",
-                        "in": "query"
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "Returns HTML authorization page"
-                    }
-                },
-                "security": [
-                    {
-                        "CoderSessionToken": []
-                    }
-                ]
-            },
-            "post": {
-                "tags": [
-                    "Enterprise"
-                ],
-                "summary": "OAuth2 authorization request (POST - process authorization).",
-                "operationId": "oauth2-authorization-request-post",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Client ID",
-                        "name": "client_id",
-                        "in": "query",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "A random unguessable string",
-                        "name": "state",
-                        "in": "query",
-                        "required": true
-                    },
-                    {
-                        "enum": [
-                            "code",
-                            "token"
-                        ],
-                        "type": "string",
-                        "description": "Response type",
-                        "name": "response_type",
-                        "in": "query",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "Redirect here after authorization",
-                        "name": "redirect_uri",
-                        "in": "query"
-                    },
-                    {
-                        "type": "string",
-                        "description": "Token scopes (currently ignored)",
-                        "name": "scope",
-                        "in": "query"
-                    }
-                ],
-                "responses": {
-                    "302": {
-                        "description": "Returns redirect with authorization code"
-                    }
-                },
-                "security": [
-                    {
-                        "CoderSessionToken": []
-                    }
-                ]
-            }
-        },
-        "/oauth2/clients/{client_id}": {
-            "get": {
-                "consumes": [
-                    "application/json"
-                ],
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
                     "Enterprise"
                 ],
-                "summary": "Get OAuth2 client configuration (RFC 7592)",
-                "operationId": "get-oauth2-client-configuration",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Client ID",
-                        "name": "client_id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
+                "summary": "Get OAuth2 provider settings.",
+                "operationId": "get-oauth2-provider-settings",
                 "responses": {
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/codersdk.OAuth2ClientConfiguration"
+                            "$ref": "#/definitions/codersdk.OAuth2ProviderSettings"
                         }
                     }
-                }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
             },
             "put": {
                 "consumes": [
@@ -3137,23 +7213,16 @@ const docTemplate = `{
                 "tags": [
                     "Enterprise"
                 ],
-                "summary": "Update OAuth2 client configuration (RFC 7592)",
-                "operationId": "put-oauth2-client-configuration",
+                "summary": "Update OAuth2 provider settings.",
+                "operationId": "update-oauth2-provider-settings",
                 "parameters": [
                     {
-                        "type": "string",
-                        "description": "Client ID",
-                        "name": "client_id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "description": "Client update request",
+                        "description": "OAuth2 provider settings request",
                         "name": "request",
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/codersdk.OAuth2ClientRegistrationRequest"
+                            "$ref": "#/definitions/codersdk.OAuth2ProviderSettings"
                         }
                     }
                 ],
@@ -3161,183 +7230,8 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/codersdk.OAuth2ClientConfiguration"
+                            "$ref": "#/definitions/codersdk.OAuth2ProviderSettings"
                         }
-                    }
-                }
-            },
-            "delete": {
-                "tags": [
-                    "Enterprise"
-                ],
-                "summary": "Delete OAuth2 client registration (RFC 7592)",
-                "operationId": "delete-oauth2-client-configuration",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Client ID",
-                        "name": "client_id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "204": {
-                        "description": "No Content"
-                    }
-                }
-            }
-        },
-        "/oauth2/register": {
-            "post": {
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "Enterprise"
-                ],
-                "summary": "OAuth2 dynamic client registration (RFC 7591)",
-                "operationId": "oauth2-dynamic-client-registration",
-                "parameters": [
-                    {
-                        "description": "Client registration request",
-                        "name": "request",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "$ref": "#/definitions/codersdk.OAuth2ClientRegistrationRequest"
-                        }
-                    }
-                ],
-                "responses": {
-                    "201": {
-                        "description": "Created",
-                        "schema": {
-                            "$ref": "#/definitions/codersdk.OAuth2ClientRegistrationResponse"
-                        }
-                    }
-                }
-            }
-        },
-        "/oauth2/revoke": {
-            "post": {
-                "consumes": [
-                    "application/x-www-form-urlencoded"
-                ],
-                "tags": [
-                    "Enterprise"
-                ],
-                "summary": "Revoke OAuth2 tokens (RFC 7009).",
-                "operationId": "oauth2-token-revocation",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Client ID for authentication",
-                        "name": "client_id",
-                        "in": "formData",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "The token to revoke",
-                        "name": "token",
-                        "in": "formData",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "Hint about token type (access_token or refresh_token)",
-                        "name": "token_type_hint",
-                        "in": "formData"
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "Token successfully revoked"
-                    }
-                }
-            }
-        },
-        "/oauth2/tokens": {
-            "post": {
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "Enterprise"
-                ],
-                "summary": "OAuth2 token exchange.",
-                "operationId": "oauth2-token-exchange",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Client ID, required if grant_type=authorization_code",
-                        "name": "client_id",
-                        "in": "formData"
-                    },
-                    {
-                        "type": "string",
-                        "description": "Client secret, required if grant_type=authorization_code",
-                        "name": "client_secret",
-                        "in": "formData"
-                    },
-                    {
-                        "type": "string",
-                        "description": "Authorization code, required if grant_type=authorization_code",
-                        "name": "code",
-                        "in": "formData"
-                    },
-                    {
-                        "type": "string",
-                        "description": "Refresh token, required if grant_type=refresh_token",
-                        "name": "refresh_token",
-                        "in": "formData"
-                    },
-                    {
-                        "enum": [
-                            "authorization_code",
-                            "refresh_token",
-                            "password",
-                            "client_credentials",
-                            "implicit"
-                        ],
-                        "type": "string",
-                        "description": "Grant type",
-                        "name": "grant_type",
-                        "in": "formData",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/oauth2.Token"
-                        }
-                    }
-                }
-            },
-            "delete": {
-                "tags": [
-                    "Enterprise"
-                ],
-                "summary": "Delete OAuth2 application tokens.",
-                "operationId": "delete-oauth2-application-tokens",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Client ID",
-                        "name": "client_id",
-                        "in": "query",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "204": {
-                        "description": "No Content"
                     }
                 },
                 "security": [
@@ -3347,7 +7241,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/organizations": {
+        "/api/v2/organizations": {
             "get": {
                 "produces": [
                     "application/json"
@@ -3412,7 +7306,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/organizations/{organization}": {
+        "/api/v2/organizations/{organization}": {
             "get": {
                 "produces": [
                     "application/json"
@@ -3523,7 +7417,633 @@ const docTemplate = `{
                 ]
             }
         },
-        "/organizations/{organization}/groups": {
+        "/api/v2/organizations/{organization}/ai/spend/export": {
+            "get": {
+                "description": "Returns per-user, per-group, per-model, per-provider aggregated AI spend for the organization as CSV, built from raw AI Gateway token usage.\nThe optional period_start and period_end query parameters bound the period and are interpreted as UTC. They must be provided together and span at most 31 days. When both are omitted, the current UTC monthly period is used.\nAn explicit period_start must fall within the configured AI Gateway data retention window, since older token usage is purged. The default period is narrowed to that window instead, and every row echoes the applied bounds.\nUnknown query parameters are rejected.\nRequires organization-level administrator permissions.",
+                "produces": [
+                    "text/csv"
+                ],
+                "tags": [
+                    "Enterprise"
+                ],
+                "summary": "Export organization AI spend as CSV",
+                "operationId": "export-organization-ai-spend-as-csv",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Organization ID",
+                        "name": "organization",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "format": "date-time",
+                        "description": "Inclusive lower bound (RFC3339)",
+                        "name": "period_start",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "format": "date-time",
+                        "description": "Exclusive upper bound (RFC3339)",
+                        "name": "period_end",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "User ID",
+                        "name": "user_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Effective group ID",
+                        "name": "group_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Configured provider name",
+                        "name": "provider_name",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Model name",
+                        "name": "model",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK"
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/organizations/{organization}/chats/config/system-prompt": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Get organization chat system prompt",
+                "operationId": "get-organization-chat-system-prompt",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Organization ID",
+                        "name": "organization",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.OrganizationChatSystemPromptResponse"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            },
+            "put": {
+                "consumes": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Update organization chat system prompt",
+                "operationId": "update-organization-chat-system-prompt",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Organization ID",
+                        "name": "organization",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Request body",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.UpdateOrganizationChatSystemPromptRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/organizations/{organization}/chats/model-overrides": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "List organization chat model overrides",
+                "operationId": "list-organization-chat-model-overrides",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Organization name or ID",
+                        "name": "organization",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.ChatModelOverridesResponse"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            }
+        },
+        "/api/v2/organizations/{organization}/chats/model-overrides/{context}": {
+            "put": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Update organization chat model override",
+                "operationId": "update-organization-chat-model-override",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Organization name or ID",
+                        "name": "organization",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "enum": [
+                            "general",
+                            "explore",
+                            "title_generation",
+                            "compaction",
+                            "advisor"
+                        ],
+                        "type": "string",
+                        "description": "Override context",
+                        "name": "context",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Model override",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.UpdateChatModelOverrideRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.ChatModelOverrideResponse"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            }
+        },
+        "/api/v2/organizations/{organization}/chats/models": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "List AI models and provider descriptors in an organization",
+                "operationId": "list-ai-models-and-provider-descriptors-in-an-organization",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Organization name or ID",
+                        "name": "organization",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.OrganizationChatModelsResponse"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            },
+            "post": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Create an AI model in an organization",
+                "operationId": "create-an-ai-model-in-an-organization",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Organization name or ID",
+                        "name": "organization",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Model",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.CreateChatModelRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.ChatModel"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/organizations/{organization}/chats/models/{model}": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Get an AI model",
+                "operationId": "get-an-ai-model",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Organization name or ID",
+                        "name": "organization",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Model ID",
+                        "name": "model",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.ChatModel"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            },
+            "delete": {
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Delete an AI model",
+                "operationId": "delete-an-ai-model",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Organization name or ID",
+                        "name": "organization",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Model ID",
+                        "name": "model",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            },
+            "patch": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Update an AI model",
+                "operationId": "update-an-ai-model",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Organization name or ID",
+                        "name": "organization",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Model ID",
+                        "name": "model",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Model updates",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.UpdateChatModelRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.ChatModel"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            }
+        },
+        "/api/v2/organizations/{organization}/chats/models/{model}/acl": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Get an AI model ACL",
+                "operationId": "get-an-ai-model-acl",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Organization name or ID",
+                        "name": "organization",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Model ID",
+                        "name": "model",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.ChatModelACL"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            },
+            "patch": {
+                "consumes": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Update an AI model ACL",
+                "operationId": "update-an-ai-model-acl",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Organization name or ID",
+                        "name": "organization",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Model ID",
+                        "name": "model",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Sparse model ACL update",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.UpdateChatModelACLRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            }
+        },
+        "/api/v2/organizations/{organization}/chats/models/{model}/acl/available": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Get available AI model ACL users and groups",
+                "operationId": "get-available-ai-model-acl-users-and-groups",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Organization name or ID",
+                        "name": "organization",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Model ID",
+                        "name": "model",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "User search query; free-text search also applies to groups",
+                        "name": "q",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "User after ID",
+                        "name": "after_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page limit for users and groups, if 0 returns all candidates",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "User page offset",
+                        "name": "offset",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.ACLAvailable"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            }
+        },
+        "/api/v2/organizations/{organization}/groups": {
             "get": {
                 "produces": [
                     "application/json"
@@ -3605,7 +8125,50 @@ const docTemplate = `{
                 ]
             }
         },
-        "/organizations/{organization}/groups/{groupName}": {
+        "/api/v2/organizations/{organization}/groups/ai/spend": {
+            "get": {
+                "description": "Returns AI spend limits and aggregate spend for the requested groups.\nA maximum of 100 group IDs may be requested per call, and requests with more are rejected, so callers are expected to batch across multiple requests.\nUnknown or unreadable group IDs are silently omitted.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Enterprise"
+                ],
+                "summary": "Get organization groups AI spend",
+                "operationId": "get-organization-groups-ai-spend",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Organization ID",
+                        "name": "organization",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Comma-separated list of group IDs (maximum 100)",
+                        "name": "group_ids",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.OrganizationGroupsAISpend"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/organizations/{organization}/groups/{groupName}": {
             "get": {
                 "produces": [
                     "application/json"
@@ -3647,7 +8210,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/organizations/{organization}/groups/{groupName}/members": {
+        "/api/v2/organizations/{organization}/groups/{groupName}/members": {
             "get": {
                 "produces": [
                     "application/json"
@@ -3714,7 +8277,484 @@ const docTemplate = `{
                 ]
             }
         },
-        "/organizations/{organization}/members": {
+        "/api/v2/organizations/{organization}/groups/{groupName}/members/ai/spend": {
+            "get": {
+                "description": "Returns aggregate AI spend attributed to the group per requested user.\nA maximum of 100 user IDs may be requested per call, and requests with more are rejected, so callers are expected to batch across multiple requests.\nUser IDs that are not members of the group, or that the caller has no read access to, are silently omitted.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Enterprise"
+                ],
+                "summary": "Get group members AI spend by organization",
+                "operationId": "get-group-members-ai-spend-by-organization",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Organization ID",
+                        "name": "organization",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Group name",
+                        "name": "groupName",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Comma-separated list of user IDs (maximum 100)",
+                        "name": "user_ids",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.GroupMembersAISpend"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/organizations/{organization}/mcp-servers": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "MCP"
+                ],
+                "summary": "List MCP server configs",
+                "operationId": "list-mcp-server-configs",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Organization name or ID",
+                        "name": "organization",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/codersdk.MCPServerConfig"
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            },
+            "post": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "MCP"
+                ],
+                "summary": "Create MCP server config",
+                "operationId": "create-mcp-server-config",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Organization name or ID",
+                        "name": "organization",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Create MCP server config request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.CreateMCPServerConfigRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.MCPServerConfig"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            }
+        },
+        "/api/v2/organizations/{organization}/mcp-servers/{mcpserverconfig}": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "MCP"
+                ],
+                "summary": "Get MCP server config",
+                "operationId": "get-mcp-server-config",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Organization name or ID",
+                        "name": "organization",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "MCP server config ID",
+                        "name": "mcpserverconfig",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.MCPServerConfig"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            },
+            "delete": {
+                "tags": [
+                    "MCP"
+                ],
+                "summary": "Delete MCP server config",
+                "operationId": "delete-mcp-server-config",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Organization name or ID",
+                        "name": "organization",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "MCP server config ID",
+                        "name": "mcpserverconfig",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            },
+            "patch": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "MCP"
+                ],
+                "summary": "Update MCP server config",
+                "operationId": "update-mcp-server-config",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Organization name or ID",
+                        "name": "organization",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "MCP server config ID",
+                        "name": "mcpserverconfig",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Update MCP server config request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.UpdateMCPServerConfigRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.MCPServerConfig"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            }
+        },
+        "/api/v2/organizations/{organization}/mcp-servers/{mcpserverconfig}/acl": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "MCP"
+                ],
+                "summary": "Get MCP server config ACL",
+                "operationId": "get-mcp-server-config-acl",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Organization name or ID",
+                        "name": "organization",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "MCP server config ID",
+                        "name": "mcpserverconfig",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.MCPServerConfigACL"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            },
+            "patch": {
+                "consumes": [
+                    "application/json"
+                ],
+                "tags": [
+                    "MCP"
+                ],
+                "summary": "Update MCP server config ACL",
+                "operationId": "update-mcp-server-config-acl",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Organization name or ID",
+                        "name": "organization",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "MCP server config ID",
+                        "name": "mcpserverconfig",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Update MCP server config ACL request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.UpdateMCPServerConfigACLRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            }
+        },
+        "/api/v2/organizations/{organization}/mcp-servers/{mcpserverconfig}/acl/available": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "MCP"
+                ],
+                "summary": "Get available MCP server config ACL users and groups",
+                "operationId": "get-available-mcp-server-config-acl-users-and-groups",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Organization name or ID",
+                        "name": "organization",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "MCP server config ID",
+                        "name": "mcpserverconfig",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "User search query; free-text search also applies to groups",
+                        "name": "q",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "User after ID",
+                        "name": "after_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page limit for users and groups, if 0 returns all candidates",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "User page offset",
+                        "name": "offset",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.ACLAvailable"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            }
+        },
+        "/api/v2/organizations/{organization}/mcp-servers/{mcpserverconfig}/oauth2/connect": {
+            "get": {
+                "tags": [
+                    "MCP"
+                ],
+                "summary": "Initiate MCP server OAuth2 connect",
+                "operationId": "initiate-mcp-server-oauth2-connect",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Organization name or ID",
+                        "name": "organization",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "MCP server config ID",
+                        "name": "mcpserverconfig",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "307": {
+                        "description": "Temporary Redirect"
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            }
+        },
+        "/api/v2/organizations/{organization}/members": {
             "get": {
                 "produces": [
                     "application/json"
@@ -3752,7 +8792,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/organizations/{organization}/members/roles": {
+        "/api/v2/organizations/{organization}/members/roles": {
             "get": {
                 "produces": [
                     "application/json"
@@ -3886,7 +8926,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/organizations/{organization}/members/roles/{roleName}": {
+        "/api/v2/organizations/{organization}/members/roles/{roleName}": {
             "delete": {
                 "produces": [
                     "application/json"
@@ -3931,7 +8971,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/organizations/{organization}/members/{user}": {
+        "/api/v2/organizations/{organization}/members/{user}": {
             "get": {
                 "produces": [
                     "application/json"
@@ -4044,7 +9084,113 @@ const docTemplate = `{
                 ]
             }
         },
-        "/organizations/{organization}/members/{user}/roles": {
+        "/api/v2/organizations/{organization}/members/{user}/chats/model-overrides": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Get organization member chat model overrides",
+                "operationId": "get-organization-member-chat-model-overrides",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Organization name or ID",
+                        "name": "organization",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "User name, ID, or me",
+                        "name": "user",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.UserChatPersonalModelOverridesResponse"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            }
+        },
+        "/api/v2/organizations/{organization}/members/{user}/chats/model-overrides/{context}": {
+            "put": {
+                "consumes": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Update organization member chat model override",
+                "operationId": "update-organization-member-chat-model-override",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Organization name or ID",
+                        "name": "organization",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "User name, ID, or me",
+                        "name": "user",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "enum": [
+                            "root",
+                            "general",
+                            "explore"
+                        ],
+                        "type": "string",
+                        "description": "Override context",
+                        "name": "context",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Personal model override",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.UpdateUserChatPersonalModelOverrideRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            }
+        },
+        "/api/v2/organizations/{organization}/members/{user}/roles": {
             "put": {
                 "consumes": [
                     "application/json"
@@ -4097,7 +9243,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/organizations/{organization}/members/{user}/workspace-quota": {
+        "/api/v2/organizations/{organization}/members/{user}/workspace-quota": {
             "get": {
                 "produces": [
                     "application/json"
@@ -4139,7 +9285,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/organizations/{organization}/members/{user}/workspaces": {
+        "/api/v2/organizations/{organization}/members/{user}/workspaces": {
             "post": {
                 "description": "Create a new workspace using a template. The request must\nspecify either the Template ID or the Template Version ID,\nnot both. If the Template ID is specified, the active version\nof the template will be used.",
                 "consumes": [
@@ -4181,8 +9327,8 @@ const docTemplate = `{
                     }
                 ],
                 "responses": {
-                    "200": {
-                        "description": "OK",
+                    "201": {
+                        "description": "Created",
                         "schema": {
                             "$ref": "#/definitions/codersdk.Workspace"
                         }
@@ -4195,7 +9341,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/organizations/{organization}/members/{user}/workspaces/available-users": {
+        "/api/v2/organizations/{organization}/members/{user}/workspaces/available-users": {
             "get": {
                 "produces": [
                     "application/json"
@@ -4258,7 +9404,67 @@ const docTemplate = `{
                 ]
             }
         },
-        "/organizations/{organization}/paginated-members": {
+        "/api/v2/organizations/{organization}/paginated-groups": {
+            "get": {
+                "description": "Unlike \"Get groups by organization\" (GET /organizations/{organization}/groups),\nwhich authorizes each group individually via its ACL, this endpoint requires\norganization-wide group read permission and does no per-group filtering. It is\ntherefore not a drop-in replacement: callers without org-wide group read receive\nan error rather than a filtered subset.\n\nThe ` + "`" + `q` + "`" + ` parameter uses the shared filter syntax. Bare terms (including multi-word)\nperform a free-text search over group name and display name. ` + "`" + `search:` + "`" + ` is the only\naccepted key and unknown keys return 400. Because group display names may contain\ncolons, a value with a colon must be quoted, e.g. ` + "`" + `search:\"team: frontend\"` + "`" + `; an\nunquoted colon fails with ` + "`" + `Query element \"team:\" cannot start or end with ':'` + "`" + `.\n\nThis endpoint returns group summaries without the member roster: each group\ncarries only ` + "`" + `total_member_count` + "`" + ` and no ` + "`" + `members` + "`" + ` field. Callers that need the\nroster use the group members endpoint (GET /groups/{group}/members).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Enterprise"
+                ],
+                "summary": "Get groups by organization (paginated)",
+                "operationId": "get-groups-by-organization-paginated",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Organization ID or name",
+                        "name": "organization",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Search query (see description for syntax and colon-quoting)",
+                        "name": "q",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page limit",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page offset",
+                        "name": "offset",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "After ID",
+                        "name": "after_id",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.PaginatedGroupsResponse"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/organizations/{organization}/paginated-members": {
             "get": {
                 "produces": [
                     "application/json"
@@ -4320,7 +9526,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/organizations/{organization}/provisionerdaemons": {
+        "/api/v2/organizations/{organization}/provisionerdaemons": {
             "get": {
                 "produces": [
                     "application/json"
@@ -4378,8 +9584,8 @@ const docTemplate = `{
                         "in": "query"
                     },
                     {
-                        "type": "object",
-                        "description": "Provisioner tags to filter by (JSON of the form {'tag1':'value1','tag2':'value2'})",
+                        "type": "string",
+                        "description": "Provisioner tags to filter by (JSON of the form ` + "`" + `{'tag1':'value1','tag2':'value2'}` + "`" + `)",
                         "name": "tags",
                         "in": "query"
                     }
@@ -4402,7 +9608,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/organizations/{organization}/provisionerdaemons/serve": {
+        "/api/v2/organizations/{organization}/provisionerdaemons/serve": {
             "get": {
                 "tags": [
                     "Enterprise"
@@ -4431,7 +9637,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/organizations/{organization}/provisionerjobs": {
+        "/api/v2/organizations/{organization}/provisionerjobs": {
             "get": {
                 "produces": [
                     "application/json"
@@ -4489,8 +9695,8 @@ const docTemplate = `{
                         "in": "query"
                     },
                     {
-                        "type": "object",
-                        "description": "Provisioner tags to filter by (JSON of the form {'tag1':'value1','tag2':'value2'})",
+                        "type": "string",
+                        "description": "Provisioner tags to filter by (JSON of the form ` + "`" + `{'tag1':'value1','tag2':'value2'}` + "`" + `)",
                         "name": "tags",
                         "in": "query"
                     },
@@ -4520,7 +9726,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/organizations/{organization}/provisionerjobs/{job}": {
+        "/api/v2/organizations/{organization}/provisionerjobs/{job}": {
             "get": {
                 "produces": [
                     "application/json"
@@ -4563,7 +9769,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/organizations/{organization}/provisionerkeys": {
+        "/api/v2/organizations/{organization}/provisionerkeys": {
             "get": {
                 "produces": [
                     "application/json"
@@ -4632,7 +9838,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/organizations/{organization}/provisionerkeys/daemons": {
+        "/api/v2/organizations/{organization}/provisionerkeys/daemons": {
             "get": {
                 "produces": [
                     "application/json"
@@ -4669,7 +9875,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/organizations/{organization}/provisionerkeys/{provisionerkey}": {
+        "/api/v2/organizations/{organization}/provisionerkeys/{provisionerkey}": {
             "delete": {
                 "tags": [
                     "Enterprise"
@@ -4704,7 +9910,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/organizations/{organization}/settings/idpsync/available-fields": {
+        "/api/v2/organizations/{organization}/settings/idpsync/available-fields": {
             "get": {
                 "produces": [
                     "application/json"
@@ -4742,7 +9948,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/organizations/{organization}/settings/idpsync/field-values": {
+        "/api/v2/organizations/{organization}/settings/idpsync/field-values": {
             "get": {
                 "produces": [
                     "application/json"
@@ -4788,7 +9994,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/organizations/{organization}/settings/idpsync/groups": {
+        "/api/v2/organizations/{organization}/settings/idpsync/groups": {
             "get": {
                 "produces": [
                     "application/json"
@@ -4868,7 +10074,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/organizations/{organization}/settings/idpsync/groups/config": {
+        "/api/v2/organizations/{organization}/settings/idpsync/groups/config": {
             "patch": {
                 "consumes": [
                     "application/json"
@@ -4915,7 +10121,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/organizations/{organization}/settings/idpsync/groups/mapping": {
+        "/api/v2/organizations/{organization}/settings/idpsync/groups/mapping": {
             "patch": {
                 "consumes": [
                     "application/json"
@@ -4962,7 +10168,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/organizations/{organization}/settings/idpsync/roles": {
+        "/api/v2/organizations/{organization}/settings/idpsync/roles": {
             "get": {
                 "produces": [
                     "application/json"
@@ -5042,7 +10248,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/organizations/{organization}/settings/idpsync/roles/config": {
+        "/api/v2/organizations/{organization}/settings/idpsync/roles/config": {
             "patch": {
                 "consumes": [
                     "application/json"
@@ -5089,7 +10295,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/organizations/{organization}/settings/idpsync/roles/mapping": {
+        "/api/v2/organizations/{organization}/settings/idpsync/roles/mapping": {
             "patch": {
                 "consumes": [
                     "application/json"
@@ -5136,7 +10342,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/organizations/{organization}/settings/workspace-sharing": {
+        "/api/v2/organizations/{organization}/settings/workspace-sharing": {
             "get": {
                 "produces": [
                     "application/json"
@@ -5216,7 +10422,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/organizations/{organization}/templates": {
+        "/api/v2/organizations/{organization}/templates": {
             "get": {
                 "description": "Returns a list of templates for the specified organization.\nBy default, only non-deprecated templates are returned.\nTo include deprecated templates, specify ` + "`" + `deprecated:true` + "`" + ` in the search query.",
                 "produces": [
@@ -5299,7 +10505,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/organizations/{organization}/templates/examples": {
+        "/api/v2/organizations/{organization}/templates/examples": {
             "get": {
                 "produces": [
                     "application/json"
@@ -5338,7 +10544,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/organizations/{organization}/templates/{templatename}": {
+        "/api/v2/organizations/{organization}/templates/{templatename}": {
             "get": {
                 "produces": [
                     "application/json"
@@ -5380,7 +10586,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/organizations/{organization}/templates/{templatename}/versions/{templateversionname}": {
+        "/api/v2/organizations/{organization}/templates/{templatename}/versions/{templateversionname}": {
             "get": {
                 "produces": [
                     "application/json"
@@ -5429,7 +10635,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/organizations/{organization}/templates/{templatename}/versions/{templateversionname}/previous": {
+        "/api/v2/organizations/{organization}/templates/{templatename}/versions/{templateversionname}/previous": {
             "get": {
                 "produces": [
                     "application/json"
@@ -5481,7 +10687,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/organizations/{organization}/templateversions": {
+        "/api/v2/organizations/{organization}/templateversions": {
             "post": {
                 "consumes": [
                     "application/json"
@@ -5528,7 +10734,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/prebuilds/settings": {
+        "/api/v2/prebuilds/settings": {
             "get": {
                 "produces": [
                     "application/json"
@@ -5593,7 +10799,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/provisionerkeys/{provisionerkey}": {
+        "/api/v2/provisionerkeys/{provisionerkey}": {
             "get": {
                 "produces": [
                     "application/json"
@@ -5627,7 +10833,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/regions": {
+        "/api/v2/regions": {
             "get": {
                 "produces": [
                     "application/json"
@@ -5652,7 +10858,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/replicas": {
+        "/api/v2/replicas": {
             "get": {
                 "produces": [
                     "application/json"
@@ -5680,196 +10886,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/scim/v2/ServiceProviderConfig": {
-            "get": {
-                "produces": [
-                    "application/scim+json"
-                ],
-                "tags": [
-                    "Enterprise"
-                ],
-                "summary": "SCIM 2.0: Service Provider Config",
-                "operationId": "scim-get-service-provider-config",
-                "responses": {
-                    "200": {
-                        "description": "OK"
-                    }
-                }
-            }
-        },
-        "/scim/v2/Users": {
-            "get": {
-                "produces": [
-                    "application/scim+json"
-                ],
-                "tags": [
-                    "Enterprise"
-                ],
-                "summary": "SCIM 2.0: Get users",
-                "operationId": "scim-get-users",
-                "responses": {
-                    "200": {
-                        "description": "OK"
-                    }
-                },
-                "security": [
-                    {
-                        "Authorization": []
-                    }
-                ]
-            },
-            "post": {
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "Enterprise"
-                ],
-                "summary": "SCIM 2.0: Create new user",
-                "operationId": "scim-create-new-user",
-                "parameters": [
-                    {
-                        "description": "New user",
-                        "name": "request",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "$ref": "#/definitions/coderd.SCIMUser"
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/coderd.SCIMUser"
-                        }
-                    }
-                },
-                "security": [
-                    {
-                        "Authorization": []
-                    }
-                ]
-            }
-        },
-        "/scim/v2/Users/{id}": {
-            "get": {
-                "produces": [
-                    "application/scim+json"
-                ],
-                "tags": [
-                    "Enterprise"
-                ],
-                "summary": "SCIM 2.0: Get user by ID",
-                "operationId": "scim-get-user-by-id",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "format": "uuid",
-                        "description": "User ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "404": {
-                        "description": "Not Found"
-                    }
-                },
-                "security": [
-                    {
-                        "Authorization": []
-                    }
-                ]
-            },
-            "put": {
-                "produces": [
-                    "application/scim+json"
-                ],
-                "tags": [
-                    "Enterprise"
-                ],
-                "summary": "SCIM 2.0: Replace user account",
-                "operationId": "scim-replace-user-status",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "format": "uuid",
-                        "description": "User ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "description": "Replace user request",
-                        "name": "request",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "$ref": "#/definitions/coderd.SCIMUser"
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/codersdk.User"
-                        }
-                    }
-                },
-                "security": [
-                    {
-                        "Authorization": []
-                    }
-                ]
-            },
-            "patch": {
-                "produces": [
-                    "application/scim+json"
-                ],
-                "tags": [
-                    "Enterprise"
-                ],
-                "summary": "SCIM 2.0: Update user account",
-                "operationId": "scim-update-user-status",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "format": "uuid",
-                        "description": "User ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "description": "Update user request",
-                        "name": "request",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "$ref": "#/definitions/coderd.SCIMUser"
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/codersdk.User"
-                        }
-                    }
-                },
-                "security": [
-                    {
-                        "Authorization": []
-                    }
-                ]
-            }
-        },
-        "/settings/idpsync/available-fields": {
+        "/api/v2/settings/idpsync/available-fields": {
             "get": {
                 "produces": [
                     "application/json"
@@ -5907,7 +10924,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/settings/idpsync/field-values": {
+        "/api/v2/settings/idpsync/field-values": {
             "get": {
                 "produces": [
                     "application/json"
@@ -5953,7 +10970,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/settings/idpsync/organization": {
+        "/api/v2/settings/idpsync/organization": {
             "get": {
                 "produces": [
                     "application/json"
@@ -6015,7 +11032,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/settings/idpsync/organization/config": {
+        "/api/v2/settings/idpsync/organization/config": {
             "patch": {
                 "consumes": [
                     "application/json"
@@ -6054,7 +11071,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/settings/idpsync/organization/mapping": {
+        "/api/v2/settings/idpsync/organization/mapping": {
             "patch": {
                 "consumes": [
                     "application/json"
@@ -6093,7 +11110,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/tailnet": {
+        "/api/v2/tailnet": {
             "get": {
                 "tags": [
                     "Agents"
@@ -6112,29 +11129,21 @@ const docTemplate = `{
                 ]
             }
         },
-        "/tasks": {
+        "/api/v2/templatebuilder/bases": {
             "get": {
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
-                    "Tasks"
+                    "TemplateBuilder"
                 ],
-                "summary": "List AI tasks",
-                "operationId": "list-ai-tasks",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Search query for filtering tasks. Supports: owner:\u003cusername/uuid/me\u003e, organization:\u003corg-name/uuid\u003e, status:\u003cstatus\u003e",
-                        "name": "q",
-                        "in": "query"
-                    }
-                ],
+                "summary": "List template builder base templates",
+                "operationId": "list-template-builder-base-templates",
                 "responses": {
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/codersdk.TasksListResponse"
+                            "$ref": "#/definitions/codersdk.TemplateBuilderBasesResponse"
                         }
                     }
                 },
@@ -6145,7 +11154,43 @@ const docTemplate = `{
                 ]
             }
         },
-        "/tasks/{user}": {
+        "/api/v2/templatebuilder/compose": {
+            "post": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/x-tar"
+                ],
+                "tags": [
+                    "TemplateBuilder"
+                ],
+                "summary": "Compose template from base and modules",
+                "operationId": "compose-template-from-base-and-modules",
+                "parameters": [
+                    {
+                        "description": "Compose request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.TemplateBuilderComposeRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK"
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/templatebuilder/compose/template": {
             "post": {
                 "consumes": [
                     "application/json"
@@ -6154,25 +11199,18 @@ const docTemplate = `{
                     "application/json"
                 ],
                 "tags": [
-                    "Tasks"
+                    "TemplateBuilder"
                 ],
-                "summary": "Create a new AI task",
-                "operationId": "create-a-new-ai-task",
+                "summary": "Compose and create a template",
+                "operationId": "compose-and-create-a-template",
                 "parameters": [
                     {
-                        "type": "string",
-                        "description": "Username, user ID, or 'me' for the authenticated user",
-                        "name": "user",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "description": "Create task request",
+                        "description": "Create template request",
                         "name": "request",
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/codersdk.CreateTaskRequest"
+                            "$ref": "#/definitions/codersdk.TemplateBuilderCreateTemplateRequest"
                         }
                     }
                 ],
@@ -6180,7 +11218,31 @@ const docTemplate = `{
                     "201": {
                         "description": "Created",
                         "schema": {
-                            "$ref": "#/definitions/codersdk.Task"
+                            "$ref": "#/definitions/codersdk.TemplateBuilderCreateTemplateResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.Response"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.Response"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.Response"
+                        }
+                    },
+                    "504": {
+                        "description": "Gateway Timeout",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.Response"
                         }
                     }
                 },
@@ -6191,71 +11253,30 @@ const docTemplate = `{
                 ]
             }
         },
-        "/tasks/{user}/{task}": {
+        "/api/v2/templatebuilder/modules": {
             "get": {
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
-                    "Tasks"
+                    "TemplateBuilder"
                 ],
-                "summary": "Get AI task by ID or name",
-                "operationId": "get-ai-task-by-id-or-name",
+                "summary": "List template builder modules",
+                "operationId": "list-template-builder-modules",
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "Username, user ID, or 'me' for the authenticated user",
-                        "name": "user",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "Task ID, or task name",
-                        "name": "task",
-                        "in": "path",
-                        "required": true
+                        "description": "Base template example ID for OS-compatibility filtering",
+                        "name": "base",
+                        "in": "query"
                     }
                 ],
                 "responses": {
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/codersdk.Task"
+                            "$ref": "#/definitions/codersdk.TemplateBuilderModulesResponse"
                         }
-                    }
-                },
-                "security": [
-                    {
-                        "CoderSessionToken": []
-                    }
-                ]
-            },
-            "delete": {
-                "tags": [
-                    "Tasks"
-                ],
-                "summary": "Delete AI task",
-                "operationId": "delete-ai-task",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Username, user ID, or 'me' for the authenticated user",
-                        "name": "user",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "Task ID, or task name",
-                        "name": "task",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "202": {
-                        "description": "Accepted"
                     }
                 },
                 "security": [
@@ -6265,38 +11286,24 @@ const docTemplate = `{
                 ]
             }
         },
-        "/tasks/{user}/{task}/input": {
-            "patch": {
+        "/api/v2/templatebuilder/sessions": {
+            "post": {
                 "consumes": [
                     "application/json"
                 ],
                 "tags": [
-                    "Tasks"
+                    "TemplateBuilder"
                 ],
-                "summary": "Update AI task input",
-                "operationId": "update-ai-task-input",
+                "summary": "Report a template builder session event",
+                "operationId": "report-a-template-builder-session-event",
                 "parameters": [
                     {
-                        "type": "string",
-                        "description": "Username, user ID, or 'me' for the authenticated user",
-                        "name": "user",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "Task ID, or task name",
-                        "name": "task",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "description": "Update task input request",
+                        "description": "Session event",
                         "name": "request",
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/codersdk.UpdateTaskInputRequest"
+                            "$ref": "#/definitions/codersdk.TemplateBuilderSessionRequest"
                         }
                     }
                 ],
@@ -6312,179 +11319,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/tasks/{user}/{task}/logs": {
-            "get": {
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "Tasks"
-                ],
-                "summary": "Get AI task logs",
-                "operationId": "get-ai-task-logs",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Username, user ID, or 'me' for the authenticated user",
-                        "name": "user",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "Task ID, or task name",
-                        "name": "task",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/codersdk.TaskLogsResponse"
-                        }
-                    }
-                },
-                "security": [
-                    {
-                        "CoderSessionToken": []
-                    }
-                ]
-            }
-        },
-        "/tasks/{user}/{task}/pause": {
-            "post": {
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "Tasks"
-                ],
-                "summary": "Pause task",
-                "operationId": "pause-task",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Username, user ID, or 'me' for the authenticated user",
-                        "name": "user",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "format": "uuid",
-                        "description": "Task ID",
-                        "name": "task",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "202": {
-                        "description": "Accepted",
-                        "schema": {
-                            "$ref": "#/definitions/codersdk.PauseTaskResponse"
-                        }
-                    }
-                },
-                "security": [
-                    {
-                        "CoderSessionToken": []
-                    }
-                ]
-            }
-        },
-        "/tasks/{user}/{task}/resume": {
-            "post": {
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "Tasks"
-                ],
-                "summary": "Resume task",
-                "operationId": "resume-task",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Username, user ID, or 'me' for the authenticated user",
-                        "name": "user",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "format": "uuid",
-                        "description": "Task ID",
-                        "name": "task",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "202": {
-                        "description": "Accepted",
-                        "schema": {
-                            "$ref": "#/definitions/codersdk.ResumeTaskResponse"
-                        }
-                    }
-                },
-                "security": [
-                    {
-                        "CoderSessionToken": []
-                    }
-                ]
-            }
-        },
-        "/tasks/{user}/{task}/send": {
-            "post": {
-                "consumes": [
-                    "application/json"
-                ],
-                "tags": [
-                    "Tasks"
-                ],
-                "summary": "Send input to AI task",
-                "operationId": "send-input-to-ai-task",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Username, user ID, or 'me' for the authenticated user",
-                        "name": "user",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "Task ID, or task name",
-                        "name": "task",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "description": "Task input request",
-                        "name": "request",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "$ref": "#/definitions/codersdk.TaskSendRequest"
-                        }
-                    }
-                ],
-                "responses": {
-                    "204": {
-                        "description": "No Content"
-                    }
-                },
-                "security": [
-                    {
-                        "CoderSessionToken": []
-                    }
-                ]
-            }
-        },
-        "/templates": {
+        "/api/v2/templates": {
             "get": {
                 "description": "Returns a list of templates.\nBy default, only non-deprecated templates are returned.\nTo include deprecated templates, specify ` + "`" + `deprecated:true` + "`" + ` in the search query.",
                 "produces": [
@@ -6513,7 +11348,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/templates/examples": {
+        "/api/v2/templates/examples": {
             "get": {
                 "produces": [
                     "application/json"
@@ -6541,7 +11376,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/templates/{template}": {
+        "/api/v2/templates/{template}": {
             "get": {
                 "produces": [
                     "application/json"
@@ -6654,7 +11489,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/templates/{template}/acl": {
+        "/api/v2/templates/{template}/acl": {
             "get": {
                 "produces": [
                     "application/json"
@@ -6734,7 +11569,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/templates/{template}/acl/available": {
+        "/api/v2/templates/{template}/acl/available": {
             "get": {
                 "produces": [
                     "application/json"
@@ -6772,7 +11607,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/templates/{template}/daus": {
+        "/api/v2/templates/{template}/daus": {
             "get": {
                 "produces": [
                     "application/json"
@@ -6807,7 +11642,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/templates/{template}/prebuilds/invalidate": {
+        "/api/v2/templates/{template}/prebuilds/invalidate": {
             "post": {
                 "produces": [
                     "application/json"
@@ -6842,7 +11677,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/templates/{template}/versions": {
+        "/api/v2/templates/{template}/versions": {
             "get": {
                 "produces": [
                     "application/json"
@@ -6950,7 +11785,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/templates/{template}/versions/archive": {
+        "/api/v2/templates/{template}/versions/archive": {
             "post": {
                 "consumes": [
                     "application/json"
@@ -6997,7 +11832,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/templates/{template}/versions/{templateversionname}": {
+        "/api/v2/templates/{template}/versions/{templateversionname}": {
             "get": {
                 "produces": [
                     "application/json"
@@ -7042,7 +11877,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/templateversions/{templateversion}": {
+        "/api/v2/templateversions/{templateversion}": {
             "get": {
                 "produces": [
                     "application/json"
@@ -7122,7 +11957,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/templateversions/{templateversion}/archive": {
+        "/api/v2/templateversions/{templateversion}/archive": {
             "post": {
                 "produces": [
                     "application/json"
@@ -7157,7 +11992,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/templateversions/{templateversion}/cancel": {
+        "/api/v2/templateversions/{templateversion}/cancel": {
             "patch": {
                 "produces": [
                     "application/json"
@@ -7192,7 +12027,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/templateversions/{templateversion}/dry-run": {
+        "/api/v2/templateversions/{templateversion}/dry-run": {
             "post": {
                 "consumes": [
                     "application/json"
@@ -7239,7 +12074,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/templateversions/{templateversion}/dry-run/{jobID}": {
+        "/api/v2/templateversions/{templateversion}/dry-run/{jobID}": {
             "get": {
                 "produces": [
                     "application/json"
@@ -7282,7 +12117,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/templateversions/{templateversion}/dry-run/{jobID}/cancel": {
+        "/api/v2/templateversions/{templateversion}/dry-run/{jobID}/cancel": {
             "patch": {
                 "produces": [
                     "application/json"
@@ -7325,7 +12160,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/templateversions/{templateversion}/dry-run/{jobID}/logs": {
+        "/api/v2/templateversions/{templateversion}/dry-run/{jobID}/logs": {
             "get": {
                 "produces": [
                     "application/json"
@@ -7399,7 +12234,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/templateversions/{templateversion}/dry-run/{jobID}/matched-provisioners": {
+        "/api/v2/templateversions/{templateversion}/dry-run/{jobID}/matched-provisioners": {
             "get": {
                 "produces": [
                     "application/json"
@@ -7442,7 +12277,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/templateversions/{templateversion}/dry-run/{jobID}/resources": {
+        "/api/v2/templateversions/{templateversion}/dry-run/{jobID}/resources": {
             "get": {
                 "produces": [
                     "application/json"
@@ -7488,7 +12323,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/templateversions/{templateversion}/dynamic-parameters": {
+        "/api/v2/templateversions/{templateversion}/dynamic-parameters": {
             "get": {
                 "tags": [
                     "Templates"
@@ -7517,7 +12352,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/templateversions/{templateversion}/dynamic-parameters/evaluate": {
+        "/api/v2/templateversions/{templateversion}/dynamic-parameters/evaluate": {
             "post": {
                 "consumes": [
                     "application/json"
@@ -7564,7 +12399,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/templateversions/{templateversion}/external-auth": {
+        "/api/v2/templateversions/{templateversion}/external-auth": {
             "get": {
                 "produces": [
                     "application/json"
@@ -7582,6 +12417,13 @@ const docTemplate = `{
                         "name": "templateversion",
                         "in": "path",
                         "required": true
+                    },
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Owner to report external auth state for. Defaults to the requesting user.",
+                        "name": "user_id",
+                        "in": "query"
                     }
                 ],
                 "responses": {
@@ -7602,7 +12444,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/templateversions/{templateversion}/logs": {
+        "/api/v2/templateversions/{templateversion}/logs": {
             "get": {
                 "produces": [
                     "application/json"
@@ -7668,7 +12510,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/templateversions/{templateversion}/parameters": {
+        "/api/v2/templateversions/{templateversion}/parameters": {
             "get": {
                 "tags": [
                     "Templates"
@@ -7697,7 +12539,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/templateversions/{templateversion}/presets": {
+        "/api/v2/templateversions/{templateversion}/presets": {
             "get": {
                 "produces": [
                     "application/json"
@@ -7735,7 +12577,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/templateversions/{templateversion}/resources": {
+        "/api/v2/templateversions/{templateversion}/resources": {
             "get": {
                 "produces": [
                     "application/json"
@@ -7773,7 +12615,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/templateversions/{templateversion}/rich-parameters": {
+        "/api/v2/templateversions/{templateversion}/rich-parameters": {
             "get": {
                 "produces": [
                     "application/json"
@@ -7811,7 +12653,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/templateversions/{templateversion}/schema": {
+        "/api/v2/templateversions/{templateversion}/schema": {
             "get": {
                 "tags": [
                     "Templates"
@@ -7840,7 +12682,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/templateversions/{templateversion}/unarchive": {
+        "/api/v2/templateversions/{templateversion}/unarchive": {
             "post": {
                 "produces": [
                     "application/json"
@@ -7875,7 +12717,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/templateversions/{templateversion}/variables": {
+        "/api/v2/templateversions/{templateversion}/variables": {
             "get": {
                 "produces": [
                     "application/json"
@@ -7913,7 +12755,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/updatecheck": {
+        "/api/v2/updatecheck": {
             "get": {
                 "produces": [
                     "application/json"
@@ -7933,7 +12775,7 @@ const docTemplate = `{
                 }
             }
         },
-        "/users": {
+        "/api/v2/users": {
             "get": {
                 "produces": [
                     "application/json"
@@ -8003,7 +12845,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/codersdk.CreateUserRequestWithOrgs"
+                            "$ref": "#/definitions/codersdk.CreateUserRequest"
                         }
                     }
                 ],
@@ -8022,7 +12864,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/users/authmethods": {
+        "/api/v2/users/authmethods": {
             "get": {
                 "produces": [
                     "application/json"
@@ -8047,7 +12889,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/users/first": {
+        "/api/v2/users/first": {
             "get": {
                 "produces": [
                     "application/json"
@@ -8109,7 +12951,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/users/login": {
+        "/api/v2/users/login": {
             "post": {
                 "consumes": [
                     "application/json"
@@ -8143,7 +12985,7 @@ const docTemplate = `{
                 }
             }
         },
-        "/users/logout": {
+        "/api/v2/users/logout": {
             "post": {
                 "produces": [
                     "application/json"
@@ -8168,7 +13010,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/users/oauth2/github/callback": {
+        "/api/v2/users/oauth2/github/callback": {
             "get": {
                 "tags": [
                     "Users"
@@ -8187,7 +13029,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/users/oauth2/github/device": {
+        "/api/v2/users/oauth2/github/device": {
             "get": {
                 "produces": [
                     "application/json"
@@ -8212,7 +13054,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/users/oidc-claims": {
+        "/api/v2/users/oidc-claims": {
             "get": {
                 "produces": [
                     "application/json"
@@ -8237,7 +13079,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/users/oidc/callback": {
+        "/api/v2/users/oidc/callback": {
             "get": {
                 "tags": [
                     "Users"
@@ -8256,7 +13098,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/users/otp/change-password": {
+        "/api/v2/users/otp/change-password": {
             "post": {
                 "consumes": [
                     "application/json"
@@ -8284,7 +13126,7 @@ const docTemplate = `{
                 }
             }
         },
-        "/users/otp/request": {
+        "/api/v2/users/otp/request": {
             "post": {
                 "consumes": [
                     "application/json"
@@ -8312,7 +13154,7 @@ const docTemplate = `{
                 }
             }
         },
-        "/users/roles": {
+        "/api/v2/users/roles": {
             "get": {
                 "produces": [
                     "application/json"
@@ -8340,7 +13182,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/users/validate-password": {
+        "/api/v2/users/validate-password": {
             "post": {
                 "consumes": [
                     "application/json"
@@ -8379,7 +13221,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/users/{user}": {
+        "/api/v2/users/{user}": {
             "get": {
                 "produces": [
                     "application/json"
@@ -8439,7 +13281,270 @@ const docTemplate = `{
                 ]
             }
         },
-        "/users/{user}/appearance": {
+        "/api/v2/users/{user}/ai-provider-keys": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "List user AI provider key configurations",
+                "operationId": "list-user-ai-provider-key-configurations",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "User ID, username, or me",
+                        "name": "user",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/codersdk.UserAIProviderKeyConfig"
+                            }
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/users/{user}/ai-provider-keys/{aiProvider}": {
+            "put": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Update user AI provider key",
+                "operationId": "update-user-ai-provider-key",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "User ID, username, or me",
+                        "name": "user",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "AI provider ID",
+                        "name": "aiProvider",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Request body",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.CreateUserAIProviderKeyRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.UserAIProviderKeyConfig"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            },
+            "delete": {
+                "tags": [
+                    "Chats"
+                ],
+                "summary": "Delete user AI provider key",
+                "operationId": "delete-user-ai-provider-key",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "User ID, username, or me",
+                        "name": "user",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "AI provider ID",
+                        "name": "aiProvider",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/users/{user}/ai/budget/override": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Enterprise"
+                ],
+                "summary": "Get user AI budget override",
+                "operationId": "get-user-ai-budget-override",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "User ID, username, or me",
+                        "name": "user",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.UserAIBudgetOverride"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            },
+            "put": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Enterprise"
+                ],
+                "summary": "Upsert user AI budget override",
+                "operationId": "upsert-user-ai-budget-override",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "User ID, username, or me",
+                        "name": "user",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Upsert user AI budget override request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.UpsertUserAIBudgetOverrideRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.UserAIBudgetOverride"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            },
+            "delete": {
+                "tags": [
+                    "Enterprise"
+                ],
+                "summary": "Delete user AI budget override",
+                "operationId": "delete-user-ai-budget-override",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "User ID, username, or me",
+                        "name": "user",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/users/{user}/ai/spend": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Enterprise"
+                ],
+                "summary": "Get user AI spend",
+                "operationId": "get-user-ai-spend",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "User ID, username, or me",
+                        "name": "user",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.UserAISpendStatus"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/users/{user}/appearance": {
             "get": {
                 "produces": [
                     "application/json"
@@ -8517,7 +13622,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/users/{user}/autofill-parameters": {
+        "/api/v2/users/{user}/autofill-parameters": {
             "get": {
                 "produces": [
                     "application/json"
@@ -8561,7 +13666,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/users/{user}/convert-login": {
+        "/api/v2/users/{user}/convert-login": {
             "post": {
                 "consumes": [
                     "application/json"
@@ -8607,7 +13712,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/users/{user}/gitsshkey": {
+        "/api/v2/users/{user}/gitsshkey": {
             "get": {
                 "produces": [
                     "application/json"
@@ -8673,7 +13778,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/users/{user}/keys": {
+        "/api/v2/users/{user}/keys": {
             "post": {
                 "produces": [
                     "application/json"
@@ -8707,7 +13812,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/users/{user}/keys/tokens": {
+        "/api/v2/users/{user}/keys/tokens": {
             "get": {
                 "produces": [
                     "application/json"
@@ -8794,7 +13899,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/users/{user}/keys/tokens/tokenconfig": {
+        "/api/v2/users/{user}/keys/tokens/tokenconfig": {
             "get": {
                 "produces": [
                     "application/json"
@@ -8828,7 +13933,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/users/{user}/keys/tokens/{keyname}": {
+        "/api/v2/users/{user}/keys/tokens/{keyname}": {
             "get": {
                 "produces": [
                     "application/json"
@@ -8870,7 +13975,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/users/{user}/keys/{keyid}": {
+        "/api/v2/users/{user}/keys/{keyid}": {
             "get": {
                 "produces": [
                     "application/json"
@@ -8946,7 +14051,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/users/{user}/keys/{keyid}/expire": {
+        "/api/v2/users/{user}/keys/{keyid}/expire": {
             "put": {
                 "tags": [
                     "Users"
@@ -8994,7 +14099,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/users/{user}/login-type": {
+        "/api/v2/users/{user}/login-type": {
             "get": {
                 "produces": [
                     "application/json"
@@ -9028,7 +14133,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/users/{user}/notifications/preferences": {
+        "/api/v2/users/{user}/notifications/preferences": {
             "get": {
                 "produces": [
                     "application/json"
@@ -9112,7 +14217,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/users/{user}/organizations": {
+        "/api/v2/users/{user}/organizations": {
             "get": {
                 "produces": [
                     "application/json"
@@ -9149,7 +14254,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/users/{user}/organizations/{organizationname}": {
+        "/api/v2/users/{user}/organizations/{organizationname}": {
             "get": {
                 "produces": [
                     "application/json"
@@ -9190,7 +14295,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/users/{user}/password": {
+        "/api/v2/users/{user}/password": {
             "put": {
                 "consumes": [
                     "application/json"
@@ -9230,7 +14335,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/users/{user}/preferences": {
+        "/api/v2/users/{user}/preferences": {
             "get": {
                 "produces": [
                     "application/json"
@@ -9308,7 +14413,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/users/{user}/profile": {
+        "/api/v2/users/{user}/profile": {
             "put": {
                 "consumes": [
                     "application/json"
@@ -9354,7 +14459,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/users/{user}/quiet-hours": {
+        "/api/v2/users/{user}/quiet-hours": {
             "get": {
                 "produces": [
                     "application/json"
@@ -9440,7 +14545,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/users/{user}/roles": {
+        "/api/v2/users/{user}/roles": {
             "get": {
                 "produces": [
                     "application/json"
@@ -9518,7 +14623,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/users/{user}/secrets": {
+        "/api/v2/users/{user}/secrets": {
             "get": {
                 "produces": [
                     "application/json"
@@ -9590,6 +14695,18 @@ const docTemplate = `{
                         "schema": {
                             "$ref": "#/definitions/codersdk.UserSecret"
                         }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.Response"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.Response"
+                        }
                     }
                 },
                 "security": [
@@ -9599,7 +14716,74 @@ const docTemplate = `{
                 ]
             }
         },
-        "/users/{user}/secrets/{name}": {
+        "/api/v2/users/{user}/secrets/batch": {
+            "post": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Secrets"
+                ],
+                "summary": "Import user secrets from a file",
+                "operationId": "import-user-secrets-from-a-file",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "User ID, username, or me",
+                        "name": "user",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Import secrets request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.ImportUserSecretsRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/codersdk.UserSecret"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.Response"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.Response"
+                        }
+                    },
+                    "413": {
+                        "description": "Request body exceeds 8 MiB",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.Response"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/users/{user}/secrets/{name}": {
             "get": {
                 "produces": [
                     "application/json"
@@ -9715,6 +14899,18 @@ const docTemplate = `{
                         "schema": {
                             "$ref": "#/definitions/codersdk.UserSecret"
                         }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.Response"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.Response"
+                        }
                     }
                 },
                 "security": [
@@ -9724,7 +14920,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/users/{user}/status/activate": {
+        "/api/v2/users/{user}/status/activate": {
             "put": {
                 "produces": [
                     "application/json"
@@ -9758,7 +14954,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/users/{user}/status/suspend": {
+        "/api/v2/users/{user}/status/suspend": {
             "put": {
                 "produces": [
                     "application/json"
@@ -9792,7 +14988,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/users/{user}/webpush/subscription": {
+        "/api/v2/users/{user}/webpush/subscription": {
             "post": {
                 "consumes": [
                     "application/json"
@@ -9876,7 +15072,7 @@ const docTemplate = `{
                 }
             }
         },
-        "/users/{user}/webpush/test": {
+        "/api/v2/users/{user}/webpush/test": {
             "post": {
                 "tags": [
                     "Notifications"
@@ -9907,7 +15103,7 @@ const docTemplate = `{
                 }
             }
         },
-        "/users/{user}/workspace/{workspacename}": {
+        "/api/v2/users/{user}/workspace/{workspacename}": {
             "get": {
                 "produces": [
                     "application/json"
@@ -9937,6 +15133,12 @@ const docTemplate = `{
                         "description": "Return data instead of HTTP 404 if the workspace is deleted",
                         "name": "include_deleted",
                         "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Comma-separated list of related data to include (e.g. ` + "`" + `template,latest_build.resources.agents.*` + "`" + `). Omit to include everything.",
+                        "name": "include_related",
+                        "in": "query"
                     }
                 ],
                 "responses": {
@@ -9954,7 +15156,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/users/{user}/workspace/{workspacename}/builds/{buildnumber}": {
+        "/api/v2/users/{user}/workspace/{workspacename}/builds/{buildnumber}": {
             "get": {
                 "produces": [
                     "application/json"
@@ -10003,7 +15205,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/users/{user}/workspaces": {
+        "/api/v2/users/{user}/workspaces": {
             "post": {
                 "description": "Create a new workspace using a template. The request must\nspecify either the Template ID or the Template Version ID,\nnot both. If the Template ID is specified, the active version\nof the template will be used.",
                 "consumes": [
@@ -10036,8 +15238,8 @@ const docTemplate = `{
                     }
                 ],
                 "responses": {
-                    "200": {
-                        "description": "OK",
+                    "201": {
+                        "description": "Created",
                         "schema": {
                             "$ref": "#/definitions/codersdk.Workspace"
                         }
@@ -10050,7 +15252,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/workspace-quota/{user}": {
+        "/api/v2/workspace-quota/{user}": {
             "get": {
                 "produces": [
                     "application/json"
@@ -10085,7 +15287,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/workspaceagents/aws-instance-identity": {
+        "/api/v2/workspaceagents/aws-instance-identity": {
             "post": {
                 "consumes": [
                     "application/json"
@@ -10124,7 +15326,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/workspaceagents/azure-instance-identity": {
+        "/api/v2/workspaceagents/azure-instance-identity": {
             "post": {
                 "consumes": [
                     "application/json"
@@ -10163,7 +15365,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/workspaceagents/connection": {
+        "/api/v2/workspaceagents/connection": {
             "get": {
                 "produces": [
                     "application/json"
@@ -10191,7 +15393,7 @@ const docTemplate = `{
                 }
             }
         },
-        "/workspaceagents/google-instance-identity": {
+        "/api/v2/workspaceagents/google-instance-identity": {
             "post": {
                 "consumes": [
                     "application/json"
@@ -10230,7 +15432,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/workspaceagents/me/app-status": {
+        "/api/v2/workspaceagents/me/app-status": {
             "patch": {
                 "consumes": [
                     "application/json"
@@ -10270,7 +15472,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/workspaceagents/me/external-auth": {
+        "/api/v2/workspaceagents/me/external-auth": {
             "get": {
                 "produces": [
                     "application/json"
@@ -10317,7 +15519,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/workspaceagents/me/gitauth": {
+        "/api/v2/workspaceagents/me/gitauth": {
             "get": {
                 "produces": [
                     "application/json"
@@ -10364,7 +15566,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/workspaceagents/me/gitsshkey": {
+        "/api/v2/workspaceagents/me/gitsshkey": {
             "get": {
                 "produces": [
                     "application/json"
@@ -10389,7 +15591,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/workspaceagents/me/log-source": {
+        "/api/v2/workspaceagents/me/log-source": {
             "post": {
                 "consumes": [
                     "application/json"
@@ -10428,7 +15630,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/workspaceagents/me/logs": {
+        "/api/v2/workspaceagents/me/logs": {
             "patch": {
                 "consumes": [
                     "application/json"
@@ -10458,6 +15660,12 @@ const docTemplate = `{
                         "schema": {
                             "$ref": "#/definitions/codersdk.Response"
                         }
+                    },
+                    "413": {
+                        "description": "Agent log storage limit exceeded",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.Response"
+                        }
                     }
                 },
                 "security": [
@@ -10467,7 +15675,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/workspaceagents/me/reinit": {
+        "/api/v2/workspaceagents/me/reinit": {
             "get": {
                 "produces": [
                     "application/json"
@@ -10506,7 +15714,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/workspaceagents/me/rpc": {
+        "/api/v2/workspaceagents/me/rpc": {
             "get": {
                 "tags": [
                     "Agents"
@@ -10528,58 +15736,7 @@ const docTemplate = `{
                 }
             }
         },
-        "/workspaceagents/me/tasks/{task}/log-snapshot": {
-            "post": {
-                "consumes": [
-                    "application/json"
-                ],
-                "tags": [
-                    "Tasks"
-                ],
-                "summary": "Upload task log snapshot",
-                "operationId": "upload-task-log-snapshot",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "format": "uuid",
-                        "description": "Task ID",
-                        "name": "task",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "enum": [
-                            "agentapi"
-                        ],
-                        "type": "string",
-                        "description": "Snapshot format",
-                        "name": "format",
-                        "in": "query",
-                        "required": true
-                    },
-                    {
-                        "description": "Raw snapshot payload (structure depends on format parameter)",
-                        "name": "request",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "type": "object"
-                        }
-                    }
-                ],
-                "responses": {
-                    "204": {
-                        "description": "No Content"
-                    }
-                },
-                "security": [
-                    {
-                        "CoderSessionToken": []
-                    }
-                ]
-            }
-        },
-        "/workspaceagents/{workspaceagent}": {
+        "/api/v2/workspaceagents/{workspaceagent}": {
             "get": {
                 "produces": [
                     "application/json"
@@ -10614,7 +15771,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/workspaceagents/{workspaceagent}/connection": {
+        "/api/v2/workspaceagents/{workspaceagent}/connection": {
             "get": {
                 "produces": [
                     "application/json"
@@ -10649,7 +15806,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/workspaceagents/{workspaceagent}/containers": {
+        "/api/v2/workspaceagents/{workspaceagent}/containers": {
             "get": {
                 "produces": [
                     "application/json"
@@ -10692,7 +15849,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/workspaceagents/{workspaceagent}/containers/devcontainers/{devcontainer}": {
+        "/api/v2/workspaceagents/{workspaceagent}/containers/devcontainers/{devcontainer}": {
             "delete": {
                 "tags": [
                     "Agents"
@@ -10728,7 +15885,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/workspaceagents/{workspaceagent}/containers/devcontainers/{devcontainer}/recreate": {
+        "/api/v2/workspaceagents/{workspaceagent}/containers/devcontainers/{devcontainer}/recreate": {
             "post": {
                 "produces": [
                     "application/json"
@@ -10770,7 +15927,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/workspaceagents/{workspaceagent}/containers/watch": {
+        "/api/v2/workspaceagents/{workspaceagent}/containers/watch": {
             "get": {
                 "produces": [
                     "application/json"
@@ -10805,7 +15962,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/workspaceagents/{workspaceagent}/coordinate": {
+        "/api/v2/workspaceagents/{workspaceagent}/coordinate": {
             "get": {
                 "tags": [
                     "Agents"
@@ -10834,7 +15991,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/workspaceagents/{workspaceagent}/listening-ports": {
+        "/api/v2/workspaceagents/{workspaceagent}/listening-ports": {
             "get": {
                 "produces": [
                     "application/json"
@@ -10869,7 +16026,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/workspaceagents/{workspaceagent}/logs": {
+        "/api/v2/workspaceagents/{workspaceagent}/logs": {
             "get": {
                 "produces": [
                     "application/json"
@@ -10941,7 +16098,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/workspaceagents/{workspaceagent}/pty": {
+        "/api/v2/workspaceagents/{workspaceagent}/pty": {
             "get": {
                 "tags": [
                     "Agents"
@@ -10970,7 +16127,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/workspaceagents/{workspaceagent}/startup-logs": {
+        "/api/v2/workspaceagents/{workspaceagent}/startup-logs": {
             "get": {
                 "produces": [
                     "application/json"
@@ -11032,7 +16189,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/workspaceagents/{workspaceagent}/watch-metadata": {
+        "/api/v2/workspaceagents/{workspaceagent}/watch-metadata": {
             "get": {
                 "tags": [
                     "Agents"
@@ -11065,7 +16222,7 @@ const docTemplate = `{
                 }
             }
         },
-        "/workspaceagents/{workspaceagent}/watch-metadata-ws": {
+        "/api/v2/workspaceagents/{workspaceagent}/watch-metadata-ws": {
             "get": {
                 "produces": [
                     "application/json"
@@ -11103,7 +16260,7 @@ const docTemplate = `{
                 }
             }
         },
-        "/workspacebuilds/{workspacebuild}": {
+        "/api/v2/workspacebuilds/{workspacebuild}": {
             "get": {
                 "produces": [
                     "application/json"
@@ -11137,7 +16294,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/workspacebuilds/{workspacebuild}/cancel": {
+        "/api/v2/workspacebuilds/{workspacebuild}/cancel": {
             "patch": {
                 "produces": [
                     "application/json"
@@ -11181,7 +16338,50 @@ const docTemplate = `{
                 ]
             }
         },
-        "/workspacebuilds/{workspacebuild}/logs": {
+        "/api/v2/workspacebuilds/{workspacebuild}/debug-events": {
+            "post": {
+                "consumes": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Builds"
+                ],
+                "summary": "Report a workspace build debug click",
+                "operationId": "report-a-workspace-build-debug-click",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Workspace build ID",
+                        "name": "workspacebuild",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Debug event",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.WorkspaceBuildDebugEventRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ],
+                "x-apidocgen": {
+                    "skip": true
+                }
+            }
+        },
+        "/api/v2/workspacebuilds/{workspacebuild}/logs": {
             "get": {
                 "produces": [
                     "application/json"
@@ -11246,7 +16446,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/workspacebuilds/{workspacebuild}/parameters": {
+        "/api/v2/workspacebuilds/{workspacebuild}/parameters": {
             "get": {
                 "produces": [
                     "application/json"
@@ -11283,7 +16483,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/workspacebuilds/{workspacebuild}/resources": {
+        "/api/v2/workspacebuilds/{workspacebuild}/resources": {
             "get": {
                 "produces": [
                     "application/json"
@@ -11321,7 +16521,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/workspacebuilds/{workspacebuild}/state": {
+        "/api/v2/workspacebuilds/{workspacebuild}/state": {
             "get": {
                 "produces": [
                     "application/json"
@@ -11394,7 +16594,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/workspacebuilds/{workspacebuild}/timings": {
+        "/api/v2/workspacebuilds/{workspacebuild}/timings": {
             "get": {
                 "produces": [
                     "application/json"
@@ -11429,7 +16629,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/workspaceproxies": {
+        "/api/v2/workspaceproxies": {
             "get": {
                 "produces": [
                     "application/json"
@@ -11494,7 +16694,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/workspaceproxies/me/app-stats": {
+        "/api/v2/workspaceproxies/me/app-stats": {
             "post": {
                 "consumes": [
                     "application/json"
@@ -11530,7 +16730,7 @@ const docTemplate = `{
                 }
             }
         },
-        "/workspaceproxies/me/coordinate": {
+        "/api/v2/workspaceproxies/me/coordinate": {
             "get": {
                 "tags": [
                     "Enterprise"
@@ -11552,7 +16752,7 @@ const docTemplate = `{
                 }
             }
         },
-        "/workspaceproxies/me/crypto-keys": {
+        "/api/v2/workspaceproxies/me/crypto-keys": {
             "get": {
                 "produces": [
                     "application/json"
@@ -11589,7 +16789,7 @@ const docTemplate = `{
                 }
             }
         },
-        "/workspaceproxies/me/deregister": {
+        "/api/v2/workspaceproxies/me/deregister": {
             "post": {
                 "consumes": [
                     "application/json"
@@ -11625,7 +16825,7 @@ const docTemplate = `{
                 }
             }
         },
-        "/workspaceproxies/me/issue-signed-app-token": {
+        "/api/v2/workspaceproxies/me/issue-signed-app-token": {
             "post": {
                 "consumes": [
                     "application/json"
@@ -11667,7 +16867,7 @@ const docTemplate = `{
                 }
             }
         },
-        "/workspaceproxies/me/register": {
+        "/api/v2/workspaceproxies/me/register": {
             "post": {
                 "consumes": [
                     "application/json"
@@ -11709,7 +16909,7 @@ const docTemplate = `{
                 }
             }
         },
-        "/workspaceproxies/{workspaceproxy}": {
+        "/api/v2/workspaceproxies/{workspaceproxy}": {
             "get": {
                 "produces": [
                     "application/json"
@@ -11822,7 +17022,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/workspaces": {
+        "/api/v2/workspaces": {
             "get": {
                 "produces": [
                     "application/json"
@@ -11835,7 +17035,7 @@ const docTemplate = `{
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "Search query in the format ` + "`" + `key:value` + "`" + `. Available keys are: owner, template, name, status, has-agent, dormant, last_used_after, last_used_before, has-ai-task, has_external_agent, healthy.",
+                        "description": "Search query in the format ` + "`" + `key:value` + "`" + `. Available keys are: owner, template, name, status, has-agent, dormant, last_used_after, last_used_before, has_external_agent, healthy, include_agent_metadata (expands each agent with the named metadata keys rather than filtering; repeat the key for multiple items).",
                         "name": "q",
                         "in": "query"
                     },
@@ -11867,7 +17067,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/workspaces/{workspace}": {
+        "/api/v2/workspaces/{workspace}": {
             "get": {
                 "produces": [
                     "application/json"
@@ -11890,6 +17090,12 @@ const docTemplate = `{
                         "type": "boolean",
                         "description": "Return data instead of HTTP 404 if the workspace is deleted",
                         "name": "include_deleted",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Comma-separated list of related data to include (e.g. ` + "`" + `template,latest_build.resources.agents.*` + "`" + `). Omit to include everything.",
+                        "name": "include_related",
                         "in": "query"
                     }
                 ],
@@ -11947,7 +17153,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/workspaces/{workspace}/acl": {
+        "/api/v2/workspaces/{workspace}/acl": {
             "get": {
                 "produces": [
                     "application/json"
@@ -12051,7 +17257,42 @@ const docTemplate = `{
                 ]
             }
         },
-        "/workspaces/{workspace}/autostart": {
+        "/api/v2/workspaces/{workspace}/agent-connection-watch": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Workspaces"
+                ],
+                "summary": "Workspace Agent Connection Watch",
+                "operationId": "workspace-agent-connection-watch",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Workspace ID",
+                        "name": "workspace",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "101": {
+                        "description": "Switching Protocols",
+                        "schema": {
+                            "$ref": "#/definitions/workspacesdk.ConnectionWatchEvent"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/api/v2/workspaces/{workspace}/autostart": {
             "put": {
                 "consumes": [
                     "application/json"
@@ -12092,7 +17333,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/workspaces/{workspace}/autoupdates": {
+        "/api/v2/workspaces/{workspace}/autoupdates": {
             "put": {
                 "consumes": [
                     "application/json"
@@ -12133,7 +17374,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/workspaces/{workspace}/builds": {
+        "/api/v2/workspaces/{workspace}/builds": {
             "get": {
                 "produces": [
                     "application/json"
@@ -12228,8 +17469,8 @@ const docTemplate = `{
                     }
                 ],
                 "responses": {
-                    "200": {
-                        "description": "OK",
+                    "201": {
+                        "description": "Created",
                         "schema": {
                             "$ref": "#/definitions/codersdk.WorkspaceBuild"
                         }
@@ -12242,7 +17483,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/workspaces/{workspace}/dormant": {
+        "/api/v2/workspaces/{workspace}/dormant": {
             "put": {
                 "consumes": [
                     "application/json"
@@ -12289,7 +17530,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/workspaces/{workspace}/extend": {
+        "/api/v2/workspaces/{workspace}/extend": {
             "put": {
                 "consumes": [
                     "application/json"
@@ -12336,7 +17577,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/workspaces/{workspace}/external-agent/{agent}/credentials": {
+        "/api/v2/workspaces/{workspace}/external-agent/{agent}/credentials": {
             "get": {
                 "produces": [
                     "application/json"
@@ -12378,7 +17619,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/workspaces/{workspace}/favorite": {
+        "/api/v2/workspaces/{workspace}/favorite": {
             "put": {
                 "tags": [
                     "Workspaces"
@@ -12434,7 +17675,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/workspaces/{workspace}/port-share": {
+        "/api/v2/workspaces/{workspace}/port-share": {
             "get": {
                 "produces": [
                     "application/json"
@@ -12553,7 +17794,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/workspaces/{workspace}/resolve-autostart": {
+        "/api/v2/workspaces/{workspace}/resolve-autostart": {
             "get": {
                 "produces": [
                     "application/json"
@@ -12588,7 +17829,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/workspaces/{workspace}/timings": {
+        "/api/v2/workspaces/{workspace}/timings": {
             "get": {
                 "produces": [
                     "application/json"
@@ -12623,7 +17864,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/workspaces/{workspace}/ttl": {
+        "/api/v2/workspaces/{workspace}/ttl": {
             "put": {
                 "consumes": [
                     "application/json"
@@ -12664,7 +17905,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/workspaces/{workspace}/usage": {
+        "/api/v2/workspaces/{workspace}/usage": {
             "post": {
                 "consumes": [
                     "application/json"
@@ -12704,7 +17945,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/workspaces/{workspace}/watch": {
+        "/api/v2/workspaces/{workspace}/watch": {
             "get": {
                 "produces": [
                     "text/event-stream"
@@ -12740,7 +17981,7 @@ const docTemplate = `{
                 ]
             }
         },
-        "/workspaces/{workspace}/watch-ws": {
+        "/api/v2/workspaces/{workspace}/watch-ws": {
             "get": {
                 "produces": [
                     "application/json"
@@ -12771,6 +18012,687 @@ const docTemplate = `{
                 "security": [
                     {
                         "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/oauth2/authorize": {
+            "get": {
+                "tags": [
+                    "Enterprise"
+                ],
+                "summary": "OAuth2 authorization request (GET - show authorization page).",
+                "operationId": "oauth2-authorization-request-get",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Client ID",
+                        "name": "client_id",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "A random unguessable string, echoed back on the callback",
+                        "name": "state",
+                        "in": "query"
+                    },
+                    {
+                        "enum": [
+                            "code"
+                        ],
+                        "type": "string",
+                        "description": "Response type",
+                        "name": "response_type",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Redirect here after authorization",
+                        "name": "redirect_uri",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Space-separated scopes to request. Each must be supported by this deployment, and the app's allowlist, when it has one, must cover the permissions requested rather than name each scope. Defaults to that allowlist, or to coder:all for an app with no allowlist",
+                        "name": "scope",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "PKCE code challenge, 43 to 128 characters from [A-Za-z0-9-._~] (RFC 7636)",
+                        "name": "code_challenge",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "enum": [
+                            "S256"
+                        ],
+                        "type": "string",
+                        "description": "PKCE challenge method. S256 only; omitting it means S256",
+                        "name": "code_challenge_method",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "RFC 8707 resource indicator: an absolute URI without a fragment",
+                        "name": "resource",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Returns HTML authorization page"
+                    },
+                    "302": {
+                        "description": "Redirects to the app's registered callback carrying an OAuth2 error (RFC 6749 4.1.2.1)"
+                    },
+                    "400": {
+                        "description": "HTML error page. The failure names the redirect URI or the client, so RFC 6749 4.1.2.1 withholds the callback"
+                    },
+                    "500": {
+                        "description": "HTML error page. One of the app's registered redirect URIs is not usable"
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            },
+            "post": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Enterprise"
+                ],
+                "summary": "OAuth2 authorization request (POST - process authorization).",
+                "operationId": "oauth2-authorization-request-post",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Client ID",
+                        "name": "client_id",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "A random unguessable string, echoed back on the callback",
+                        "name": "state",
+                        "in": "query"
+                    },
+                    {
+                        "enum": [
+                            "code"
+                        ],
+                        "type": "string",
+                        "description": "Response type",
+                        "name": "response_type",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Redirect here after authorization",
+                        "name": "redirect_uri",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Space-separated scopes to request. Each must be supported by this deployment, and the app's allowlist, when it has one, must cover the permissions requested rather than name each scope. Defaults to that allowlist, or to coder:all for an app with no allowlist",
+                        "name": "scope",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "PKCE code challenge, 43 to 128 characters from [A-Za-z0-9-._~] (RFC 7636)",
+                        "name": "code_challenge",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "enum": [
+                            "S256"
+                        ],
+                        "type": "string",
+                        "description": "PKCE challenge method. S256 only; omitting it means S256",
+                        "name": "code_challenge_method",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "RFC 8707 resource indicator: an absolute URI without a fragment",
+                        "name": "resource",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "302": {
+                        "description": "Redirects to the app's registered callback carrying either an authorization code or an OAuth2 error (RFC 6749 4.1.2.1)"
+                    },
+                    "400": {
+                        "description": "The failure names the redirect URI or the client, so RFC 6749 4.1.2.1 withholds the callback",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.OAuth2Error"
+                        }
+                    },
+                    "500": {
+                        "description": "One of the app's registered redirect URIs is not usable",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.OAuth2Error"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/oauth2/clients/{client_id}": {
+            "get": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Enterprise"
+                ],
+                "summary": "Get OAuth2 client configuration (RFC 7592)",
+                "operationId": "get-oauth2-client-configuration",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Client ID",
+                        "name": "client_id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.OAuth2ClientConfiguration"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Enterprise"
+                ],
+                "summary": "Update OAuth2 client configuration (RFC 7592)",
+                "operationId": "put-oauth2-client-configuration",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Client ID",
+                        "name": "client_id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Client update request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.OAuth2ClientRegistrationRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.OAuth2ClientConfiguration"
+                        }
+                    },
+                    "413": {
+                        "description": "Request body exceeds 4 MiB",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.OAuth2Error"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "tags": [
+                    "Enterprise"
+                ],
+                "summary": "Delete OAuth2 client registration (RFC 7592)",
+                "operationId": "delete-oauth2-client-configuration",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Client ID",
+                        "name": "client_id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    }
+                }
+            }
+        },
+        "/oauth2/register": {
+            "post": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Enterprise"
+                ],
+                "summary": "OAuth2 dynamic client registration (RFC 7591)",
+                "operationId": "oauth2-dynamic-client-registration",
+                "parameters": [
+                    {
+                        "description": "Client registration request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.OAuth2ClientRegistrationRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.OAuth2ClientRegistrationResponse"
+                        }
+                    },
+                    "413": {
+                        "description": "Request body exceeds 4 MiB",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.OAuth2Error"
+                        }
+                    }
+                }
+            }
+        },
+        "/oauth2/revoke": {
+            "post": {
+                "consumes": [
+                    "application/x-www-form-urlencoded"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Enterprise"
+                ],
+                "summary": "Revoke OAuth2 tokens (RFC 7009).",
+                "operationId": "oauth2-token-revocation",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "example": "Basic Y2xpZW50X2lkOmNsaWVudF9zZWNyZXQ=",
+                        "description": "HTTP Basic credentials, the client_id as the username and the client_secret as the password. A confidential client sends these or the form fields below, not both.",
+                        "name": "Authorization",
+                        "in": "header"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Client ID, required unless sent as the HTTP Basic username",
+                        "name": "client_id",
+                        "in": "formData"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Client secret, required for a confidential client unless sent as the HTTP Basic password. Public clients (token_endpoint_auth_method=none) send no secret.",
+                        "name": "client_secret",
+                        "in": "formData"
+                    },
+                    {
+                        "type": "string",
+                        "description": "The token to revoke",
+                        "name": "token",
+                        "in": "formData",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Hint about token type (access_token or refresh_token)",
+                        "name": "token_type_hint",
+                        "in": "formData"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Token successfully revoked. A 200 does not confirm that the token existed or belonged to the client"
+                    },
+                    "400": {
+                        "description": "invalid_request: a missing client_id or token, credentials in both the Authorization header and the body, client_secret in the URL query string, or a malformed token",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.OAuth2Error"
+                        }
+                    },
+                    "401": {
+                        "description": "invalid_client: the client is unknown, or a confidential client did not present a valid secret",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.OAuth2Error"
+                        }
+                    },
+                    "413": {
+                        "description": "Request body exceeds 4 MiB",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.OAuth2Error"
+                        }
+                    }
+                }
+            }
+        },
+        "/oauth2/tokens": {
+            "post": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Enterprise"
+                ],
+                "summary": "OAuth2 token exchange.",
+                "operationId": "oauth2-token-exchange",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Client ID, required if grant_type=authorization_code",
+                        "name": "client_id",
+                        "in": "formData"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Client secret, required if grant_type=authorization_code and the client is confidential. Public clients (token_endpoint_auth_method=none) send no secret.",
+                        "name": "client_secret",
+                        "in": "formData"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Authorization code, required if grant_type=authorization_code",
+                        "name": "code",
+                        "in": "formData"
+                    },
+                    {
+                        "type": "string",
+                        "description": "PKCE code verifier, required if grant_type=authorization_code. 43-128 characters per RFC 7636.",
+                        "name": "code_verifier",
+                        "in": "formData"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Refresh token, required if grant_type=refresh_token",
+                        "name": "refresh_token",
+                        "in": "formData"
+                    },
+                    {
+                        "enum": [
+                            "authorization_code",
+                            "refresh_token",
+                            "password",
+                            "client_credentials",
+                            "implicit"
+                        ],
+                        "type": "string",
+                        "description": "Grant type",
+                        "name": "grant_type",
+                        "in": "formData",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.OAuth2TokenResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "invalid_request: client_secret in the URL query string, or a missing or malformed parameter",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.OAuth2Error"
+                        }
+                    },
+                    "413": {
+                        "description": "Request body exceeds 4 MiB",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.OAuth2Error"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "tags": [
+                    "Enterprise"
+                ],
+                "summary": "Delete OAuth2 application tokens.",
+                "operationId": "delete-oauth2-application-tokens",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Client ID",
+                        "name": "client_id",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    }
+                },
+                "security": [
+                    {
+                        "CoderSessionToken": []
+                    }
+                ]
+            }
+        },
+        "/scim/v2/ServiceProviderConfig": {
+            "get": {
+                "produces": [
+                    "application/scim+json"
+                ],
+                "tags": [
+                    "Enterprise"
+                ],
+                "summary": "SCIM 2.0: Service Provider Config",
+                "operationId": "scim-get-service-provider-config",
+                "responses": {
+                    "200": {
+                        "description": "OK"
+                    }
+                }
+            }
+        },
+        "/scim/v2/Users": {
+            "get": {
+                "produces": [
+                    "application/scim+json"
+                ],
+                "tags": [
+                    "Enterprise"
+                ],
+                "summary": "SCIM 2.0: Get users",
+                "operationId": "scim-get-users",
+                "responses": {
+                    "200": {
+                        "description": "OK"
+                    }
+                },
+                "security": [
+                    {
+                        "Authorization": []
+                    }
+                ]
+            },
+            "post": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Enterprise"
+                ],
+                "summary": "SCIM 2.0: Create new user",
+                "operationId": "scim-create-new-user",
+                "parameters": [
+                    {
+                        "description": "New user",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/legacyscim.SCIMUser"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/legacyscim.SCIMUser"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "Authorization": []
+                    }
+                ]
+            }
+        },
+        "/scim/v2/Users/{id}": {
+            "get": {
+                "produces": [
+                    "application/scim+json"
+                ],
+                "tags": [
+                    "Enterprise"
+                ],
+                "summary": "SCIM 2.0: Get user by ID",
+                "operationId": "scim-get-user-by-id",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "User ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "404": {
+                        "description": "Not Found"
+                    }
+                },
+                "security": [
+                    {
+                        "Authorization": []
+                    }
+                ]
+            },
+            "put": {
+                "produces": [
+                    "application/scim+json"
+                ],
+                "tags": [
+                    "Enterprise"
+                ],
+                "summary": "SCIM 2.0: Replace user account",
+                "operationId": "scim-replace-user-status",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "User ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Replace user request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/legacyscim.SCIMUser"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.User"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "Authorization": []
+                    }
+                ]
+            },
+            "patch": {
+                "produces": [
+                    "application/scim+json"
+                ],
+                "tags": [
+                    "Enterprise"
+                ],
+                "summary": "SCIM 2.0: Update user account",
+                "operationId": "scim-update-user-status",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "User ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Update user request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/legacyscim.SCIMUser"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/codersdk.User"
+                        }
+                    }
+                },
+                "security": [
+                    {
+                        "Authorization": []
                     }
                 ]
             }
@@ -12827,6 +18749,10 @@ const docTemplate = `{
             "type": "object",
             "properties": {
                 "access_token": {
+                    "type": "string"
+                },
+                "expires_at": {
+                    "description": "ExpiresAt is the time the token expires, normalized to UTC (for\nexample, \"2024-06-01T15:04:05Z\"). Zero value means no expiry.",
                     "type": "string"
                 },
                 "password": {
@@ -12967,69 +18893,10 @@ const docTemplate = `{
                 "ReinitializeReasonPrebuildClaimed"
             ]
         },
-        "coderd.SCIMUser": {
+        "coderd.chatsByWorkspaceResponse": {
             "type": "object",
-            "properties": {
-                "active": {
-                    "description": "Active is a ptr to prevent the empty value from being interpreted as false.",
-                    "type": "boolean"
-                },
-                "emails": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "display": {
-                                "type": "string"
-                            },
-                            "primary": {
-                                "type": "boolean"
-                            },
-                            "type": {
-                                "type": "string"
-                            },
-                            "value": {
-                                "type": "string",
-                                "format": "email"
-                            }
-                        }
-                    }
-                },
-                "groups": {
-                    "type": "array",
-                    "items": {}
-                },
-                "id": {
-                    "type": "string"
-                },
-                "meta": {
-                    "type": "object",
-                    "properties": {
-                        "resourceType": {
-                            "type": "string"
-                        }
-                    }
-                },
-                "name": {
-                    "type": "object",
-                    "properties": {
-                        "familyName": {
-                            "type": "string"
-                        },
-                        "givenName": {
-                            "type": "string"
-                        }
-                    }
-                },
-                "schemas": {
-                    "type": "array",
-                    "items": {
-                        "type": "string"
-                    }
-                },
-                "userName": {
-                    "type": "string"
-                }
+            "additionalProperties": {
+                "type": "string"
             }
         },
         "coderd.cspViolation": {
@@ -13061,6 +18928,18 @@ const docTemplate = `{
         "codersdk.AIBridgeAgenticAction": {
             "type": "object",
             "properties": {
+                "attribution": {
+                    "description": "Attribution contains attribution data from this interception.\nUnknown attribution is serialized as an empty object.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/codersdk.AIBridgeAttribution"
+                        }
+                    ]
+                },
+                "interception_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
                 "model": {
                     "type": "string"
                 },
@@ -13081,64 +18960,40 @@ const docTemplate = `{
                 }
             }
         },
-        "codersdk.AIBridgeAnthropicConfig": {
+        "codersdk.AIBridgeAttribution": {
             "type": "object",
-            "properties": {
-                "base_url": {
-                    "type": "string"
-                },
-                "key": {
-                    "type": "string"
-                }
-            }
-        },
-        "codersdk.AIBridgeBedrockConfig": {
-            "type": "object",
-            "properties": {
-                "access_key": {
-                    "type": "string"
-                },
-                "access_key_secret": {
-                    "type": "string"
-                },
-                "base_url": {
-                    "type": "string"
-                },
-                "model": {
-                    "type": "string"
-                },
-                "region": {
-                    "type": "string"
-                },
-                "small_fast_model": {
-                    "type": "string"
-                }
+            "additionalProperties": {
+                "type": "string"
             }
         },
         "codersdk.AIBridgeConfig": {
             "type": "object",
             "properties": {
+                "actor_header_email": {
+                    "type": "string"
+                },
+                "actor_header_id": {
+                    "type": "string"
+                },
+                "actor_header_username": {
+                    "type": "string"
+                },
                 "allow_byok": {
                     "type": "boolean"
                 },
-                "anthropic": {
-                    "description": "Deprecated: Use Providers with indexed CODER_AIBRIDGE_PROVIDER_\u003cN\u003e_* env vars instead.",
-                    "allOf": [
-                        {
-                            "$ref": "#/definitions/codersdk.AIBridgeAnthropicConfig"
-                        }
-                    ]
+                "api_dump_dir": {
+                    "description": "APIDumpDir is the base directory under which each provider's\nrequest/response dumps are written, in a subdirectory named after\nthe provider. Empty disables dumping.",
+                    "type": "string"
                 },
-                "bedrock": {
-                    "description": "Deprecated: Use Providers with indexed CODER_AIBRIDGE_PROVIDER_\u003cN\u003e_* env vars instead.",
-                    "allOf": [
-                        {
-                            "$ref": "#/definitions/codersdk.AIBridgeBedrockConfig"
-                        }
-                    ]
+                "budget_period": {
+                    "type": "string"
+                },
+                "budget_policy": {
+                    "description": "Budget settings for AI Governance cost controls.",
+                    "type": "string"
                 },
                 "circuit_breaker_enabled": {
-                    "description": "Circuit breaker protects against cascading failures from upstream AI\nprovider rate limits (429, 503, 529 overloaded).",
+                    "description": "Circuit breaker protects against cascading failures from upstream AI\nprovider overload (503, 529).",
                     "type": "boolean"
                 },
                 "circuit_breaker_failure_threshold": {
@@ -13153,6 +19008,10 @@ const docTemplate = `{
                 "circuit_breaker_timeout": {
                     "type": "integer"
                 },
+                "disable_content_recording": {
+                    "description": "DisableContentRecording stops user prompts, tool calls and model\nreasoning from being recorded, including tool names and their arguments.\nInterceptions and token usage are still recorded, so cost controls,\nbudget enforcement and spend reporting are unaffected.",
+                    "type": "boolean"
+                },
                 "enabled": {
                     "type": "boolean"
                 },
@@ -13162,21 +19021,6 @@ const docTemplate = `{
                 },
                 "max_concurrency": {
                     "type": "integer"
-                },
-                "openai": {
-                    "description": "Deprecated: Use Providers with indexed CODER_AIBRIDGE_PROVIDER_\u003cN\u003e_* env vars instead.",
-                    "allOf": [
-                        {
-                            "$ref": "#/definitions/codersdk.AIBridgeOpenAIConfig"
-                        }
-                    ]
-                },
-                "providers": {
-                    "description": "Providers holds provider instances populated from CODER_AIBRIDGE_PROVIDER_\u003cN\u003e_\u003cKEY\u003e\nenv vars and/or the deprecated LegacyOpenAI/LegacyAnthropic/LegacyBedrock fields above.",
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/codersdk.AIBridgeProviderConfig"
-                    }
                 },
                 "rate_limit": {
                     "type": "integer"
@@ -13189,77 +19033,10 @@ const docTemplate = `{
                 },
                 "structured_logging": {
                     "type": "boolean"
-                }
-            }
-        },
-        "codersdk.AIBridgeInterception": {
-            "type": "object",
-            "properties": {
-                "api_key_id": {
+                },
+                "structured_logging_source": {
+                    "description": "StructuredLoggingSource selects which process emits the records that\nStructuredLogging enables. See AIStructuredLoggingSource.",
                     "type": "string"
-                },
-                "client": {
-                    "type": "string"
-                },
-                "ended_at": {
-                    "type": "string",
-                    "format": "date-time"
-                },
-                "id": {
-                    "type": "string",
-                    "format": "uuid"
-                },
-                "initiator": {
-                    "$ref": "#/definitions/codersdk.MinimalUser"
-                },
-                "metadata": {
-                    "type": "object",
-                    "additionalProperties": {}
-                },
-                "model": {
-                    "type": "string"
-                },
-                "provider": {
-                    "type": "string"
-                },
-                "provider_name": {
-                    "type": "string"
-                },
-                "started_at": {
-                    "type": "string",
-                    "format": "date-time"
-                },
-                "token_usages": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/codersdk.AIBridgeTokenUsage"
-                    }
-                },
-                "tool_usages": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/codersdk.AIBridgeToolUsage"
-                    }
-                },
-                "user_prompts": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/codersdk.AIBridgeUserPrompt"
-                    }
-                }
-            }
-        },
-        "codersdk.AIBridgeListInterceptionsResponse": {
-            "type": "object",
-            "properties": {
-                "count": {
-                    "type": "integer"
-                },
-                "results": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/codersdk.AIBridgeInterception"
-                    }
                 }
             }
         },
@@ -13285,40 +19062,20 @@ const docTemplate = `{
                 }
             }
         },
-        "codersdk.AIBridgeOpenAIConfig": {
+        "codersdk.AIBridgeProvider": {
             "type": "object",
             "properties": {
-                "base_url": {
+                "display_name": {
                     "type": "string"
                 },
-                "key": {
-                    "type": "string"
-                }
-            }
-        },
-        "codersdk.AIBridgeProviderConfig": {
-            "type": "object",
-            "properties": {
-                "base_url": {
-                    "description": "BaseURL is the base URL of the upstream provider API.",
-                    "type": "string"
-                },
-                "bedrock_model": {
-                    "type": "string"
-                },
-                "bedrock_region": {
-                    "type": "string"
-                },
-                "bedrock_small_fast_model": {
+                "icon": {
                     "type": "string"
                 },
                 "name": {
-                    "description": "Name is the unique instance identifier used for routing.\nDefaults to Type if not provided.",
                     "type": "string"
                 },
                 "type": {
-                    "description": "Type is the provider type: \"openai\", \"anthropic\", or \"copilot\".",
-                    "type": "string"
+                    "$ref": "#/definitions/codersdk.AIProviderType"
                 }
             }
         },
@@ -13330,6 +19087,9 @@ const docTemplate = `{
                     "items": {
                         "type": "string"
                     }
+                },
+                "api_dump_dir": {
+                    "type": "string"
                 },
                 "cert_file": {
                     "type": "string"
@@ -13347,6 +19107,9 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "listen_addr": {
+                    "type": "string"
+                },
+                "target": {
                     "type": "string"
                 },
                 "tls_cert_file": {
@@ -13396,6 +19159,14 @@ const docTemplate = `{
                         "type": "string"
                     }
                 },
+                "network_calls": {
+                    "description": "NetworkCalls summarizes the Agent Firewall network requests made during the\nsession. A nil value means the session did not pass through Agent\nFirewall, so network call monitoring was not active, which the UI\nsurfaces as \"Disabled\".",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/codersdk.AIBridgeSessionNetworkCallSummary"
+                        }
+                    ]
+                },
                 "providers": {
                     "type": "array",
                     "items": {
@@ -13411,6 +19182,28 @@ const docTemplate = `{
                 },
                 "token_usage_summary": {
                     "$ref": "#/definitions/codersdk.AIBridgeSessionTokenUsageSummary"
+                }
+            }
+        },
+        "codersdk.AIBridgeSessionNetworkCallSummary": {
+            "type": "object",
+            "properties": {
+                "blocked": {
+                    "type": "integer"
+                },
+                "total": {
+                    "type": "integer"
+                }
+            }
+        },
+        "codersdk.AIBridgeSessionNetworkDomain": {
+            "type": "object",
+            "properties": {
+                "count": {
+                    "type": "integer"
+                },
+                "domain": {
+                    "type": "string"
                 }
             }
         },
@@ -13438,6 +19231,31 @@ const docTemplate = `{
                     "type": "array",
                     "items": {
                         "type": "string"
+                    }
+                },
+                "network_call_logs": {
+                    "description": "NetworkCallLogs is the chronological list of individual network calls made\nduring the session, holding the earliest calls up to a server-side cap.\nNetworkCalls remains authoritative for whole-session totals, so a shorter\nlist than NetworkCalls.Total means the list was truncated. Empty when the\nsession did not pass through Agent Firewall.",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.AgentFirewallLog"
+                    }
+                },
+                "network_calls": {
+                    "description": "NetworkCalls summarizes the Agent Firewall network calls made during the\nsession. A nil value means the session did not pass through Agent\nFirewall, so network call monitoring was not active, which the UI\nsurfaces as \"Disabled\".",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/codersdk.AIBridgeSessionNetworkCallSummary"
+                        }
+                    ]
+                },
+                "network_domain_count": {
+                    "type": "integer"
+                },
+                "network_top_domains": {
+                    "description": "NetworkTopDomains lists the most contacted destination hosts, ordered by\ncall count descending. NetworkDomainCount is the total number of distinct\ndomains, used to render a \"+N more\" overflow beyond the listed domains.",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.AIBridgeSessionNetworkDomain"
                     }
                 },
                 "page_ended_at": {
@@ -13510,11 +19328,28 @@ const docTemplate = `{
         "codersdk.AIBridgeThread": {
             "type": "object",
             "properties": {
+                "agent_firewall_sequence_number": {
+                    "description": "AgentFirewallSequenceNumber is the firewall sequence number from\nthe root interception. Used to determine the position of this\nLLM request in the firewall event stream. Nil when the request\ndid not pass through the agent firewall.",
+                    "type": "integer"
+                },
+                "agent_firewall_session_id": {
+                    "description": "AgentFirewallSessionID links this thread to an agent firewall\nconfinement session. Nil when the request did not pass through\nthe agent firewall.",
+                    "type": "string",
+                    "format": "uuid"
+                },
                 "agentic_actions": {
                     "type": "array",
                     "items": {
                         "$ref": "#/definitions/codersdk.AIBridgeAgenticAction"
                     }
+                },
+                "attribution": {
+                    "description": "Attribution contains attribution data from the root interception.\nUnknown attribution is serialized as an empty object.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/codersdk.AIBridgeAttribution"
+                        }
+                    ]
                 },
                 "credential_hint": {
                     "type": "string"
@@ -13525,6 +19360,14 @@ const docTemplate = `{
                 "ended_at": {
                     "type": "string",
                     "format": "date-time"
+                },
+                "error_message": {
+                    "description": "ErrorMessage is the raw terminal upstream error message from the root\ninterception. Nil when the interception succeeded.",
+                    "type": "string"
+                },
+                "error_type": {
+                    "description": "ErrorType is the categorized terminal upstream error from the root\ninterception, or nil when the interception succeeded. See the\naibridge_interception_error_type enum for possible values.",
+                    "type": "string"
                 },
                 "id": {
                     "type": "string",
@@ -13545,42 +19388,6 @@ const docTemplate = `{
                 },
                 "token_usage": {
                     "$ref": "#/definitions/codersdk.AIBridgeSessionThreadsTokenUsage"
-                }
-            }
-        },
-        "codersdk.AIBridgeTokenUsage": {
-            "type": "object",
-            "properties": {
-                "cache_read_input_tokens": {
-                    "type": "integer"
-                },
-                "cache_write_input_tokens": {
-                    "type": "integer"
-                },
-                "created_at": {
-                    "type": "string",
-                    "format": "date-time"
-                },
-                "id": {
-                    "type": "string",
-                    "format": "uuid"
-                },
-                "input_tokens": {
-                    "type": "integer"
-                },
-                "interception_id": {
-                    "type": "string",
-                    "format": "uuid"
-                },
-                "metadata": {
-                    "type": "object",
-                    "additionalProperties": {}
-                },
-                "output_tokens": {
-                    "type": "integer"
-                },
-                "provider_response_id": {
-                    "type": "string"
                 }
             }
         },
@@ -13620,71 +19427,27 @@ const docTemplate = `{
                 }
             }
         },
-        "codersdk.AIBridgeToolUsage": {
+        "codersdk.AIBudgetLimit": {
             "type": "object",
             "properties": {
-                "created_at": {
-                    "type": "string",
-                    "format": "date-time"
+                "limit_source": {
+                    "$ref": "#/definitions/codersdk.AIBudgetLimitSource"
                 },
-                "id": {
-                    "type": "string",
-                    "format": "uuid"
-                },
-                "injected": {
-                    "type": "boolean"
-                },
-                "input": {
-                    "type": "string"
-                },
-                "interception_id": {
-                    "type": "string",
-                    "format": "uuid"
-                },
-                "invocation_error": {
-                    "type": "string"
-                },
-                "metadata": {
-                    "type": "object",
-                    "additionalProperties": {}
-                },
-                "provider_response_id": {
-                    "type": "string"
-                },
-                "server_url": {
-                    "type": "string"
-                },
-                "tool": {
-                    "type": "string"
+                "spend_limit_micros": {
+                    "type": "integer"
                 }
             }
         },
-        "codersdk.AIBridgeUserPrompt": {
-            "type": "object",
-            "properties": {
-                "created_at": {
-                    "type": "string",
-                    "format": "date-time"
-                },
-                "id": {
-                    "type": "string",
-                    "format": "uuid"
-                },
-                "interception_id": {
-                    "type": "string",
-                    "format": "uuid"
-                },
-                "metadata": {
-                    "type": "object",
-                    "additionalProperties": {}
-                },
-                "prompt": {
-                    "type": "string"
-                },
-                "provider_response_id": {
-                    "type": "string"
-                }
-            }
+        "codersdk.AIBudgetLimitSource": {
+            "type": "string",
+            "enum": [
+                "user_override",
+                "group"
+            ],
+            "x-enum-varnames": [
+                "AIBudgetLimitSourceUserOverride",
+                "AIBudgetLimitSourceGroup"
+            ]
         },
         "codersdk.AIConfig": {
             "type": "object",
@@ -13699,6 +19462,243 @@ const docTemplate = `{
                     "$ref": "#/definitions/codersdk.ChatConfig"
                 }
             }
+        },
+        "codersdk.AIGatewayKey": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "key_prefix": {
+                    "type": "string"
+                },
+                "last_heartbeat_at": {
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "name": {
+                    "type": "string"
+                }
+            }
+        },
+        "codersdk.AIModelPrice": {
+            "type": "object",
+            "properties": {
+                "cache_read_price": {
+                    "type": "integer"
+                },
+                "cache_write_price": {
+                    "type": "integer"
+                },
+                "created_at": {
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "input_price": {
+                    "type": "integer"
+                },
+                "model": {
+                    "type": "string"
+                },
+                "output_price": {
+                    "type": "integer"
+                },
+                "provider": {
+                    "type": "string"
+                },
+                "source": {
+                    "$ref": "#/definitions/codersdk.AIModelPriceSource"
+                },
+                "updated_at": {
+                    "type": "string",
+                    "format": "date-time"
+                }
+            }
+        },
+        "codersdk.AIModelPriceSource": {
+            "type": "string",
+            "enum": [
+                "default",
+                "custom"
+            ],
+            "x-enum-varnames": [
+                "AIModelPriceSourceDefault",
+                "AIModelPriceSourceCustom"
+            ]
+        },
+        "codersdk.AIModelPriceUpsert": {
+            "type": "object",
+            "properties": {
+                "cache_read_price": {
+                    "type": "integer"
+                },
+                "cache_write_price": {
+                    "type": "integer"
+                },
+                "input_price": {
+                    "type": "integer"
+                },
+                "model": {
+                    "type": "string"
+                },
+                "output_price": {
+                    "type": "integer"
+                },
+                "provider": {
+                    "type": "string"
+                }
+            }
+        },
+        "codersdk.AIProvider": {
+            "type": "object",
+            "properties": {
+                "api_keys": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.AIProviderKey"
+                    }
+                },
+                "base_url": {
+                    "type": "string"
+                },
+                "created_at": {
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "display_name": {
+                    "type": "string"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "icon": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "settings": {
+                    "$ref": "#/definitions/codersdk.AIProviderSettings"
+                },
+                "status": {
+                    "description": "Status carries runtime routing status; nil when empty.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/codersdk.AIProviderStatus"
+                        }
+                    ]
+                },
+                "type": {
+                    "$ref": "#/definitions/codersdk.AIProviderType"
+                },
+                "updated_at": {
+                    "type": "string",
+                    "format": "date-time"
+                }
+            }
+        },
+        "codersdk.AIProviderKey": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "masked": {
+                    "type": "string"
+                }
+            }
+        },
+        "codersdk.AIProviderKeyMutation": {
+            "type": "object",
+            "properties": {
+                "api_key": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string",
+                    "format": "uuid"
+                }
+            }
+        },
+        "codersdk.AIProviderSettings": {
+            "type": "object"
+        },
+        "codersdk.AIProviderStatus": {
+            "type": "object",
+            "properties": {
+                "warnings": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                }
+            }
+        },
+        "codersdk.AIProviderSummary": {
+            "type": "object",
+            "properties": {
+                "deleted": {
+                    "type": "boolean"
+                },
+                "display_name": {
+                    "type": "string"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "icon": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "type": {
+                    "$ref": "#/definitions/codersdk.AIProviderType"
+                }
+            }
+        },
+        "codersdk.AIProviderType": {
+            "type": "string",
+            "enum": [
+                "openai",
+                "anthropic",
+                "azure",
+                "google",
+                "openai-compat",
+                "openrouter",
+                "vercel",
+                "bedrock",
+                "copilot"
+            ],
+            "x-enum-varnames": [
+                "AIProviderTypeOpenAI",
+                "AIProviderTypeAnthropic",
+                "AIProviderTypeAzure",
+                "AIProviderTypeGoogle",
+                "AIProviderTypeOpenAICompat",
+                "AIProviderTypeOpenrouter",
+                "AIProviderTypeVercel",
+                "AIProviderTypeBedrock",
+                "AIProviderTypeCopilot"
+            ]
         },
         "codersdk.APIAllowListTarget": {
             "type": "object",
@@ -13798,6 +19798,22 @@ const docTemplate = `{
             "enum": [
                 "all",
                 "application_connect",
+                "ai_gateway_key:*",
+                "ai_gateway_key:create",
+                "ai_gateway_key:delete",
+                "ai_gateway_key:read",
+                "ai_gateway_key:update",
+                "ai_model_price:*",
+                "ai_model_price:read",
+                "ai_model_price:update",
+                "ai_provider:*",
+                "ai_provider:create",
+                "ai_provider:delete",
+                "ai_provider:read",
+                "ai_provider:update",
+                "ai_seat:*",
+                "ai_seat:create",
+                "ai_seat:read",
                 "aibridge_interception:*",
                 "aibridge_interception:create",
                 "aibridge_interception:read",
@@ -13821,6 +19837,10 @@ const docTemplate = `{
                 "audit_log:*",
                 "audit_log:create",
                 "audit_log:read",
+                "boundary_log:*",
+                "boundary_log:create",
+                "boundary_log:delete",
+                "boundary_log:read",
                 "boundary_usage:*",
                 "boundary_usage:delete",
                 "boundary_usage:read",
@@ -13829,7 +19849,28 @@ const docTemplate = `{
                 "chat:create",
                 "chat:delete",
                 "chat:read",
+                "chat:share",
                 "chat:update",
+                "chat_automation:*",
+                "chat_automation:create",
+                "chat_automation:delete",
+                "chat_automation:read",
+                "chat_automation:update",
+                "chat_model_config:*",
+                "chat_model_config:create",
+                "chat_model_config:delete",
+                "chat_model_config:read",
+                "chat_model_config:share",
+                "chat_model_config:update",
+                "chat_project:*",
+                "chat_project:create",
+                "chat_project:delete",
+                "chat_project:read",
+                "chat_project:update",
+                "chat_project_memory:*",
+                "chat_project_memory:create",
+                "chat_project_memory:delete",
+                "chat_project_memory:read",
                 "coder:all",
                 "coder:apikeys.manage_self",
                 "coder:application_connect",
@@ -13875,6 +19916,12 @@ const docTemplate = `{
                 "license:create",
                 "license:delete",
                 "license:read",
+                "mcp_server_config:*",
+                "mcp_server_config:create",
+                "mcp_server_config:delete",
+                "mcp_server_config:read",
+                "mcp_server_config:share",
+                "mcp_server_config:update",
                 "notification_message:*",
                 "notification_message:create",
                 "notification_message:delete",
@@ -13934,11 +19981,6 @@ const docTemplate = `{
                 "tailnet_coordinator:delete",
                 "tailnet_coordinator:read",
                 "tailnet_coordinator:update",
-                "task:*",
-                "task:create",
-                "task:delete",
-                "task:read",
-                "task:update",
                 "template:*",
                 "template:create",
                 "template:delete",
@@ -13962,6 +20004,11 @@ const docTemplate = `{
                 "user_secret:delete",
                 "user_secret:read",
                 "user_secret:update",
+                "user_skill:*",
+                "user_skill:create",
+                "user_skill:delete",
+                "user_skill:read",
+                "user_skill:update",
                 "webpush_subscription:*",
                 "webpush_subscription:create",
                 "webpush_subscription:delete",
@@ -13985,6 +20032,11 @@ const docTemplate = `{
                 "workspace_agent_resource_monitor:create",
                 "workspace_agent_resource_monitor:read",
                 "workspace_agent_resource_monitor:update",
+                "workspace_build_orchestration:*",
+                "workspace_build_orchestration:create",
+                "workspace_build_orchestration:delete",
+                "workspace_build_orchestration:read",
+                "workspace_build_orchestration:update",
                 "workspace_dormant:*",
                 "workspace_dormant:application_connect",
                 "workspace_dormant:create",
@@ -14007,6 +20059,22 @@ const docTemplate = `{
             "x-enum-varnames": [
                 "APIKeyScopeAll",
                 "APIKeyScopeApplicationConnect",
+                "APIKeyScopeAiGatewayKeyAll",
+                "APIKeyScopeAiGatewayKeyCreate",
+                "APIKeyScopeAiGatewayKeyDelete",
+                "APIKeyScopeAiGatewayKeyRead",
+                "APIKeyScopeAiGatewayKeyUpdate",
+                "APIKeyScopeAiModelPriceAll",
+                "APIKeyScopeAiModelPriceRead",
+                "APIKeyScopeAiModelPriceUpdate",
+                "APIKeyScopeAiProviderAll",
+                "APIKeyScopeAiProviderCreate",
+                "APIKeyScopeAiProviderDelete",
+                "APIKeyScopeAiProviderRead",
+                "APIKeyScopeAiProviderUpdate",
+                "APIKeyScopeAiSeatAll",
+                "APIKeyScopeAiSeatCreate",
+                "APIKeyScopeAiSeatRead",
                 "APIKeyScopeAibridgeInterceptionAll",
                 "APIKeyScopeAibridgeInterceptionCreate",
                 "APIKeyScopeAibridgeInterceptionRead",
@@ -14030,6 +20098,10 @@ const docTemplate = `{
                 "APIKeyScopeAuditLogAll",
                 "APIKeyScopeAuditLogCreate",
                 "APIKeyScopeAuditLogRead",
+                "APIKeyScopeBoundaryLogAll",
+                "APIKeyScopeBoundaryLogCreate",
+                "APIKeyScopeBoundaryLogDelete",
+                "APIKeyScopeBoundaryLogRead",
                 "APIKeyScopeBoundaryUsageAll",
                 "APIKeyScopeBoundaryUsageDelete",
                 "APIKeyScopeBoundaryUsageRead",
@@ -14038,7 +20110,28 @@ const docTemplate = `{
                 "APIKeyScopeChatCreate",
                 "APIKeyScopeChatDelete",
                 "APIKeyScopeChatRead",
+                "APIKeyScopeChatShare",
                 "APIKeyScopeChatUpdate",
+                "APIKeyScopeChatAutomationAll",
+                "APIKeyScopeChatAutomationCreate",
+                "APIKeyScopeChatAutomationDelete",
+                "APIKeyScopeChatAutomationRead",
+                "APIKeyScopeChatAutomationUpdate",
+                "APIKeyScopeChatModelConfigAll",
+                "APIKeyScopeChatModelConfigCreate",
+                "APIKeyScopeChatModelConfigDelete",
+                "APIKeyScopeChatModelConfigRead",
+                "APIKeyScopeChatModelConfigShare",
+                "APIKeyScopeChatModelConfigUpdate",
+                "APIKeyScopeChatProjectAll",
+                "APIKeyScopeChatProjectCreate",
+                "APIKeyScopeChatProjectDelete",
+                "APIKeyScopeChatProjectRead",
+                "APIKeyScopeChatProjectUpdate",
+                "APIKeyScopeChatProjectMemoryAll",
+                "APIKeyScopeChatProjectMemoryCreate",
+                "APIKeyScopeChatProjectMemoryDelete",
+                "APIKeyScopeChatProjectMemoryRead",
                 "APIKeyScopeCoderAll",
                 "APIKeyScopeCoderApikeysManageSelf",
                 "APIKeyScopeCoderApplicationConnect",
@@ -14084,6 +20177,12 @@ const docTemplate = `{
                 "APIKeyScopeLicenseCreate",
                 "APIKeyScopeLicenseDelete",
                 "APIKeyScopeLicenseRead",
+                "APIKeyScopeMcpServerConfigAll",
+                "APIKeyScopeMcpServerConfigCreate",
+                "APIKeyScopeMcpServerConfigDelete",
+                "APIKeyScopeMcpServerConfigRead",
+                "APIKeyScopeMcpServerConfigShare",
+                "APIKeyScopeMcpServerConfigUpdate",
                 "APIKeyScopeNotificationMessageAll",
                 "APIKeyScopeNotificationMessageCreate",
                 "APIKeyScopeNotificationMessageDelete",
@@ -14143,11 +20242,6 @@ const docTemplate = `{
                 "APIKeyScopeTailnetCoordinatorDelete",
                 "APIKeyScopeTailnetCoordinatorRead",
                 "APIKeyScopeTailnetCoordinatorUpdate",
-                "APIKeyScopeTaskAll",
-                "APIKeyScopeTaskCreate",
-                "APIKeyScopeTaskDelete",
-                "APIKeyScopeTaskRead",
-                "APIKeyScopeTaskUpdate",
                 "APIKeyScopeTemplateAll",
                 "APIKeyScopeTemplateCreate",
                 "APIKeyScopeTemplateDelete",
@@ -14171,6 +20265,11 @@ const docTemplate = `{
                 "APIKeyScopeUserSecretDelete",
                 "APIKeyScopeUserSecretRead",
                 "APIKeyScopeUserSecretUpdate",
+                "APIKeyScopeUserSkillAll",
+                "APIKeyScopeUserSkillCreate",
+                "APIKeyScopeUserSkillDelete",
+                "APIKeyScopeUserSkillRead",
+                "APIKeyScopeUserSkillUpdate",
                 "APIKeyScopeWebpushSubscriptionAll",
                 "APIKeyScopeWebpushSubscriptionCreate",
                 "APIKeyScopeWebpushSubscriptionDelete",
@@ -14194,6 +20293,11 @@ const docTemplate = `{
                 "APIKeyScopeWorkspaceAgentResourceMonitorCreate",
                 "APIKeyScopeWorkspaceAgentResourceMonitorRead",
                 "APIKeyScopeWorkspaceAgentResourceMonitorUpdate",
+                "APIKeyScopeWorkspaceBuildOrchestrationAll",
+                "APIKeyScopeWorkspaceBuildOrchestrationCreate",
+                "APIKeyScopeWorkspaceBuildOrchestrationDelete",
+                "APIKeyScopeWorkspaceBuildOrchestrationRead",
+                "APIKeyScopeWorkspaceBuildOrchestrationUpdate",
                 "APIKeyScopeWorkspaceDormantAll",
                 "APIKeyScopeWorkspaceDormantApplicationConnect",
                 "APIKeyScopeWorkspaceDormantCreate",
@@ -14225,6 +20329,17 @@ const docTemplate = `{
                 }
             }
         },
+        "codersdk.AgentChatSendShortcut": {
+            "type": "string",
+            "enum": [
+                "enter",
+                "modifier_enter"
+            ],
+            "x-enum-varnames": [
+                "AgentChatSendShortcutEnter",
+                "AgentChatSendShortcutModifierEnter"
+            ]
+        },
         "codersdk.AgentConnectionTiming": {
             "type": "object",
             "properties": {
@@ -14244,6 +20359,93 @@ const docTemplate = `{
                 },
                 "workspace_agent_name": {
                     "type": "string"
+                }
+            }
+        },
+        "codersdk.AgentDisplayMode": {
+            "type": "string",
+            "enum": [
+                "auto",
+                "always_expanded",
+                "always_collapsed"
+            ],
+            "x-enum-varnames": [
+                "AgentDisplayModeAuto",
+                "AgentDisplayModeAlwaysExpanded",
+                "AgentDisplayModeAlwaysCollapsed"
+            ]
+        },
+        "codersdk.AgentFirewallLog": {
+            "type": "object",
+            "properties": {
+                "allowed": {
+                    "type": "boolean"
+                },
+                "captured_at": {
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "created_at": {
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "detail": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "matched_rule": {
+                    "type": "string"
+                },
+                "method": {
+                    "type": "string"
+                },
+                "proto": {
+                    "type": "string"
+                },
+                "sequence_number": {
+                    "type": "integer"
+                },
+                "session_id": {
+                    "type": "string",
+                    "format": "uuid"
+                }
+            }
+        },
+        "codersdk.AgentFirewallSession": {
+            "type": "object",
+            "properties": {
+                "confined_process": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "owner_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "started_at": {
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "workspace_id": {
+                    "type": "string",
+                    "format": "uuid"
+                }
+            }
+        },
+        "codersdk.AgentFirewallSessionLogsResponse": {
+            "type": "object",
+            "properties": {
+                "results": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.AgentFirewallLog"
+                    }
                 }
             }
         },
@@ -14291,6 +20493,27 @@ const docTemplate = `{
                 "AgentSubsystemExectrace"
             ]
         },
+        "codersdk.AppFamilyName": {
+            "type": "string",
+            "enum": [
+                "vscode",
+                "jetbrains",
+                "ssh",
+                "reconnecting_pty",
+                "port_forwarding",
+                "sftp",
+                "unknown"
+            ],
+            "x-enum-varnames": [
+                "AppFamilyVSCode",
+                "AppFamilyJetBrains",
+                "AppFamilySSH",
+                "AppFamilyReconnectingPTY",
+                "AppFamilyPortForwarding",
+                "AppFamilySFTP",
+                "AppFamilyUnknown"
+            ]
+        },
         "codersdk.AppHostResponse": {
             "type": "object",
             "properties": {
@@ -14311,6 +20534,9 @@ const docTemplate = `{
                 },
                 "application_name": {
                     "type": "string"
+                },
+                "codernauts_enabled": {
+                    "type": "boolean"
                 },
                 "docs_url": {
                     "type": "string"
@@ -14670,6 +20896,10 @@ const docTemplate = `{
                     "description": "ExternalURL references the current Coder version.\nFor production builds, this will link directly to a release. For development builds, this will link to a commit.",
                     "type": "string"
                 },
+                "oauth2_provider": {
+                    "description": "OAuth2Provider reports whether the OAuth 2.1 authorization server is\nenabled. The dashboard uses it to show or hide OAuth2 navigation.",
+                    "type": "boolean"
+                },
                 "provisioner_api_version": {
                     "description": "ProvisionerAPIVersion is the current version of the Provisioner API",
                     "type": "string"
@@ -14706,10 +20936,7 @@ const docTemplate = `{
                 "cli",
                 "ssh_connection",
                 "vscode_connection",
-                "jetbrains_connection",
-                "task_auto_pause",
-                "task_manual_pause",
-                "task_resume"
+                "jetbrains_connection"
             ],
             "x-enum-varnames": [
                 "BuildReasonInitiator",
@@ -14720,10 +20947,7 @@ const docTemplate = `{
                 "BuildReasonCLI",
                 "BuildReasonSSHConnection",
                 "BuildReasonVSCodeConnection",
-                "BuildReasonJetbrainsConnection",
-                "BuildReasonTaskAutoPause",
-                "BuildReasonTaskManualPause",
-                "BuildReasonTaskResume"
+                "BuildReasonJetbrainsConnection"
             ]
         },
         "codersdk.CORSBehavior": {
@@ -14757,6 +20981,456 @@ const docTemplate = `{
                 }
             }
         },
+        "codersdk.ChangedDiffStatus": {
+            "type": "object",
+            "properties": {
+                "ref": {
+                    "$ref": "#/definitions/codersdk.DiffStatusRef"
+                },
+                "status": {
+                    "$ref": "#/definitions/codersdk.ChatDiffStatus"
+                }
+            }
+        },
+        "codersdk.Chat": {
+            "type": "object",
+            "properties": {
+                "agent_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "archived": {
+                    "type": "boolean"
+                },
+                "build_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "children": {
+                    "description": "Children holds child (subagent) chats nested under this root\nchat. Always initialized to an empty slice so the JSON field\nis present as []. Child chats cannot create their own\nsubagents, so nesting depth is capped at 1 and this slice is\nalways empty for child chats.",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.Chat"
+                    }
+                },
+                "client_type": {
+                    "$ref": "#/definitions/codersdk.ChatClientType"
+                },
+                "context": {
+                    "description": "Context reports the chat's pinned workspace-context state and\nwhether it has drifted from the agent's latest pushed snapshot.\nNil when the chat has no pinned context yet.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/codersdk.ChatContext"
+                        }
+                    ]
+                },
+                "created_at": {
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "diff_status": {
+                    "description": "DiffStatus is the primary pull request. It is the ref with the\nmost recent git report.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/codersdk.ChatDiffStatus"
+                        }
+                    ]
+                },
+                "diff_statuses": {
+                    "description": "DiffStatuses lists every ref the chat tracks. The order is\nstable and follows the first report of each ref. DiffStatus\nmarks the primary.",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.ChatDiffStatus"
+                    }
+                },
+                "files": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.ChatFileMetadata"
+                    }
+                },
+                "has_unread": {
+                    "description": "HasUnread is true when assistant messages exist beyond\nthe owner's read cursor, which updates on stream\nconnect and disconnect and via UpdateChatRequest.Read.",
+                    "type": "boolean"
+                },
+                "id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "inline_mcp_servers": {
+                    "description": "InlineMCPServers lists the inline MCP servers declared on the chat,\nwithout headers. Only the single-chat GET sets it.\nExperimental.",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.InlineMCPServer"
+                    }
+                },
+                "labels": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string"
+                    }
+                },
+                "last_error": {
+                    "$ref": "#/definitions/codersdk.ChatError"
+                },
+                "last_model_config_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "last_reasoning_effort": {
+                    "type": "string"
+                },
+                "last_turn_summary": {
+                    "type": "string"
+                },
+                "manage_automations_enabled": {
+                    "description": "ManageAutomationsEnabled offers the manage_automations tool to this\nchat's agent. Experimental.",
+                    "type": "boolean"
+                },
+                "mcp_server_ids": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "format": "uuid"
+                    }
+                },
+                "organization_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "owner_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "owner_name": {
+                    "type": "string"
+                },
+                "owner_username": {
+                    "type": "string"
+                },
+                "parent_chat_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "pin_order": {
+                    "type": "integer"
+                },
+                "plan_mode": {
+                    "$ref": "#/definitions/codersdk.ChatPlanMode"
+                },
+                "project_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "queued_for_capacity": {
+                    "description": "QueuedForCapacity reports that the chat is waiting for a concurrent\nagent slot. Single-chat reads derive it; list responses leave it false.",
+                    "type": "boolean"
+                },
+                "root_chat_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "shared": {
+                    "description": "Shared is true when this chat's root chat has explicit user or group ACL entries.",
+                    "type": "boolean"
+                },
+                "status": {
+                    "$ref": "#/definitions/codersdk.ChatStatus"
+                },
+                "summary": {
+                    "description": "Summary is the persisted whole-chat summary, generated in the background.\nIt is nil until the first summary has been produced.",
+                    "type": "string"
+                },
+                "title": {
+                    "type": "string"
+                },
+                "title_source": {
+                    "description": "TitleSource is where Title came from. A title write applies only when\nthe current source ranks the same as or lower than the incoming one,\nin the order fallback, generated, user.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/codersdk.ChatTitleSource"
+                        }
+                    ]
+                },
+                "title_updated_at": {
+                    "description": "TitleUpdatedAt orders title changes. Title writes do not change\nUpdatedAt.",
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "updated_at": {
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "warnings": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "workspace_id": {
+                    "type": "string",
+                    "format": "uuid"
+                }
+            }
+        },
+        "codersdk.ChatACL": {
+            "type": "object",
+            "properties": {
+                "groups": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.ChatGroup"
+                    }
+                },
+                "users": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.ChatUser"
+                    }
+                }
+            }
+        },
+        "codersdk.ChatAutoArchiveDaysResponse": {
+            "type": "object",
+            "properties": {
+                "auto_archive_days": {
+                    "type": "integer"
+                }
+            }
+        },
+        "codersdk.ChatAutomation": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "created_by_chat_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "kind": {
+                    "enum": [
+                        "webhook",
+                        "schedule"
+                    ],
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/codersdk.ChatAutomationKind"
+                        }
+                    ]
+                },
+                "name": {
+                    "type": "string"
+                },
+                "new_chat_model_config_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "next_run_times": {
+                    "description": "NextRunTimes lists up to five upcoming runs of an enabled schedule.\nIt is empty for webhooks and disabled schedules.",
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "format": "date-time"
+                    }
+                },
+                "organization_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "owner_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "prompt": {
+                    "type": "string"
+                },
+                "reasoning_effort": {
+                    "type": "string"
+                },
+                "schedule_cron": {
+                    "type": "string"
+                },
+                "schedule_next_run_at": {
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "schedule_time_zone": {
+                    "type": "string"
+                },
+                "target_chat_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "target_mode": {
+                    "enum": [
+                        "existing_chat",
+                        "new_chat"
+                    ],
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/codersdk.ChatAutomationTargetMode"
+                        }
+                    ]
+                },
+                "updated_at": {
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "webhook_consumed_at": {
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "webhook_secret_version": {
+                    "type": "integer"
+                },
+                "webhook_use": {
+                    "enum": [
+                        "single",
+                        "multi"
+                    ],
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/codersdk.ChatAutomationWebhookUse"
+                        }
+                    ]
+                },
+                "when_busy": {
+                    "enum": [
+                        "queue",
+                        "skip"
+                    ],
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/codersdk.ChatAutomationWhenBusy"
+                        }
+                    ]
+                }
+            }
+        },
+        "codersdk.ChatAutomationEventResponse": {
+            "type": "object",
+            "properties": {
+                "chat_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "input_id": {
+                    "type": "string",
+                    "format": "uuid"
+                }
+            }
+        },
+        "codersdk.ChatAutomationKind": {
+            "type": "string",
+            "enum": [
+                "webhook",
+                "schedule"
+            ],
+            "x-enum-varnames": [
+                "ChatAutomationKindWebhook",
+                "ChatAutomationKindSchedule"
+            ]
+        },
+        "codersdk.ChatAutomationRunResponse": {
+            "type": "object",
+            "properties": {
+                "chat_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "input_id": {
+                    "type": "string",
+                    "format": "uuid"
+                }
+            }
+        },
+        "codersdk.ChatAutomationSchedulePreviewRequest": {
+            "type": "object",
+            "properties": {
+                "schedule_cron": {
+                    "type": "string"
+                },
+                "schedule_time_zone": {
+                    "type": "string"
+                }
+            }
+        },
+        "codersdk.ChatAutomationSchedulePreviewResponse": {
+            "type": "object",
+            "properties": {
+                "next_run_times": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "format": "date-time"
+                    }
+                }
+            }
+        },
+        "codersdk.ChatAutomationTargetMode": {
+            "type": "string",
+            "enum": [
+                "existing_chat",
+                "new_chat"
+            ],
+            "x-enum-varnames": [
+                "ChatAutomationTargetModeExistingChat",
+                "ChatAutomationTargetModeNewChat"
+            ]
+        },
+        "codersdk.ChatAutomationWebhookUse": {
+            "type": "string",
+            "enum": [
+                "single",
+                "multi"
+            ],
+            "x-enum-varnames": [
+                "ChatAutomationWebhookUseSingle",
+                "ChatAutomationWebhookUseMulti"
+            ]
+        },
+        "codersdk.ChatAutomationWhenBusy": {
+            "type": "string",
+            "enum": [
+                "queue",
+                "skip"
+            ],
+            "x-enum-varnames": [
+                "ChatAutomationWhenBusyQueue",
+                "ChatAutomationWhenBusySkip"
+            ]
+        },
+        "codersdk.ChatBusyBehavior": {
+            "type": "string",
+            "enum": [
+                "queue",
+                "interrupt"
+            ],
+            "x-enum-varnames": [
+                "ChatBusyBehaviorQueue",
+                "ChatBusyBehaviorInterrupt"
+            ]
+        },
+        "codersdk.ChatClientType": {
+            "type": "string",
+            "enum": [
+                "ui",
+                "api"
+            ],
+            "x-enum-varnames": [
+                "ChatClientTypeUI",
+                "ChatClientTypeAPI"
+            ]
+        },
         "codersdk.ChatConfig": {
             "type": "object",
             "properties": {
@@ -14765,6 +21439,1646 @@ const docTemplate = `{
                 },
                 "debug_logging_enabled": {
                     "type": "boolean"
+                },
+                "hook_allow_insecure": {
+                    "type": "boolean"
+                },
+                "hook_enabled": {
+                    "type": "boolean"
+                },
+                "hook_secret": {
+                    "type": "string"
+                },
+                "hook_timeout": {
+                    "type": "integer"
+                },
+                "hook_url": {
+                    "$ref": "#/definitions/serpent.URL"
+                },
+                "max_attachments_per_chat": {
+                    "description": "MaxAttachmentsPerChat is the maximum number of files linked to a\nchat.",
+                    "type": "integer"
+                },
+                "max_automations_per_owner": {
+                    "description": "MaxAutomationsPerOwner is the maximum number of chat automations\none user can own across all organizations.",
+                    "type": "integer"
+                },
+                "max_concurrent_recording_uploads": {
+                    "description": "MaxConcurrentRecordingUploads is the maximum number of virtual\ndesktop recordings that each Coder server stores at the same time.",
+                    "type": "integer"
+                },
+                "max_generation_retries": {
+                    "description": "MaxGenerationRetries is the maximum number of consecutive retries\nafter a model generation fails with a transient error.",
+                    "type": "integer"
+                },
+                "max_prompt_bytes": {
+                    "description": "MaxPromptBytes is the maximum size in bytes of the deployment system\nprompt, the plan mode instructions, and each user's custom prompt.",
+                    "type": "integer"
+                },
+                "max_queued_messages_per_chat": {
+                    "description": "MaxQueuedMessagesPerChat is the maximum number of messages that can\nbe queued in a chat.",
+                    "type": "integer"
+                },
+                "max_steps_per_turn": {
+                    "description": "MaxStepsPerTurn is the maximum number of steps in a chat turn.",
+                    "type": "integer"
+                },
+                "stream_silence_timeout": {
+                    "type": "integer"
+                }
+            }
+        },
+        "codersdk.ChatContext": {
+            "type": "object",
+            "properties": {
+                "dirty": {
+                    "description": "Dirty is true when the agent's latest snapshot hash differs from the\nchat's pinned hash.",
+                    "type": "boolean"
+                },
+                "dirty_since": {
+                    "description": "DirtySince is when drift was first detected; nil when not dirty.",
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "error": {
+                    "description": "Error is the snapshot-level error copied from the pinned snapshot\n(empty when healthy).",
+                    "type": "string"
+                },
+                "resources": {
+                    "description": "Resources is the chat's pinned context (instruction files and\nskills) the prompt is built from, metadata only (no bodies). It is\npopulated only on the single-chat GET response; list and watch\npayloads leave it nil to stay lightweight.",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.ChatContextResource"
+                    }
+                }
+            }
+        },
+        "codersdk.ChatContextResource": {
+            "type": "object",
+            "properties": {
+                "error": {
+                    "description": "Error explains a non-ok Status; empty when healthy. May also carry a\nnon-fatal warning when Status is ok.",
+                    "type": "string"
+                },
+                "kind": {
+                    "$ref": "#/definitions/codersdk.ChatContextResourceKind"
+                },
+                "size_bytes": {
+                    "description": "SizeBytes is the original payload size in bytes.",
+                    "type": "integer"
+                },
+                "skill_description": {
+                    "type": "string"
+                },
+                "skill_name": {
+                    "description": "SkillName and SkillDescription are populated only for skill kinds.",
+                    "type": "string"
+                },
+                "source": {
+                    "description": "Source is the resource locator: the canonical file path for an\ninstruction file, the skill directory for a skill, the file path for\nan MCP config, or the server name for an MCP server.",
+                    "type": "string"
+                },
+                "status": {
+                    "description": "Status is the resource's health. Non-ok resources (invalid, unreadable,\noversize, excluded) are still reported so the UI can surface why a\nresource was dropped from the prompt instead of silently omitting it;\ntheir body-specific fields (skill name, tools) are empty.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/codersdk.ChatContextResourceStatus"
+                        }
+                    ]
+                },
+                "tools": {
+                    "description": "Tools lists the tools exposed by an MCP server. Populated only for the\nmcp_server kind; nil otherwise.",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.ChatContextTool"
+                    }
+                }
+            }
+        },
+        "codersdk.ChatContextResourceKind": {
+            "type": "string",
+            "enum": [
+                "instruction_file",
+                "skill",
+                "mcp_config",
+                "mcp_server"
+            ],
+            "x-enum-varnames": [
+                "ChatContextResourceKindInstructionFile",
+                "ChatContextResourceKindSkill",
+                "ChatContextResourceKindMCPConfig",
+                "ChatContextResourceKindMCPServer"
+            ]
+        },
+        "codersdk.ChatContextResourceStatus": {
+            "type": "string",
+            "enum": [
+                "ok",
+                "oversize",
+                "unreadable",
+                "invalid",
+                "excluded"
+            ],
+            "x-enum-varnames": [
+                "ChatContextResourceStatusOK",
+                "ChatContextResourceStatusOversize",
+                "ChatContextResourceStatusUnreadable",
+                "ChatContextResourceStatusInvalid",
+                "ChatContextResourceStatusExcluded"
+            ]
+        },
+        "codersdk.ChatContextTool": {
+            "type": "object",
+            "properties": {
+                "description": {
+                    "description": "Description is the tool's human-readable summary; may be empty.",
+                    "type": "string"
+                },
+                "name": {
+                    "description": "Name is the tool name with the ` + "`" + `\u003cserver\u003e__` + "`" + ` prefix the agent adds\nstripped, so it reads as the server exposes it.",
+                    "type": "string"
+                }
+            }
+        },
+        "codersdk.ChatCost": {
+            "type": "object",
+            "properties": {
+                "chat_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "request_count": {
+                    "type": "integer"
+                },
+                "total_cost_micros": {
+                    "type": "integer"
+                },
+                "unpriced_request_count": {
+                    "type": "integer"
+                }
+            }
+        },
+        "codersdk.ChatDebugLoggingAdminSettings": {
+            "type": "object",
+            "properties": {
+                "allow_users": {
+                    "type": "boolean"
+                },
+                "forced_by_deployment": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "codersdk.ChatDebugRetentionDaysResponse": {
+            "type": "object",
+            "properties": {
+                "debug_retention_days": {
+                    "type": "integer"
+                }
+            }
+        },
+        "codersdk.ChatDiffContents": {
+            "type": "object",
+            "properties": {
+                "branch": {
+                    "type": "string"
+                },
+                "chat_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "diff": {
+                    "type": "string"
+                },
+                "provider": {
+                    "type": "string"
+                },
+                "pull_request_url": {
+                    "type": "string"
+                },
+                "remote_origin": {
+                    "type": "string"
+                }
+            }
+        },
+        "codersdk.ChatDiffStatus": {
+            "type": "object",
+            "properties": {
+                "additions": {
+                    "type": "integer"
+                },
+                "approved": {
+                    "type": "boolean"
+                },
+                "author_avatar_url": {
+                    "type": "string"
+                },
+                "author_login": {
+                    "type": "string"
+                },
+                "base_branch": {
+                    "type": "string"
+                },
+                "changed_files": {
+                    "type": "integer"
+                },
+                "changes_requested": {
+                    "type": "boolean"
+                },
+                "chat_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "commits": {
+                    "type": "integer"
+                },
+                "deletions": {
+                    "type": "integer"
+                },
+                "git_branch": {
+                    "type": "string"
+                },
+                "head_branch": {
+                    "type": "string"
+                },
+                "pr_number": {
+                    "type": "integer"
+                },
+                "pull_request_draft": {
+                    "type": "boolean"
+                },
+                "pull_request_state": {
+                    "type": "string"
+                },
+                "pull_request_title": {
+                    "type": "string"
+                },
+                "refreshed_at": {
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "remote_origin": {
+                    "type": "string"
+                },
+                "reviewer_count": {
+                    "type": "integer"
+                },
+                "stale_at": {
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "url": {
+                    "type": "string"
+                }
+            }
+        },
+        "codersdk.ChatError": {
+            "type": "object",
+            "properties": {
+                "detail": {
+                    "description": "Detail is optional provider-specific context shown alongside the\nnormalized error message when available.",
+                    "type": "string"
+                },
+                "kind": {
+                    "description": "Kind classifies the error for consistent client rendering.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/codersdk.ChatErrorKind"
+                        }
+                    ]
+                },
+                "message": {
+                    "description": "Message is the normalized, user-facing error message.",
+                    "type": "string"
+                },
+                "provider": {
+                    "description": "Provider identifies the upstream model provider when known.",
+                    "type": "string"
+                },
+                "retryable": {
+                    "description": "Retryable reports whether the underlying error is transient.",
+                    "type": "boolean"
+                },
+                "status_code": {
+                    "description": "StatusCode is the best-effort upstream HTTP status code.",
+                    "type": "integer"
+                }
+            }
+        },
+        "codersdk.ChatErrorKind": {
+            "type": "string",
+            "enum": [
+                "generic",
+                "overloaded",
+                "rate_limit",
+                "timeout",
+                "stream_silence_timeout",
+                "auth",
+                "config",
+                "usage_limit",
+                "missing_key",
+                "provider_disabled",
+                "content_filter",
+                "hook_dispatch_failed",
+                "hook_denied"
+            ],
+            "x-enum-varnames": [
+                "ChatErrorKindGeneric",
+                "ChatErrorKindOverloaded",
+                "ChatErrorKindRateLimit",
+                "ChatErrorKindTimeout",
+                "ChatErrorKindStreamSilenceTimeout",
+                "ChatErrorKindAuth",
+                "ChatErrorKindConfig",
+                "ChatErrorKindUsageLimit",
+                "ChatErrorKindMissingKey",
+                "ChatErrorKindProviderDisabled",
+                "ChatErrorKindContentFilter",
+                "ChatErrorKindHookDispatchFailed",
+                "ChatErrorKindHookDenied"
+            ]
+        },
+        "codersdk.ChatFileDownloadURLResponse": {
+            "type": "object",
+            "properties": {
+                "expires_at": {
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "mime_type": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "sha256": {
+                    "type": "string"
+                },
+                "size_bytes": {
+                    "type": "integer"
+                },
+                "url": {
+                    "type": "string",
+                    "format": "uri"
+                }
+            }
+        },
+        "codersdk.ChatFileMetadata": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "mime_type": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "organization_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "owner_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "size_bytes": {
+                    "type": "integer"
+                }
+            }
+        },
+        "codersdk.ChatGroup": {
+            "type": "object",
+            "properties": {
+                "avatar_url": {
+                    "type": "string",
+                    "format": "uri"
+                },
+                "display_name": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "members": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.ReducedUser"
+                    }
+                },
+                "name": {
+                    "type": "string"
+                },
+                "organization_display_name": {
+                    "type": "string"
+                },
+                "organization_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "organization_name": {
+                    "type": "string"
+                },
+                "quota_allowance": {
+                    "type": "integer"
+                },
+                "role": {
+                    "enum": [
+                        "read"
+                    ],
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/codersdk.ChatRole"
+                        }
+                    ]
+                },
+                "source": {
+                    "$ref": "#/definitions/codersdk.GroupSource"
+                },
+                "total_member_count": {
+                    "description": "How many members are in this group. Shows the total count,\neven if the user is not authorized to read group member details.\nMay be greater than ` + "`" + `len(Group.Members)` + "`" + `.",
+                    "type": "integer"
+                }
+            }
+        },
+        "codersdk.ChatInputPart": {
+            "type": "object",
+            "properties": {
+                "content": {
+                    "description": "The code content from the diff that was commented on.",
+                    "type": "string"
+                },
+                "end_line": {
+                    "type": "integer"
+                },
+                "file_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "file_name": {
+                    "description": "The following fields are only set when Type is\nChatInputPartTypeFileReference.",
+                    "type": "string"
+                },
+                "start_line": {
+                    "type": "integer"
+                },
+                "text": {
+                    "type": "string"
+                },
+                "type": {
+                    "$ref": "#/definitions/codersdk.ChatInputPartType"
+                },
+                "workspace_file_media_type": {
+                    "type": "string"
+                },
+                "workspace_file_name": {
+                    "type": "string"
+                },
+                "workspace_file_path": {
+                    "description": "The following fields are only set when Type is\nChatInputPartTypeWorkspaceFileReference.",
+                    "type": "string"
+                },
+                "workspace_file_size": {
+                    "type": "integer"
+                },
+                "workspace_file_workspace_id": {
+                    "description": "WorkspaceFileWorkspaceID is the workspace the file was uploaded\nto, as returned by the upload endpoint. It must match the chat's\ncurrently bound workspace.",
+                    "type": "string",
+                    "format": "uuid"
+                }
+            }
+        },
+        "codersdk.ChatInputPartType": {
+            "type": "string",
+            "enum": [
+                "text",
+                "file",
+                "file-reference",
+                "workspace-file-reference"
+            ],
+            "x-enum-varnames": [
+                "ChatInputPartTypeText",
+                "ChatInputPartTypeFile",
+                "ChatInputPartTypeFileReference",
+                "ChatInputPartTypeWorkspaceFileReference"
+            ]
+        },
+        "codersdk.ChatMessage": {
+            "type": "object",
+            "properties": {
+                "automation_id": {
+                    "description": "AutomationID is the chat automation that delivered this message,\nif any. The automation may since have been deleted.",
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "chat_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "content": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.ChatMessagePart"
+                    }
+                },
+                "created_at": {
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "created_by": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "input_id": {
+                    "description": "InputID identifies the automation input that produced this\nmessage: a webhook delivery or a schedule occurrence. It is set\nonly when AutomationID is set.",
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "model_config_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "queued_message_id": {
+                    "description": "QueuedMessageID is the ID of the queued message this message was\npromoted from. It matches ChatQueuedMessage.ID in the response that\nqueued the message. It is nil when the message was not promoted from\nthe queue (edits create a new message without it) or when a server\nversion that did not record the link created it.",
+                    "type": "integer"
+                },
+                "role": {
+                    "$ref": "#/definitions/codersdk.ChatMessageRole"
+                },
+                "usage": {
+                    "$ref": "#/definitions/codersdk.ChatMessageUsage"
+                }
+            }
+        },
+        "codersdk.ChatMessagePart": {
+            "type": "object",
+            "properties": {
+                "args": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "args_delta": {
+                    "type": "string"
+                },
+                "completed_at": {
+                    "description": "CompletedAt is the time a reasoning part finished streaming,\nso reasoning duration can be computed as completed_at minus\ncreated_at. For interrupted reasoning, this is the\ninterruption time. Absent when reasoning timestamp data was\nnot recorded (e.g. messages persisted before this feature\nwas added).",
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "content": {
+                    "description": "The code content from the diff that was commented on.",
+                    "type": "string"
+                },
+                "context_file_agent_id": {
+                    "description": "ContextFileAgentID is the workspace agent that provided\nthis context file. Used to detect when the agent changes\n(e.g. workspace rebuilt) so instruction files can be\nre-persisted with fresh content.",
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "context_file_content": {
+                    "description": "ContextFileContent holds the file content sent to the LLM.\nInternal only: stripped before API responses to keep\npayloads small. The backend reads it when building the\nprompt via partsToMessageParts.",
+                    "type": "string"
+                },
+                "context_file_directory": {
+                    "description": "ContextFileDirectory is the working directory of the\nworkspace agent. Internal only: same purpose as\nContextFileOS.",
+                    "type": "string"
+                },
+                "context_file_os": {
+                    "description": "ContextFileOS is the operating system of the workspace\nagent. Internal only: used during prompt expansion so\nthe LLM knows the OS even on turns where InsertSystem\nis not called.",
+                    "type": "string"
+                },
+                "context_file_path": {
+                    "description": "ContextFilePath is the absolute path of a file loaded into\nthe LLM context (e.g. an AGENTS.md instruction file).",
+                    "type": "string"
+                },
+                "context_file_skill_meta_file": {
+                    "description": "ContextFileSkillMetaFile is the basename of the skill\nmeta file (e.g. \"SKILL.md\") at the time of persistence.\nInternal only: restored on subsequent turns so the\nread_skill tool uses the correct filename even when the\nagent configured a non-default value.",
+                    "type": "string"
+                },
+                "context_file_truncated": {
+                    "description": "ContextFileTruncated indicates the file exceeded the 64KiB\ninstruction file limit and was truncated.",
+                    "type": "boolean"
+                },
+                "created_at": {
+                    "description": "CreatedAt is the timestamp this part carries. The semantics\ndepend on the part type: for tool-call and tool-result parts\nit is the time the call was emitted or the result was\nproduced (tool duration is the result's created_at minus the\ncall's created_at); for reasoning parts it is the time\nreasoning started streaming.",
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "data": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "end_line": {
+                    "type": "integer"
+                },
+                "file_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "file_name": {
+                    "type": "string"
+                },
+                "hook_rewritten": {
+                    "description": "HookRewritten indicates that a lifecycle hook replaced model-proposed tool input.",
+                    "type": "boolean"
+                },
+                "is_error": {
+                    "type": "boolean"
+                },
+                "is_media": {
+                    "type": "boolean"
+                },
+                "mcp_server_config_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "media_type": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "parsed_commands": {
+                    "description": "ParsedCommands holds parsed programs from an execute tool call's\nshell command, one entry per simple command in source order. Each\nentry is [program] or [program, arg] where arg is the first non-flag\npositional argument. Program names are normalized to their base\nname (e.g. /usr/bin/go becomes go). Only populated when ToolName\nis \"execute\" and the command parses successfully; nil otherwise.",
+                    "type": "array",
+                    "items": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        }
+                    }
+                },
+                "provider_executed": {
+                    "description": "ProviderExecuted indicates the tool call was executed by\nthe provider (e.g. Anthropic computer use).",
+                    "type": "boolean"
+                },
+                "provider_metadata": {
+                    "description": "ProviderMetadata holds provider-specific response metadata\n(e.g. Anthropic cache control hints) as raw JSON. Internal\nonly: stripped by db2sdk before API responses.",
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "reasoning_delta": {
+                    "type": "string"
+                },
+                "result": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "result_delta": {
+                    "type": "string"
+                },
+                "result_reset": {
+                    "type": "boolean"
+                },
+                "skill_description": {
+                    "description": "SkillDescription is the short description from the skill's\nSKILL.md frontmatter.",
+                    "type": "string"
+                },
+                "skill_dir": {
+                    "description": "SkillDir is the absolute path to the skill directory inside\nthe workspace filesystem. Internal only: used by\nread_skill/read_skill_file tools to locate skill files.",
+                    "type": "string"
+                },
+                "skill_name": {
+                    "description": "SkillName is the kebab-case name of a discovered skill\nfrom the workspace's .agents/skills/ directory.",
+                    "type": "string"
+                },
+                "source_id": {
+                    "type": "string"
+                },
+                "start_line": {
+                    "type": "integer"
+                },
+                "text": {
+                    "type": "string"
+                },
+                "title": {
+                    "type": "string"
+                },
+                "tool_call_id": {
+                    "type": "string"
+                },
+                "tool_name": {
+                    "type": "string"
+                },
+                "type": {
+                    "$ref": "#/definitions/codersdk.ChatMessagePartType"
+                },
+                "url": {
+                    "type": "string"
+                },
+                "workspace_file_media_type": {
+                    "description": "WorkspaceFileMediaType is the best-effort declared MIME type.",
+                    "type": "string"
+                },
+                "workspace_file_name": {
+                    "description": "WorkspaceFileName is the sanitized basename of a workspace upload.",
+                    "type": "string"
+                },
+                "workspace_file_path": {
+                    "description": "WorkspaceFilePath is the absolute path of a workspace upload.\nThe bytes live on the workspace filesystem; only metadata is\npersisted on the message.",
+                    "type": "string"
+                },
+                "workspace_file_size": {
+                    "description": "WorkspaceFileSize is the byte size of a workspace upload.",
+                    "type": "integer"
+                },
+                "workspace_file_workspace_id": {
+                    "description": "WorkspaceFileWorkspaceID identifies the workspace whose\nfilesystem holds the uploaded bytes. References are only\nreadable while the chat stays bound to that workspace.",
+                    "type": "string",
+                    "format": "uuid"
+                }
+            }
+        },
+        "codersdk.ChatMessagePartType": {
+            "type": "string",
+            "enum": [
+                "text",
+                "reasoning",
+                "tool-call",
+                "tool-result",
+                "source",
+                "file",
+                "file-reference",
+                "context-file",
+                "skill",
+                "workspace-file-reference",
+                "hook-context",
+                "hook-notice"
+            ],
+            "x-enum-varnames": [
+                "ChatMessagePartTypeText",
+                "ChatMessagePartTypeReasoning",
+                "ChatMessagePartTypeToolCall",
+                "ChatMessagePartTypeToolResult",
+                "ChatMessagePartTypeSource",
+                "ChatMessagePartTypeFile",
+                "ChatMessagePartTypeFileReference",
+                "ChatMessagePartTypeContextFile",
+                "ChatMessagePartTypeSkill",
+                "ChatMessagePartTypeWorkspaceFileReference",
+                "ChatMessagePartTypeHookContext",
+                "ChatMessagePartTypeHookNotice"
+            ]
+        },
+        "codersdk.ChatMessageRole": {
+            "type": "string",
+            "enum": [
+                "system",
+                "user",
+                "assistant",
+                "tool"
+            ],
+            "x-enum-varnames": [
+                "ChatMessageRoleSystem",
+                "ChatMessageRoleUser",
+                "ChatMessageRoleAssistant",
+                "ChatMessageRoleTool"
+            ]
+        },
+        "codersdk.ChatMessageUsage": {
+            "type": "object",
+            "properties": {
+                "cache_creation_tokens": {
+                    "type": "integer"
+                },
+                "cache_read_tokens": {
+                    "type": "integer"
+                },
+                "context_limit": {
+                    "type": "integer"
+                },
+                "input_tokens": {
+                    "type": "integer"
+                },
+                "output_tokens": {
+                    "type": "integer"
+                },
+                "reasoning_tokens": {
+                    "description": "ReasoningTokens counts reasoning, which output_tokens already\nincludes, so do not add the two.",
+                    "type": "integer"
+                },
+                "total_tokens": {
+                    "type": "integer"
+                }
+            }
+        },
+        "codersdk.ChatMessagesResponse": {
+            "type": "object",
+            "properties": {
+                "has_more": {
+                    "type": "boolean"
+                },
+                "messages": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.ChatMessage"
+                    }
+                },
+                "queued_messages": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.ChatQueuedMessage"
+                    }
+                },
+                "turn_start_id": {
+                    "description": "TurnStartID is the ID of the user prompt that starts the turn\ncontaining the page's oldest message. Omitted for after_id-only polls\nand when no prompt is at or before that message.",
+                    "type": "integer"
+                }
+            }
+        },
+        "codersdk.ChatModel": {
+            "type": "object",
+            "properties": {
+                "ai_provider_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "compression_threshold": {
+                    "type": "integer"
+                },
+                "context_limit": {
+                    "type": "integer"
+                },
+                "created_at": {
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "display_name": {
+                    "type": "string"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "is_default": {
+                    "type": "boolean"
+                },
+                "model": {
+                    "type": "string"
+                },
+                "model_config": {
+                    "$ref": "#/definitions/codersdk.ChatModelCallConfig"
+                },
+                "organization_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "reasoning_efforts": {
+                    "description": "ReasoningEfforts lists selectable reasoning effort values through\nthe model's configured maximum.",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "updated_at": {
+                    "type": "string",
+                    "format": "date-time"
+                }
+            }
+        },
+        "codersdk.ChatModelACL": {
+            "type": "object",
+            "properties": {
+                "groups": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.ChatGroup"
+                    }
+                },
+                "users": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.ChatUser"
+                    }
+                }
+            }
+        },
+        "codersdk.ChatModelAnthropicProviderOptions": {
+            "type": "object",
+            "properties": {
+                "allowed_domains": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "blocked_domains": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "context_1m_enabled": {
+                    "type": "boolean"
+                },
+                "disable_parallel_tool_use": {
+                    "type": "boolean"
+                },
+                "send_reasoning": {
+                    "type": "boolean"
+                },
+                "thinking": {
+                    "$ref": "#/definitions/codersdk.ChatModelAnthropicThinkingOptions"
+                },
+                "thinking_display": {
+                    "type": "string"
+                },
+                "web_search_enabled": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "codersdk.ChatModelAnthropicThinkingOptions": {
+            "type": "object",
+            "properties": {
+                "budget_tokens": {
+                    "type": "integer"
+                }
+            }
+        },
+        "codersdk.ChatModelCallConfig": {
+            "type": "object",
+            "properties": {
+                "frequency_penalty": {
+                    "type": "number"
+                },
+                "max_output_tokens": {
+                    "type": "integer"
+                },
+                "openai_config": {
+                    "$ref": "#/definitions/codersdk.ChatModelOpenAIConfig"
+                },
+                "presence_penalty": {
+                    "type": "number"
+                },
+                "provider_options": {
+                    "$ref": "#/definitions/codersdk.ChatModelProviderOptions"
+                },
+                "reasoning_effort": {
+                    "$ref": "#/definitions/codersdk.ChatModelReasoningEffortConfig"
+                },
+                "temperature": {
+                    "type": "number"
+                },
+                "top_k": {
+                    "type": "integer"
+                },
+                "top_p": {
+                    "type": "number"
+                }
+            }
+        },
+        "codersdk.ChatModelGoogleProviderOptions": {
+            "type": "object",
+            "properties": {
+                "cached_content": {
+                    "type": "string"
+                },
+                "safety_settings": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.ChatModelGoogleSafetySetting"
+                    }
+                },
+                "thinking_config": {
+                    "$ref": "#/definitions/codersdk.ChatModelGoogleThinkingConfig"
+                },
+                "threshold": {
+                    "type": "string"
+                },
+                "web_search_enabled": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "codersdk.ChatModelGoogleSafetySetting": {
+            "type": "object",
+            "properties": {
+                "category": {
+                    "type": "string"
+                },
+                "threshold": {
+                    "type": "string"
+                }
+            }
+        },
+        "codersdk.ChatModelGoogleThinkingConfig": {
+            "type": "object",
+            "properties": {
+                "include_thoughts": {
+                    "type": "boolean"
+                },
+                "thinking_budget": {
+                    "type": "integer"
+                },
+                "thinking_level": {
+                    "type": "string"
+                }
+            }
+        },
+        "codersdk.ChatModelOpenAICompatProviderOptions": {
+            "type": "object",
+            "properties": {
+                "user": {
+                    "type": "string"
+                }
+            }
+        },
+        "codersdk.ChatModelOpenAIConfig": {
+            "type": "object",
+            "properties": {
+                "reasoning_model": {
+                    "type": "boolean"
+                },
+                "use_responses_api": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "codersdk.ChatModelOpenAIProviderOptions": {
+            "type": "object",
+            "properties": {
+                "allowed_domains": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "include": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "instructions": {
+                    "type": "string"
+                },
+                "log_probs": {
+                    "type": "boolean"
+                },
+                "logit_bias": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "integer",
+                        "format": "int64"
+                    }
+                },
+                "max_completion_tokens": {
+                    "type": "integer"
+                },
+                "max_tool_calls": {
+                    "type": "integer"
+                },
+                "metadata": {
+                    "type": "object",
+                    "additionalProperties": {}
+                },
+                "parallel_tool_calls": {
+                    "type": "boolean"
+                },
+                "prediction": {
+                    "type": "object",
+                    "additionalProperties": {}
+                },
+                "prompt_cache_key": {
+                    "type": "string"
+                },
+                "reasoning_mode": {
+                    "type": "string"
+                },
+                "reasoning_summary": {
+                    "type": "string"
+                },
+                "safety_identifier": {
+                    "type": "string"
+                },
+                "search_context_size": {
+                    "type": "string"
+                },
+                "service_tier": {
+                    "type": "string"
+                },
+                "store": {
+                    "type": "boolean"
+                },
+                "strict_json_schema": {
+                    "type": "boolean"
+                },
+                "structured_outputs": {
+                    "type": "boolean"
+                },
+                "text_verbosity": {
+                    "type": "string"
+                },
+                "top_log_probs": {
+                    "type": "integer"
+                },
+                "user": {
+                    "type": "string"
+                },
+                "web_search_enabled": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "codersdk.ChatModelOpenRouterProvider": {
+            "type": "object",
+            "properties": {
+                "allow_fallbacks": {
+                    "type": "boolean"
+                },
+                "data_collection": {
+                    "type": "string"
+                },
+                "ignore": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "only": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "order": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "quantizations": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "require_parameters": {
+                    "type": "boolean"
+                },
+                "sort": {
+                    "type": "string"
+                }
+            }
+        },
+        "codersdk.ChatModelOpenRouterProviderOptions": {
+            "type": "object",
+            "properties": {
+                "extra_body": {
+                    "type": "object",
+                    "additionalProperties": {}
+                },
+                "include_usage": {
+                    "type": "boolean"
+                },
+                "log_probs": {
+                    "type": "boolean"
+                },
+                "logit_bias": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "integer",
+                        "format": "int64"
+                    }
+                },
+                "parallel_tool_calls": {
+                    "type": "boolean"
+                },
+                "provider": {
+                    "$ref": "#/definitions/codersdk.ChatModelOpenRouterProvider"
+                },
+                "reasoning": {
+                    "$ref": "#/definitions/codersdk.ChatModelReasoningOptions"
+                },
+                "user": {
+                    "type": "string"
+                }
+            }
+        },
+        "codersdk.ChatModelOverrideContext": {
+            "type": "string",
+            "enum": [
+                "general",
+                "explore",
+                "title_generation",
+                "compaction",
+                "advisor"
+            ],
+            "x-enum-varnames": [
+                "ChatModelOverrideContextGeneral",
+                "ChatModelOverrideContextExplore",
+                "ChatModelOverrideContextTitleGeneration",
+                "ChatModelOverrideContextCompaction",
+                "ChatModelOverrideContextAdvisor"
+            ]
+        },
+        "codersdk.ChatModelOverrideResponse": {
+            "type": "object",
+            "properties": {
+                "context": {
+                    "$ref": "#/definitions/codersdk.ChatModelOverrideContext"
+                },
+                "model_config_id": {
+                    "type": "string"
+                },
+                "reasoning_effort": {
+                    "type": "string"
+                }
+            }
+        },
+        "codersdk.ChatModelOverridesResponse": {
+            "type": "object",
+            "properties": {
+                "overrides": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.ChatModelOverrideResponse"
+                    }
+                }
+            }
+        },
+        "codersdk.ChatModelProviderDescriptor": {
+            "type": "object",
+            "properties": {
+                "allow_user_api_key": {
+                    "type": "boolean"
+                },
+                "available": {
+                    "type": "boolean"
+                },
+                "display_name": {
+                    "type": "string"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "has_api_key": {
+                    "type": "boolean"
+                },
+                "has_effective_api_key": {
+                    "type": "boolean"
+                },
+                "has_user_api_key": {
+                    "type": "boolean"
+                },
+                "icon": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "type": {
+                    "type": "string"
+                },
+                "unavailable_reason": {
+                    "$ref": "#/definitions/codersdk.ChatModelProviderUnavailableReason"
+                }
+            }
+        },
+        "codersdk.ChatModelProviderOptions": {
+            "type": "object",
+            "properties": {
+                "anthropic": {
+                    "$ref": "#/definitions/codersdk.ChatModelAnthropicProviderOptions"
+                },
+                "google": {
+                    "$ref": "#/definitions/codersdk.ChatModelGoogleProviderOptions"
+                },
+                "openai": {
+                    "$ref": "#/definitions/codersdk.ChatModelOpenAIProviderOptions"
+                },
+                "openaicompat": {
+                    "$ref": "#/definitions/codersdk.ChatModelOpenAICompatProviderOptions"
+                },
+                "openrouter": {
+                    "$ref": "#/definitions/codersdk.ChatModelOpenRouterProviderOptions"
+                },
+                "vercel": {
+                    "$ref": "#/definitions/codersdk.ChatModelVercelProviderOptions"
+                }
+            }
+        },
+        "codersdk.ChatModelProviderUnavailableReason": {
+            "type": "string",
+            "enum": [
+                "missing_api_key",
+                "fetch_failed",
+                "user_api_key_required"
+            ],
+            "x-enum-varnames": [
+                "ChatModelProviderUnavailableMissingAPIKey",
+                "ChatModelProviderUnavailableFetchFailed",
+                "ChatModelProviderUnavailableReasonUserAPIKeyRequired"
+            ]
+        },
+        "codersdk.ChatModelReasoningEffortConfig": {
+            "type": "object",
+            "properties": {
+                "default": {
+                    "type": "string"
+                },
+                "max": {
+                    "type": "string"
+                }
+            }
+        },
+        "codersdk.ChatModelReasoningOptions": {
+            "type": "object",
+            "properties": {
+                "enabled": {
+                    "type": "boolean"
+                },
+                "exclude": {
+                    "type": "boolean"
+                },
+                "max_tokens": {
+                    "type": "integer"
+                }
+            }
+        },
+        "codersdk.ChatModelVercelGatewayProviderOptions": {
+            "type": "object",
+            "properties": {
+                "models": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "order": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                }
+            }
+        },
+        "codersdk.ChatModelVercelProviderOptions": {
+            "type": "object",
+            "properties": {
+                "extra_body": {
+                    "type": "object",
+                    "additionalProperties": {}
+                },
+                "logit_bias": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "integer",
+                        "format": "int64"
+                    }
+                },
+                "logprobs": {
+                    "type": "boolean"
+                },
+                "parallel_tool_calls": {
+                    "type": "boolean"
+                },
+                "providerOptions": {
+                    "$ref": "#/definitions/codersdk.ChatModelVercelGatewayProviderOptions"
+                },
+                "reasoning": {
+                    "$ref": "#/definitions/codersdk.ChatModelReasoningOptions"
+                },
+                "top_logprobs": {
+                    "type": "integer"
+                },
+                "user": {
+                    "type": "string"
+                }
+            }
+        },
+        "codersdk.ChatPersonalModelOverride": {
+            "type": "object",
+            "properties": {
+                "context": {
+                    "$ref": "#/definitions/codersdk.ChatPersonalModelOverrideContext"
+                },
+                "is_set": {
+                    "type": "boolean"
+                },
+                "mode": {
+                    "$ref": "#/definitions/codersdk.ChatPersonalModelOverrideMode"
+                },
+                "model_config_id": {
+                    "type": "string"
+                },
+                "reasoning_effort": {
+                    "type": "string"
+                }
+            }
+        },
+        "codersdk.ChatPersonalModelOverrideContext": {
+            "type": "string",
+            "enum": [
+                "root",
+                "general",
+                "explore"
+            ],
+            "x-enum-varnames": [
+                "ChatPersonalModelOverrideContextRoot",
+                "ChatPersonalModelOverrideContextGeneral",
+                "ChatPersonalModelOverrideContextExplore"
+            ]
+        },
+        "codersdk.ChatPersonalModelOverrideDeploymentDefaults": {
+            "type": "object",
+            "properties": {
+                "explore": {
+                    "$ref": "#/definitions/codersdk.ChatModelOverrideResponse"
+                },
+                "general": {
+                    "$ref": "#/definitions/codersdk.ChatModelOverrideResponse"
+                }
+            }
+        },
+        "codersdk.ChatPersonalModelOverrideMode": {
+            "type": "string",
+            "enum": [
+                "deployment_default",
+                "chat_default",
+                "model"
+            ],
+            "x-enum-varnames": [
+                "ChatPersonalModelOverrideModeDeploymentDefault",
+                "ChatPersonalModelOverrideModeChatDefault",
+                "ChatPersonalModelOverrideModeModel"
+            ]
+        },
+        "codersdk.ChatPersonalModelOverridesAdminSettings": {
+            "type": "object",
+            "properties": {
+                "allow_users": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "codersdk.ChatPlanMode": {
+            "type": "string",
+            "enum": [
+                "plan"
+            ],
+            "x-enum-varnames": [
+                "ChatPlanModePlan"
+            ]
+        },
+        "codersdk.ChatPlanModeInstructionsResponse": {
+            "type": "object",
+            "properties": {
+                "plan_mode_instructions": {
+                    "type": "string"
+                }
+            }
+        },
+        "codersdk.ChatProject": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "icon": {
+                    "description": "Icon is a URL, typically an emoji image under /emojis, or empty for the\ndefault folder glyph.",
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "name": {
+                    "description": "Name is a display label and is not unique; ID identifies the project.",
+                    "type": "string"
+                },
+                "organization_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "owner_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "updated_at": {
+                    "type": "string",
+                    "format": "date-time"
+                }
+            }
+        },
+        "codersdk.ChatProjectMemory": {
+            "type": "object",
+            "properties": {
+                "body": {
+                    "type": "string"
+                },
+                "created_at": {
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "created_by": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "created_by_username": {
+                    "type": "string"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "organization_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "project_id": {
+                    "type": "string",
+                    "format": "uuid"
+                }
+            }
+        },
+        "codersdk.ChatPrompt": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "integer"
+                },
+                "text": {
+                    "type": "string"
+                }
+            }
+        },
+        "codersdk.ChatPromptsResponse": {
+            "type": "object",
+            "properties": {
+                "prompts": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.ChatPrompt"
+                    }
+                }
+            }
+        },
+        "codersdk.ChatQueuedMessage": {
+            "type": "object",
+            "properties": {
+                "automation_id": {
+                    "description": "AutomationID is the chat automation that queued this message, if\nany. The automation may since have been deleted.",
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "chat_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "content": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.ChatMessagePart"
+                    }
+                },
+                "created_at": {
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "input_id": {
+                    "description": "InputID identifies the automation input that produced this\nmessage: a webhook delivery or a schedule occurrence. It is set\nonly when AutomationID is set.",
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "model_config_id": {
+                    "type": "string",
+                    "format": "uuid"
                 }
             }
         },
@@ -14773,6 +23087,325 @@ const docTemplate = `{
             "properties": {
                 "retention_days": {
                     "type": "integer"
+                }
+            }
+        },
+        "codersdk.ChatRole": {
+            "type": "string",
+            "enum": [
+                "read",
+                ""
+            ],
+            "x-enum-varnames": [
+                "ChatRoleRead",
+                "ChatRoleDeleted"
+            ]
+        },
+        "codersdk.ChatStatus": {
+            "type": "string",
+            "enum": [
+                "waiting",
+                "running",
+                "error",
+                "requires_action",
+                "interrupting"
+            ],
+            "x-enum-varnames": [
+                "ChatStatusWaiting",
+                "ChatStatusRunning",
+                "ChatStatusError",
+                "ChatStatusRequiresAction",
+                "ChatStatusInterrupting"
+            ]
+        },
+        "codersdk.ChatStreamActionRequired": {
+            "type": "object",
+            "properties": {
+                "tool_calls": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.ChatStreamToolCall"
+                    }
+                }
+            }
+        },
+        "codersdk.ChatStreamEvent": {
+            "type": "object",
+            "properties": {
+                "action_required": {
+                    "$ref": "#/definitions/codersdk.ChatStreamActionRequired"
+                },
+                "chat_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "error": {
+                    "$ref": "#/definitions/codersdk.ChatError"
+                },
+                "message": {
+                    "$ref": "#/definitions/codersdk.ChatMessage"
+                },
+                "message_part": {
+                    "$ref": "#/definitions/codersdk.ChatStreamMessagePart"
+                },
+                "queued_messages": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.ChatQueuedMessage"
+                    }
+                },
+                "retry": {
+                    "$ref": "#/definitions/codersdk.ChatStreamRetry"
+                },
+                "status": {
+                    "$ref": "#/definitions/codersdk.ChatStreamStatus"
+                },
+                "type": {
+                    "$ref": "#/definitions/codersdk.ChatStreamEventType"
+                }
+            }
+        },
+        "codersdk.ChatStreamEventType": {
+            "type": "string",
+            "enum": [
+                "message_part",
+                "message",
+                "status",
+                "error",
+                "queue_update",
+                "retry",
+                "action_required",
+                "preview_reset",
+                "history_reset"
+            ],
+            "x-enum-varnames": [
+                "ChatStreamEventTypeMessagePart",
+                "ChatStreamEventTypeMessage",
+                "ChatStreamEventTypeStatus",
+                "ChatStreamEventTypeError",
+                "ChatStreamEventTypeQueueUpdate",
+                "ChatStreamEventTypeRetry",
+                "ChatStreamEventTypeActionRequired",
+                "ChatStreamEventTypePreviewReset",
+                "ChatStreamEventTypeHistoryReset"
+            ]
+        },
+        "codersdk.ChatStreamMessagePart": {
+            "type": "object",
+            "properties": {
+                "generation_attempt": {
+                    "type": "integer"
+                },
+                "history_version": {
+                    "type": "integer"
+                },
+                "part": {
+                    "$ref": "#/definitions/codersdk.ChatMessagePart"
+                },
+                "role": {
+                    "$ref": "#/definitions/codersdk.ChatMessageRole"
+                },
+                "seq": {
+                    "type": "integer"
+                }
+            }
+        },
+        "codersdk.ChatStreamRetry": {
+            "type": "object",
+            "properties": {
+                "attempt": {
+                    "description": "Attempt is the 1-indexed retry attempt number.",
+                    "type": "integer"
+                },
+                "delay_ms": {
+                    "description": "DelayMs is the backoff delay in milliseconds before the retry.",
+                    "type": "integer"
+                },
+                "error": {
+                    "description": "Error is the normalized error message from the failed attempt.",
+                    "type": "string"
+                },
+                "kind": {
+                    "description": "Kind classifies the retry reason for consistent client rendering.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/codersdk.ChatErrorKind"
+                        }
+                    ]
+                },
+                "provider": {
+                    "description": "Provider identifies the upstream model provider when known.",
+                    "type": "string"
+                },
+                "retrying_at": {
+                    "description": "RetryingAt is the timestamp when the retry will be attempted.",
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "status_code": {
+                    "description": "StatusCode is the best-effort upstream HTTP status code.",
+                    "type": "integer"
+                }
+            }
+        },
+        "codersdk.ChatStreamStatus": {
+            "type": "object",
+            "properties": {
+                "status": {
+                    "$ref": "#/definitions/codersdk.ChatStatus"
+                }
+            }
+        },
+        "codersdk.ChatStreamToolCall": {
+            "type": "object",
+            "properties": {
+                "args": {
+                    "type": "string"
+                },
+                "tool_call_id": {
+                    "type": "string"
+                },
+                "tool_name": {
+                    "type": "string"
+                }
+            }
+        },
+        "codersdk.ChatSystemPromptResponse": {
+            "type": "object",
+            "properties": {
+                "default_system_prompt": {
+                    "type": "string"
+                },
+                "include_default_system_prompt": {
+                    "type": "boolean"
+                },
+                "system_prompt": {
+                    "type": "string"
+                }
+            }
+        },
+        "codersdk.ChatTitleSource": {
+            "type": "string",
+            "enum": [
+                "fallback",
+                "generated",
+                "user"
+            ],
+            "x-enum-varnames": [
+                "ChatTitleSourceFallback",
+                "ChatTitleSourceGenerated",
+                "ChatTitleSourceUser"
+            ]
+        },
+        "codersdk.ChatUnsupportedProvider": {
+            "type": "object",
+            "properties": {
+                "display_name": {
+                    "type": "string"
+                },
+                "provider": {
+                    "description": "Provider is the provider type, e.g. \"copilot\".",
+                    "type": "string"
+                }
+            }
+        },
+        "codersdk.ChatUser": {
+            "type": "object",
+            "required": [
+                "id",
+                "username"
+            ],
+            "properties": {
+                "avatar_url": {
+                    "type": "string",
+                    "format": "uri"
+                },
+                "id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "role": {
+                    "enum": [
+                        "read"
+                    ],
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/codersdk.ChatRole"
+                        }
+                    ]
+                },
+                "username": {
+                    "type": "string"
+                }
+            }
+        },
+        "codersdk.ChatWatchEvent": {
+            "type": "object",
+            "properties": {
+                "changed_diff_status": {
+                    "description": "ChangedDiffStatus is set when Kind is\nChatWatchEventKindDiffStatusChange. It identifies the ref that\nchanged.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/codersdk.ChangedDiffStatus"
+                        }
+                    ]
+                },
+                "chat": {
+                    "$ref": "#/definitions/codersdk.Chat"
+                },
+                "kind": {
+                    "$ref": "#/definitions/codersdk.ChatWatchEventKind"
+                },
+                "tool_calls": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.ChatStreamToolCall"
+                    }
+                }
+            }
+        },
+        "codersdk.ChatWatchEventKind": {
+            "type": "string",
+            "enum": [
+                "status_change",
+                "summary_change",
+                "chat_summary_change",
+                "title_change",
+                "created",
+                "deleted",
+                "diff_status_change",
+                "action_required",
+                "context_dirty"
+            ],
+            "x-enum-varnames": [
+                "ChatWatchEventKindStatusChange",
+                "ChatWatchEventKindSummaryChange",
+                "ChatWatchEventKindChatSummaryChange",
+                "ChatWatchEventKindTitleChange",
+                "ChatWatchEventKindCreated",
+                "ChatWatchEventKindDeleted",
+                "ChatWatchEventKindDiffStatusChange",
+                "ChatWatchEventKindActionRequired",
+                "ChatWatchEventKindContextDirty"
+            ]
+        },
+        "codersdk.ChatWorkspaceTTLResponse": {
+            "type": "object",
+            "properties": {
+                "workspace_ttl_ms": {
+                    "description": "WorkspaceTTLMillis is the workspace TTL in milliseconds.\nZero means disabled; the template's own autostop setting applies.",
+                    "type": "integer"
+                }
+            }
+        },
+        "codersdk.ClusterConfig": {
+            "type": "object",
+            "properties": {
+                "host": {
+                    "type": "string"
                 }
             }
         },
@@ -14821,7 +23454,7 @@ const docTemplate = `{
                     "$ref": "#/definitions/codersdk.ConnectionType"
                 },
                 "web_info": {
-                    "description": "WebInfo is only set when ` + "`" + `type` + "`" + ` is one of:\n- ` + "`" + `ConnectionTypePortForwarding` + "`" + `\n- ` + "`" + `ConnectionTypeWorkspaceApp` + "`" + `",
+                    "description": "WebInfo is only set when ` + "`" + `type` + "`" + ` is one of:\n- ` + "`" + `ConnectionTypePortForwarding` + "`" + `\n- ` + "`" + `ConnectionTypeWorkspaceApp` + "`" + `\n- ` + "`" + `ConnectionTypeTunnel` + "`" + `",
                     "allOf": [
                         {
                             "$ref": "#/definitions/codersdk.ConnectionLogWebInfo"
@@ -14890,11 +23523,11 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "status_code": {
-                    "description": "StatusCode is the HTTP status code of the request.",
+                    "description": "StatusCode is the HTTP status code or tunnel authorization outcome.",
                     "type": "integer"
                 },
                 "user": {
-                    "description": "User is omitted if the connection event was from an unauthenticated user.",
+                    "description": "User is omitted if the connection event was unauthenticated.",
                     "allOf": [
                         {
                             "$ref": "#/definitions/codersdk.User"
@@ -14914,7 +23547,8 @@ const docTemplate = `{
                 "jetbrains",
                 "reconnecting_pty",
                 "workspace_app",
-                "port_forwarding"
+                "port_forwarding",
+                "tunnel"
             ],
             "x-enum-varnames": [
                 "ConnectionTypeSSH",
@@ -14922,7 +23556,8 @@ const docTemplate = `{
                 "ConnectionTypeJetBrains",
                 "ConnectionTypeReconnectingPTY",
                 "ConnectionTypeWorkspaceApp",
-                "ConnectionTypePortForwarding"
+                "ConnectionTypePortForwarding",
+                "ConnectionTypeTunnel"
             ]
         },
         "codersdk.ConvertLoginRequest": {
@@ -14942,6 +23577,379 @@ const docTemplate = `{
                             "$ref": "#/definitions/codersdk.LoginType"
                         }
                     ]
+                }
+            }
+        },
+        "codersdk.CreateAIGatewayKeyRequest": {
+            "type": "object",
+            "required": [
+                "name"
+            ],
+            "properties": {
+                "name": {
+                    "type": "string"
+                }
+            }
+        },
+        "codersdk.CreateAIGatewayKeyResponse": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "key": {
+                    "type": "string"
+                },
+                "key_prefix": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                }
+            }
+        },
+        "codersdk.CreateAIProviderRequest": {
+            "type": "object",
+            "properties": {
+                "api_keys": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "base_url": {
+                    "type": "string"
+                },
+                "display_name": {
+                    "type": "string"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "icon": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "settings": {
+                    "$ref": "#/definitions/codersdk.AIProviderSettings"
+                },
+                "type": {
+                    "$ref": "#/definitions/codersdk.AIProviderType"
+                }
+            }
+        },
+        "codersdk.CreateChatAutomationRequest": {
+            "type": "object",
+            "properties": {
+                "kind": {
+                    "enum": [
+                        "webhook",
+                        "schedule"
+                    ],
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/codersdk.ChatAutomationKind"
+                        }
+                    ]
+                },
+                "name": {
+                    "type": "string"
+                },
+                "new_chat_model_config_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "prompt": {
+                    "type": "string"
+                },
+                "reasoning_effort": {
+                    "type": "string"
+                },
+                "schedule_cron": {
+                    "description": "ScheduleCron is a standard five-field cron expression. As in standard\ncron, when both day of month and day of week are restricted, a time\nmatches if either field matches.",
+                    "type": "string"
+                },
+                "schedule_time_zone": {
+                    "type": "string"
+                },
+                "target_chat_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "target_mode": {
+                    "enum": [
+                        "existing_chat",
+                        "new_chat"
+                    ],
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/codersdk.ChatAutomationTargetMode"
+                        }
+                    ]
+                },
+                "webhook_use": {
+                    "enum": [
+                        "single",
+                        "multi"
+                    ],
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/codersdk.ChatAutomationWebhookUse"
+                        }
+                    ]
+                },
+                "when_busy": {
+                    "enum": [
+                        "queue",
+                        "skip"
+                    ],
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/codersdk.ChatAutomationWhenBusy"
+                        }
+                    ]
+                }
+            }
+        },
+        "codersdk.CreateChatAutomationResponse": {
+            "type": "object",
+            "properties": {
+                "automation": {
+                    "$ref": "#/definitions/codersdk.ChatAutomation"
+                },
+                "webhook_secret": {
+                    "type": "string"
+                }
+            }
+        },
+        "codersdk.CreateChatMessageRequest": {
+            "type": "object",
+            "properties": {
+                "busy_behavior": {
+                    "enum": [
+                        "queue",
+                        "interrupt"
+                    ],
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/codersdk.ChatBusyBehavior"
+                        }
+                    ]
+                },
+                "content": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.ChatInputPart"
+                    }
+                },
+                "inline_mcp_servers": {
+                    "description": "InlineMCPServers replaces the inline MCP servers.\nnil: no change, empty: remove all.",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.InlineMCPServerRequest"
+                    }
+                },
+                "mcp_server_ids": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "format": "uuid"
+                    }
+                },
+                "model_config_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "plan_mode": {
+                    "description": "PlanMode switches the chat's persistent plan mode.\nnil: no change, ptr to \"plan\": enable, ptr to \"\": clear.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/codersdk.ChatPlanMode"
+                        }
+                    ]
+                },
+                "reasoning_effort": {
+                    "type": "string"
+                }
+            }
+        },
+        "codersdk.CreateChatMessageResponse": {
+            "type": "object",
+            "properties": {
+                "message": {
+                    "$ref": "#/definitions/codersdk.ChatMessage"
+                },
+                "messages": {
+                    "description": "Messages contains all user-visible messages inserted by the send, in\ninsertion order. A queued send on an errored chat may promote the\nprevious queue head, so clients must upsert the full batch.",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.ChatMessage"
+                    }
+                },
+                "queued": {
+                    "type": "boolean"
+                },
+                "queued_message": {
+                    "$ref": "#/definitions/codersdk.ChatQueuedMessage"
+                },
+                "warnings": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                }
+            }
+        },
+        "codersdk.CreateChatModelRequest": {
+            "type": "object",
+            "properties": {
+                "ai_provider_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "compression_threshold": {
+                    "type": "integer"
+                },
+                "context_limit": {
+                    "type": "integer"
+                },
+                "display_name": {
+                    "type": "string"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "is_default": {
+                    "type": "boolean"
+                },
+                "model": {
+                    "type": "string"
+                },
+                "model_config": {
+                    "$ref": "#/definitions/codersdk.ChatModelCallConfig"
+                }
+            }
+        },
+        "codersdk.CreateChatProjectMemoryRequest": {
+            "type": "object",
+            "required": [
+                "body",
+                "description",
+                "name"
+            ],
+            "properties": {
+                "body": {
+                    "type": "string"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                }
+            }
+        },
+        "codersdk.CreateChatProjectRequest": {
+            "type": "object",
+            "required": [
+                "name"
+            ],
+            "properties": {
+                "description": {
+                    "type": "string"
+                },
+                "icon": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                }
+            }
+        },
+        "codersdk.CreateChatRequest": {
+            "type": "object",
+            "properties": {
+                "client_type": {
+                    "$ref": "#/definitions/codersdk.ChatClientType"
+                },
+                "content": {
+                    "description": "Content is the initial user message. It is optional: when\nempty, the chat is created idle with no initial user message\nand generation starts with the first message POSTed to\n/chats/{chat}/messages.",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.ChatInputPart"
+                    }
+                },
+                "inline_mcp_servers": {
+                    "description": "InlineMCPServers declares MCP servers by value on this chat, next\nto the org-configured servers selected by MCPServerIDs. Experimental.",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.InlineMCPServerRequest"
+                    }
+                },
+                "labels": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string"
+                    }
+                },
+                "manage_automations_enabled": {
+                    "description": "ManageAutomationsEnabled offers the manage_automations tool to the\nchat's agent. Enabling it requires the chat-automations experiment\nfor the chat owner. Experimental.",
+                    "type": "boolean"
+                },
+                "mcp_server_ids": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "format": "uuid"
+                    }
+                },
+                "model_config_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "organization_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "owner_id": {
+                    "description": "OwnerID makes another user the chat owner. It defaults to the\ncaller. The chat runs with the owner's credentials, so setting it\nrequires site-wide authority over that user.",
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "plan_mode": {
+                    "$ref": "#/definitions/codersdk.ChatPlanMode"
+                },
+                "project_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "reasoning_effort": {
+                    "type": "string"
+                },
+                "system_prompt": {
+                    "type": "string"
+                },
+                "title": {
+                    "description": "Title, when set, is stored as the user title and automatic title\ngeneration does not run. It is trimmed and must then be non-empty\nand at most 200 Unicode code points (MaxChatTitleRunes), else the\nrequest fails with 400. When omitted, the title is derived from the\nfirst prompt and may later be replaced by a generated title.",
+                    "type": "string"
+                },
+                "unsafe_dynamic_tools": {
+                    "description": "UnsafeDynamicTools declares client-executed tools that the\nLLM can invoke. This API is highly experimental and highly\nsubject to change.",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.DynamicTool"
+                    }
+                },
+                "workspace_id": {
+                    "type": "string",
+                    "format": "uuid"
                 }
             }
         },
@@ -15046,6 +24054,119 @@ const docTemplate = `{
                 }
             }
         },
+        "codersdk.CreateMCPServerConfigRequest": {
+            "type": "object",
+            "required": [
+                "auth_type",
+                "availability",
+                "display_name",
+                "slug",
+                "transport",
+                "url"
+            ],
+            "properties": {
+                "allow_in_plan_mode": {
+                    "type": "boolean"
+                },
+                "api_key_header": {
+                    "type": "string"
+                },
+                "api_key_value": {
+                    "type": "string"
+                },
+                "auth_type": {
+                    "type": "string",
+                    "enum": [
+                        "none",
+                        "oauth2",
+                        "api_key",
+                        "custom_headers",
+                        "user_oidc"
+                    ]
+                },
+                "availability": {
+                    "type": "string",
+                    "enum": [
+                        "force_on",
+                        "default_on",
+                        "default_off"
+                    ]
+                },
+                "custom_headers": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string"
+                    }
+                },
+                "description": {
+                    "type": "string"
+                },
+                "display_name": {
+                    "type": "string"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "forward_coder_headers": {
+                    "description": "ForwardCoderHeaders, when true, forwards Coder identity\nheaders on every outgoing MCP request. See MCPServerConfig.",
+                    "type": "boolean"
+                },
+                "icon_url": {
+                    "type": "string"
+                },
+                "model_intent": {
+                    "type": "boolean"
+                },
+                "oauth2_auth_url": {
+                    "type": "string"
+                },
+                "oauth2_client_id": {
+                    "type": "string"
+                },
+                "oauth2_client_secret": {
+                    "type": "string"
+                },
+                "oauth2_revocation_url": {
+                    "description": "OAuth2RevocationURL is the provider's RFC 7009 revocation\nendpoint; auto-populated by OAuth2 discovery when omitted.",
+                    "type": "string"
+                },
+                "oauth2_scopes": {
+                    "type": "string"
+                },
+                "oauth2_token_url": {
+                    "type": "string"
+                },
+                "signing_secret": {
+                    "description": "SigningSecret signs forwarded identity headers and request bodies.\nConfigure the same secret on the MCP server. It is never returned.",
+                    "type": "string"
+                },
+                "slug": {
+                    "type": "string"
+                },
+                "tool_allow_list": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "tool_deny_list": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "transport": {
+                    "type": "string",
+                    "enum": [
+                        "streamable_http",
+                        "sse"
+                    ]
+                },
+                "url": {
+                    "type": "string"
+                }
+            }
+        },
         "codersdk.CreateOrganizationRequest": {
             "type": "object",
             "required": [
@@ -15075,28 +24196,6 @@ const docTemplate = `{
                 }
             }
         },
-        "codersdk.CreateTaskRequest": {
-            "type": "object",
-            "properties": {
-                "display_name": {
-                    "type": "string"
-                },
-                "input": {
-                    "type": "string"
-                },
-                "name": {
-                    "type": "string"
-                },
-                "template_version_id": {
-                    "type": "string",
-                    "format": "uuid"
-                },
-                "template_version_preset_id": {
-                    "type": "string",
-                    "format": "uuid"
-                }
-            }
-        },
         "codersdk.CreateTemplateRequest": {
             "type": "object",
             "required": [
@@ -15108,6 +24207,10 @@ const docTemplate = `{
                     "description": "ActivityBumpMillis allows optionally specifying the activity bump\nduration for all workspaces created from this template. Defaults to 1h\nbut can be set to 0 to disable activity bumping.",
                     "type": "integer"
                 },
+                "agents_allowed": {
+                    "description": "AgentsAllowed controls whether Coder Agents can create workspaces using\nthis template. Defaults to true.",
+                    "type": "boolean"
+                },
                 "allow_user_autostart": {
                     "description": "AllowUserAutostart allows users to set a schedule for autostarting their\nworkspace. By default this is true. This can only be disabled when using\nan enterprise license.",
                     "type": "boolean"
@@ -15118,6 +24221,10 @@ const docTemplate = `{
                 },
                 "allow_user_cancel_workspace_jobs": {
                     "description": "Allow users to cancel in-progress workspace jobs.\n*bool as the default value is \"true\".",
+                    "type": "boolean"
+                },
+                "allow_workspace_renames": {
+                    "description": "AllowWorkspaceRenames permits users to rename workspaces built from this\ntemplate. Renaming can be destructive for templates whose Terraform\nreferences the workspace name, so this defaults to false.",
                     "type": "boolean"
                 },
                 "autostart_requirement": {
@@ -15153,8 +24260,9 @@ const docTemplate = `{
                     "type": "integer"
                 },
                 "description": {
-                    "description": "Description is a description of what the template contains. It must be\nless than 128 bytes.",
-                    "type": "string"
+                    "description": "Description is a description of what the template contains. It must be\nno longer than 128 Unicode code points.",
+                    "type": "string",
+                    "maxLength": 128
                 },
                 "disable_everyone_group_access": {
                     "description": "DisableEveryoneGroupAccess allows optionally disabling the default\nbehavior of granting the 'everyone' group access to use the template.\nIf this is set to true, the template will not be available to all users,\nand must be explicitly granted to users or groups in the permissions settings\nof the template.",
@@ -15200,6 +24308,10 @@ const docTemplate = `{
                     "description": "VersionID is an in-progress or completed job to use as an initial version\nof the template.\n\nThis is required on creation to enable a user-flow of validating a\ntemplate works. There is no reason the data-model cannot support empty\ntemplates, but it doesn't make sense for users.",
                     "type": "string",
                     "format": "uuid"
+                },
+                "time_til_autostop_notify_ms": {
+                    "description": "TimeTilAutostopNotifyMillis allows optionally specifying the duration\nbefore the autostop deadline at which a reminder notification is sent for\nworkspaces created from this template. Defaults to 0 (disabled).",
+                    "type": "integer"
                 }
             }
         },
@@ -15379,7 +24491,86 @@ const docTemplate = `{
                 }
             }
         },
-        "codersdk.CreateUserRequestWithOrgs": {
+        "codersdk.CreateTrialLicenseRequest": {
+            "type": "object",
+            "required": [
+                "company_name",
+                "country",
+                "developers",
+                "email",
+                "first_name",
+                "job_title",
+                "last_name",
+                "phone_number"
+            ],
+            "properties": {
+                "attribution_id": {
+                    "description": "AttributionID is the ID of the cta_click funnel event that led here, so\nthat a signup can be joined back to the paywall that produced it.",
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "company_name": {
+                    "type": "string",
+                    "maxLength": 100,
+                    "minLength": 2,
+                    "example": "Acme Corp"
+                },
+                "country": {
+                    "type": "string",
+                    "example": "United States"
+                },
+                "developers": {
+                    "type": "string"
+                },
+                "email": {
+                    "type": "string",
+                    "format": "email",
+                    "maxLength": 254,
+                    "example": "jane.doe@example.com"
+                },
+                "first_name": {
+                    "type": "string",
+                    "maxLength": 60,
+                    "minLength": 1,
+                    "example": "Jane"
+                },
+                "job_title": {
+                    "type": "string",
+                    "maxLength": 100,
+                    "minLength": 2,
+                    "example": "Engineering Manager"
+                },
+                "last_name": {
+                    "type": "string",
+                    "maxLength": 60,
+                    "minLength": 1,
+                    "example": "Doe"
+                },
+                "phone_number": {
+                    "type": "string",
+                    "maxLength": 20,
+                    "minLength": 7,
+                    "example": "+14155552671"
+                },
+                "source": {
+                    "description": "Source is the premium paywall the request came from, for telemetry. It\nis not forwarded to the licensor. Omit it to report \"direct\".",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/codersdk.PremiumFunnelSource"
+                        }
+                    ]
+                }
+            }
+        },
+        "codersdk.CreateUserAIProviderKeyRequest": {
+            "type": "object",
+            "properties": {
+                "api_key": {
+                    "type": "string"
+                }
+            }
+        },
+        "codersdk.CreateUserRequest": {
             "type": "object",
             "required": [
                 "username"
@@ -15411,6 +24602,13 @@ const docTemplate = `{
                 "password": {
                     "type": "string"
                 },
+                "roles": {
+                    "description": "Roles is an optional list of site-level roles to assign at creation.",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
                 "service_account": {
                     "description": "Service accounts are admin-managed accounts that cannot login.",
                     "type": "boolean"
@@ -15434,6 +24632,9 @@ const docTemplate = `{
                 "description": {
                     "type": "string"
                 },
+                "enabled": {
+                    "type": "boolean"
+                },
                 "env_name": {
                     "type": "string"
                 },
@@ -15448,6 +24649,51 @@ const docTemplate = `{
                 }
             }
         },
+        "codersdk.CreateUserSkillRequest": {
+            "type": "object",
+            "properties": {
+                "content": {
+                    "description": "Content must be SKILL.md-format Markdown with YAML frontmatter. The\nfrontmatter must include name, may include description, and must be\nfollowed by a non-empty body.",
+                    "type": "string"
+                }
+            }
+        },
+        "codersdk.CreateWorkspaceBuildOnSuccessRequest": {
+            "type": "object",
+            "required": [
+                "transition"
+            ],
+            "properties": {
+                "rich_parameter_values": {
+                    "description": "RichParameterValues are applied to the child build. Parameters\nnot listed here fall back to their values from the previous\nbuild, matching normal build behavior.",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.WorkspaceBuildParameter"
+                    }
+                },
+                "template_version_id": {
+                    "description": "TemplateVersionID pins the child build to a specific template\nversion. Pinning requires permission to update the template,\nsince the active version may change before the child build\nruns. When empty, the child build uses the template's active\nversion at the time it runs.",
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "template_version_preset_id": {
+                    "description": "TemplateVersionPresetID selects a preset for the child build.\nIt requires TemplateVersionID to also be set.",
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "transition": {
+                    "description": "Transition must be \"start\". The parent build's transition must\nbe \"stop\".",
+                    "enum": [
+                        "start"
+                    ],
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/codersdk.WorkspaceTransition"
+                        }
+                    ]
+                }
+            }
+        },
         "codersdk.CreateWorkspaceBuildReason": {
             "type": "string",
             "enum": [
@@ -15455,18 +24701,14 @@ const docTemplate = `{
                 "cli",
                 "ssh_connection",
                 "vscode_connection",
-                "jetbrains_connection",
-                "task_manual_pause",
-                "task_resume"
+                "jetbrains_connection"
             ],
             "x-enum-varnames": [
                 "CreateWorkspaceBuildReasonDashboard",
                 "CreateWorkspaceBuildReasonCLI",
                 "CreateWorkspaceBuildReasonSSHConnection",
                 "CreateWorkspaceBuildReasonVSCodeConnection",
-                "CreateWorkspaceBuildReasonJetbrainsConnection",
-                "CreateWorkspaceBuildReasonTaskManualPause",
-                "CreateWorkspaceBuildReasonTaskResume"
+                "CreateWorkspaceBuildReasonJetbrainsConnection"
             ]
         },
         "codersdk.CreateWorkspaceBuildRequest": {
@@ -15489,6 +24731,14 @@ const docTemplate = `{
                         }
                     ]
                 },
+                "on_success": {
+                    "description": "OnSuccess queues a follow-up workspace build after this build succeeds.\nIt currently supports restarting a workspace by starting it after a\nsuccessful stop build.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/codersdk.CreateWorkspaceBuildOnSuccessRequest"
+                        }
+                    ]
+                },
                 "orphan": {
                     "description": "Orphan may be set for the Destroy transition.",
                     "type": "boolean"
@@ -15500,8 +24750,7 @@ const docTemplate = `{
                         "cli",
                         "ssh_connection",
                         "vscode_connection",
-                        "jetbrains_connection",
-                        "task_manual_pause"
+                        "jetbrains_connection"
                     ],
                     "allOf": [
                         {
@@ -15632,13 +24881,17 @@ const docTemplate = `{
                 "workspace_apps_api_key",
                 "workspace_apps_token",
                 "oidc_convert",
-                "tailnet_resume"
+                "chat_files_token",
+                "tailnet_resume",
+                "nats_ca"
             ],
             "x-enum-varnames": [
                 "CryptoKeyFeatureWorkspaceAppsAPIKey",
                 "CryptoKeyFeatureWorkspaceAppsToken",
                 "CryptoKeyFeatureOIDCConvert",
-                "CryptoKeyFeatureTailnetResume"
+                "CryptoKeyFeatureChatFilesToken",
+                "CryptoKeyFeatureTailnetResume",
+                "CryptoKeyFeatureNATSCA"
             ]
         },
         "codersdk.CustomNotificationContent": {
@@ -15903,6 +25156,7 @@ const docTemplate = `{
                     "$ref": "#/definitions/codersdk.AIConfig"
                 },
                 "allow_workspace_renames": {
+                    "description": "Deprecated: Use the per-template allow_workspace_renames setting instead.",
                     "type": "boolean"
                 },
                 "autobuild_poll_interval": {
@@ -15917,6 +25171,9 @@ const docTemplate = `{
                 "cli_upgrade_message": {
                     "type": "string"
                 },
+                "cluster": {
+                    "$ref": "#/definitions/codersdk.ClusterConfig"
+                },
                 "config": {
                     "type": "string"
                 },
@@ -15929,6 +25186,12 @@ const docTemplate = `{
                 "derp": {
                     "$ref": "#/definitions/codersdk.DERP"
                 },
+                "disable_chat_caller_supplied_tools": {
+                    "type": "boolean"
+                },
+                "disable_chat_sharing": {
+                    "type": "boolean"
+                },
                 "disable_owner_workspace_exec": {
                     "type": "boolean"
                 },
@@ -15938,11 +25201,20 @@ const docTemplate = `{
                 "disable_path_apps": {
                     "type": "boolean"
                 },
+                "disable_user_secret_file_path": {
+                    "type": "boolean"
+                },
+                "disable_workspace_agent_context_sync": {
+                    "type": "boolean"
+                },
                 "disable_workspace_sharing": {
                     "type": "boolean"
                 },
                 "docs_url": {
                     "$ref": "#/definitions/serpent.URL"
+                },
+                "dynamic_parameters_full_evaluation": {
+                    "type": "boolean"
                 },
                 "enable_authz_recording": {
                     "type": "boolean"
@@ -15974,9 +25246,6 @@ const docTemplate = `{
                 "healthcheck": {
                     "$ref": "#/definitions/codersdk.HealthcheckConfig"
                 },
-                "hide_ai_tasks": {
-                    "type": "boolean"
-                },
                 "http_address": {
                     "description": "HTTPAddress is a string because it may be set to zero to disable.",
                     "type": "string"
@@ -15989,6 +25258,12 @@ const docTemplate = `{
                 },
                 "logging": {
                     "$ref": "#/definitions/codersdk.LoggingConfig"
+                },
+                "mcp_allowed_private_cidrs": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 },
                 "metrics_cache_refresh_interval": {
                     "type": "integer"
@@ -16050,6 +25325,9 @@ const docTemplate = `{
                 "scim_api_key": {
                     "type": "string"
                 },
+                "scim_use_legacy": {
+                    "type": "boolean"
+                },
                 "session_lifetime": {
                     "$ref": "#/definitions/codersdk.SessionLifetime"
                 },
@@ -16076,6 +25354,9 @@ const docTemplate = `{
                 },
                 "telemetry": {
                     "$ref": "#/definitions/codersdk.TelemetryConfig"
+                },
+                "template_builder": {
+                    "$ref": "#/definitions/codersdk.TemplateBuilderConfig"
                 },
                 "terms_of_service_url": {
                     "type": "string"
@@ -16134,6 +25415,17 @@ const docTemplate = `{
                 "DiagnosticSeverityWarning"
             ]
         },
+        "codersdk.DiffStatusRef": {
+            "type": "object",
+            "properties": {
+                "git_branch": {
+                    "type": "string"
+                },
+                "remote_origin": {
+                    "type": "string"
+                }
+            }
+        },
         "codersdk.DisplayApp": {
             "type": "string",
             "enum": [
@@ -16187,6 +25479,79 @@ const docTemplate = `{
                     "type": "array",
                     "items": {
                         "$ref": "#/definitions/codersdk.PreviewParameter"
+                    }
+                }
+            }
+        },
+        "codersdk.DynamicTool": {
+            "type": "object",
+            "properties": {
+                "description": {
+                    "type": "string"
+                },
+                "input_schema": {
+                    "description": "InputSchema's JSON key \"input_schema\" uses snake_case for\nSDK consistency, deviating from the camelCase \"inputSchema\"\nconvention used by MCP.",
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "name": {
+                    "type": "string"
+                }
+            }
+        },
+        "codersdk.EditChatMessageRequest": {
+            "type": "object",
+            "properties": {
+                "content": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.ChatInputPart"
+                    }
+                },
+                "mcp_server_ids": {
+                    "description": "MCPServerIDs, when set, replaces the chat's MCP server selection\nbefore the replacement turn runs. When nil the current selection\nis preserved.",
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "format": "uuid"
+                    }
+                },
+                "model_config_id": {
+                    "description": "ModelConfigID, when set, overrides the model used for the\nreplacement user message and the assistant turn that follows.\nWhen nil the original message's model is preserved.",
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "reasoning_effort": {
+                    "type": "string"
+                }
+            }
+        },
+        "codersdk.EditChatMessageResponse": {
+            "type": "object",
+            "properties": {
+                "deleted_message_ids": {
+                    "description": "DeletedMessageIDs holds the IDs of previously visible messages the\nedit removed, including stale hook notices from the edited turn.\nClients should drop them from local caches.",
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "message": {
+                    "$ref": "#/definitions/codersdk.ChatMessage"
+                },
+                "messages": {
+                    "description": "Messages holds every user-visible message inserted by the edit, in\ninsertion order. Hook-generated suffix messages may follow Message,\nso clients must upsert the full batch.",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.ChatMessage"
+                    }
+                },
+                "warnings": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
                     }
                 }
             }
@@ -16247,19 +25612,41 @@ const docTemplate = `{
                 "auto-fill-parameters",
                 "notifications",
                 "workspace-usage",
-                "oauth2",
-                "agents",
                 "mcp-server-http",
-                "workspace-build-updates"
+                "mcp-tool-search",
+                "workspace-build-updates",
+                "no_nats_pubsub",
+                "workspace-capable-licensing",
+                "ai-gateway-seat-exclusion",
+                "ai-gateway-reverse-proxy",
+                "chat-projects",
+                "chat-advisor",
+                "chat-virtual-desktop",
+                "agent-lifecycle-hooks",
+                "chat-inline-mcp-servers",
+                "enable-ai-workspace-debug",
+                "chat-stage-metrics",
+                "chat-automations"
             ],
             "x-enum-comments": {
-                "ExperimentAgents": "Enables agent-powered chat functionality.",
+                "ExperimentAIGatewayReverseProxy": "Uses stateless reverse proxy routing when MCP injection is not configured.",
+                "ExperimentAIGatewaySeatExclusion": "Excludes AI Gateway (AI Bridge) usage from AI Governance seat consumption.",
+                "ExperimentAgentLifecycleHooks": "Enables chat lifecycle hook webhooks for agent chats.",
                 "ExperimentAutoFillParameters": "This should not be taken out of experiments until we have redesigned the feature.",
+                "ExperimentChatAdvisor": "Enables the advisor tool for root agent chats.",
+                "ExperimentChatAutomations": "Enables webhook and scheduled automations that deliver prompts to agent chats.",
+                "ExperimentChatInlineMCPServers": "Enables inline MCP servers declared on POST /chats.",
+                "ExperimentChatProjects": "Enables organization-scoped projects that group agent chats.",
+                "ExperimentChatStageMetrics": "Exposes chat lifecycle stage durations as Prometheus metrics.",
+                "ExperimentChatVirtualDesktop": "Enables virtual desktop and computer use provider for agents.",
+                "ExperimentEnableAIWorkspaceDebug": "Enables debugging failed workspace builds with Coder Agents.",
                 "ExperimentExample": "This isn't used for anything.",
                 "ExperimentMCPServerHTTP": "Enables the MCP HTTP server functionality.",
+                "ExperimentMCPToolSearch": "Defers MCP tool schemas behind a searchable catalog in agent chats.",
+                "ExperimentNoNATSPubsub": "Disables the embedded NATS pubsub, falling back to PostgreSQL pubsub.",
                 "ExperimentNotifications": "Sends notifications via SMTP and webhooks following certain events.",
-                "ExperimentOAuth2": "Enables OAuth2 provider functionality.",
                 "ExperimentWorkspaceBuildUpdates": "Enables publishing workspace build updates to the all builds pubsub channel.",
+                "ExperimentWorkspaceCapableLicensing": "Counts only users holding the workspace-create permission toward the license seat limit.",
                 "ExperimentWorkspaceUsage": "Enables the new workspace usage tracking."
             },
             "x-enum-descriptions": [
@@ -16267,20 +25654,107 @@ const docTemplate = `{
                 "This should not be taken out of experiments until we have redesigned the feature.",
                 "Sends notifications via SMTP and webhooks following certain events.",
                 "Enables the new workspace usage tracking.",
-                "Enables OAuth2 provider functionality.",
-                "Enables agent-powered chat functionality.",
                 "Enables the MCP HTTP server functionality.",
-                "Enables publishing workspace build updates to the all builds pubsub channel."
+                "Defers MCP tool schemas behind a searchable catalog in agent chats.",
+                "Enables publishing workspace build updates to the all builds pubsub channel.",
+                "Disables the embedded NATS pubsub, falling back to PostgreSQL pubsub.",
+                "Counts only users holding the workspace-create permission toward the license seat limit.",
+                "Excludes AI Gateway (AI Bridge) usage from AI Governance seat consumption.",
+                "Uses stateless reverse proxy routing when MCP injection is not configured.",
+                "Enables organization-scoped projects that group agent chats.",
+                "Enables the advisor tool for root agent chats.",
+                "Enables virtual desktop and computer use provider for agents.",
+                "Enables chat lifecycle hook webhooks for agent chats.",
+                "Enables inline MCP servers declared on POST /chats.",
+                "Enables debugging failed workspace builds with Coder Agents.",
+                "Exposes chat lifecycle stage durations as Prometheus metrics.",
+                "Enables webhook and scheduled automations that deliver prompts to agent chats."
             ],
             "x-enum-varnames": [
                 "ExperimentExample",
                 "ExperimentAutoFillParameters",
                 "ExperimentNotifications",
                 "ExperimentWorkspaceUsage",
-                "ExperimentOAuth2",
-                "ExperimentAgents",
                 "ExperimentMCPServerHTTP",
-                "ExperimentWorkspaceBuildUpdates"
+                "ExperimentMCPToolSearch",
+                "ExperimentWorkspaceBuildUpdates",
+                "ExperimentNoNATSPubsub",
+                "ExperimentWorkspaceCapableLicensing",
+                "ExperimentAIGatewaySeatExclusion",
+                "ExperimentAIGatewayReverseProxy",
+                "ExperimentChatProjects",
+                "ExperimentChatAdvisor",
+                "ExperimentChatVirtualDesktop",
+                "ExperimentAgentLifecycleHooks",
+                "ExperimentChatInlineMCPServers",
+                "ExperimentEnableAIWorkspaceDebug",
+                "ExperimentChatStageMetrics",
+                "ExperimentChatAutomations"
+            ]
+        },
+        "codersdk.ExperimentRule": {
+            "type": "object",
+            "properties": {
+                "condition": {
+                    "description": "Condition is the CEL expression of a condition rule.",
+                    "type": "string"
+                },
+                "mode": {
+                    "description": "Mode is one of the ExperimentRuleMode values, or empty when the\nstored rule is malformed. A malformed rule decides off until it is\nreplaced. It is a plain string so that clients can represent the\nmalformed state.",
+                    "type": "string"
+                },
+                "revision": {
+                    "description": "Revision increases on every change and starts at 1. Zero means the\nstored rule has no readable positive revision, so it is malformed.",
+                    "type": "integer"
+                },
+                "updated_at": {
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "updated_by": {
+                    "type": "string",
+                    "format": "uuid"
+                }
+            }
+        },
+        "codersdk.ExperimentRuleEntry": {
+            "type": "object",
+            "properties": {
+                "experiment": {
+                    "description": "Experiment is the experiment name. Ignored entries can name\nexperiments this version does not know, so it is a plain string.",
+                    "type": "string"
+                },
+                "ignored": {
+                    "description": "Ignored is true for a stored rule of an experiment that does not\naccept runtime rules. Such a rule has no effect.",
+                    "type": "boolean"
+                },
+                "rule": {
+                    "description": "Rule is null when no rule was ever stored.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/codersdk.ExperimentRule"
+                        }
+                    ]
+                },
+                "static_default": {
+                    "description": "StaticDefault reports whether the experiment is in the startup\n--experiments list of the replica that answered.",
+                    "type": "boolean"
+                }
+            }
+        },
+        "codersdk.ExperimentRuleMode": {
+            "type": "string",
+            "enum": [
+                "inherit",
+                "on",
+                "off",
+                "condition"
+            ],
+            "x-enum-varnames": [
+                "ExperimentRuleModeInherit",
+                "ExperimentRuleModeOn",
+                "ExperimentRuleModeOff",
+                "ExperimentRuleModeCondition"
             ]
         },
         "codersdk.ExternalAPIKeyScopes": {
@@ -16418,8 +25892,12 @@ const docTemplate = `{
                 "no_refresh": {
                     "type": "boolean"
                 },
+                "redirect_url": {
+                    "description": "RedirectURL is optional, defaulting to 'ACCESS_URL'. Only useful in niche\nsituations where the OAuth callback domain is different from the ACCESS_URL\ndomain. The path component is ignored.",
+                    "type": "string"
+                },
                 "regex": {
-                    "description": "Regex allows API requesters to match an auth config by\na string (e.g. coder.com) instead of by it's type.\n\nGit clone makes use of this by parsing the URL from:\n'Username for \"https://github.com\":'\nAnd sending it to the Coder server to match against the Regex.",
+                    "description": "Regex allows API requesters to match an auth config by\na string (e.g. coder.com) instead of by it's type.\n\nGit clone makes use of this by parsing the URL from:\n'Username for \"https://github.com\":'\nAnd sending it to the control plane to match against the Regex.",
                     "type": "string"
                 },
                 "revoke_url": {
@@ -16516,6 +25994,11 @@ const docTemplate = `{
             "type": "object",
             "properties": {
                 "actual": {
+                    "description": "Actual is the usage measured against Limit, when known: a\npoint-in-time count for most features, or usage accumulated over\nUsagePeriod for features that set one. Its unit matches Limit's;\nFeatureAgentRuntimeHours reports whole hours floored from the\nrecorded milliseconds, with the precise value available in\nActualMs. FeatureAgentRuntimeHours usage can trail by roughly one\nhour because the current hour is not emitted, plus the entitlement\nrefresh interval.",
+                    "type": "integer"
+                },
+                "actual_ms": {
+                    "description": "ActualMs is the precise usage backing Actual, in milliseconds, for\nfeatures measured in time. It has the same freshness as Actual.\nOnly FeatureAgentRuntimeHours sets this field.",
                     "type": "integer"
                 },
                 "enabled": {
@@ -16524,11 +26007,20 @@ const docTemplate = `{
                 "entitlement": {
                     "$ref": "#/definitions/codersdk.Entitlement"
                 },
+                "hard_limit": {
+                    "description": "HardLimit is the enforcement threshold that accompanies Limit for\nfeatures whose license carries it. See SoftLimit for the set of\nfeatures that use these thresholds.",
+                    "type": "integer"
+                },
                 "limit": {
+                    "description": "Limit is the maximum value the license grants for the feature, in the\nfeature's own unit. For FeatureAgentRuntimeHours, an enabled feature\nwith Limit omitted means the license grants unlimited runtime hours.",
+                    "type": "integer"
+                },
+                "soft_limit": {
+                    "description": "SoftLimit is the advisory warning threshold that accompanies Limit for\nfeatures whose license carries it. For these features, Limit carries\nthe purchased allocation; an unlimited allocation has no thresholds,\nso SoftLimit is omitted alongside the omitted Limit. Only\nFeatureAgentRuntimeHours sets this field.",
                     "type": "integer"
                 },
                 "usage_period": {
-                    "description": "UsagePeriod denotes that the usage is a counter that accumulates over\nthis period (and most likely resets with the issuance of the next\nlicense).\n\nThese dates are determined from the license that this entitlement comes\nfrom, see enterprise/coderd/license/license.go.\n\nOnly certain features set these fields:\n- FeatureManagedAgentLimit",
+                    "description": "UsagePeriod denotes that the usage is a counter that accumulates over\nthis period (and most likely resets with the issuance of the next\nlicense). These dates are determined from the license that this\nentitlement comes from, see enterprise/coderd/license/license.go.\nOnly FeatureManagedAgentLimit and FeatureAgentRuntimeHours set this\nfield.",
                     "allOf": [
                         {
                             "$ref": "#/definitions/codersdk.UsagePeriod"
@@ -16678,6 +26170,112 @@ const docTemplate = `{
                 }
             }
         },
+        "codersdk.GroupAIBudget": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "group_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "spend_limit_micros": {
+                    "type": "integer"
+                },
+                "updated_at": {
+                    "type": "string",
+                    "format": "date-time"
+                }
+            }
+        },
+        "codersdk.GroupAISpend": {
+            "type": "object",
+            "properties": {
+                "current_spend_micros": {
+                    "description": "CurrentSpendMicros is the group's spend over the current budget period.",
+                    "type": "integer"
+                },
+                "group_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "period_end": {
+                    "description": "PeriodEnd is the exclusive upper bound of the current budget\nperiod.",
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "period_start": {
+                    "description": "PeriodStart is the inclusive lower bound of the current budget\nperiod.",
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "spend_limit_micros": {
+                    "description": "SpendLimitMicros is the group's configured AI spend budget per member.\nNull when the group has no configured budget.",
+                    "type": "integer"
+                },
+                "total_spend_limit_micros": {
+                    "description": "TotalSpendLimitMicros is the currently configured combined budget of the\nmembers attributed to this group, with each member's override replacing\ntheir share. Null when the group has no budget, and zero when no members\nare attributed to it.",
+                    "type": "integer"
+                }
+            }
+        },
+        "codersdk.GroupMemberAISpend": {
+            "type": "object",
+            "properties": {
+                "effective_budget": {
+                    "description": "EffectiveBudget is the spend limit that currently applies to the user.\nNull when no budget applies or the effective group belongs to a different\norganization than the queried group.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/codersdk.AIBudgetLimit"
+                        }
+                    ]
+                },
+                "effective_group_id": {
+                    "description": "EffectiveGroupID is the user's effective budget group within the queried\ngroup's organization, falling back to the Everyone group when no budget\napplies. Null when the effective group belongs to a different organization\nthan the queried group.",
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "group_budget": {
+                    "description": "GroupBudget is the budget when the queried group is this user's\neffective budget source. When populated, it matches EffectiveBudget. Null\nwhen the user's budget resolves to another group or no budget applies.\nDeprecated: Use EffectiveBudget instead.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/codersdk.AIBudgetLimit"
+                        }
+                    ]
+                },
+                "group_spend_micros": {
+                    "description": "GroupSpendMicros is the user's spend attributed to the queried group\nover the current budget period.",
+                    "type": "integer"
+                },
+                "user_id": {
+                    "type": "string",
+                    "format": "uuid"
+                }
+            }
+        },
+        "codersdk.GroupMembersAISpend": {
+            "type": "object",
+            "properties": {
+                "members": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.GroupMemberAISpend"
+                    }
+                },
+                "period_end": {
+                    "description": "PeriodEnd is the exclusive upper bound of the current budget\nperiod.",
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "period_start": {
+                    "description": "PeriodStart is the inclusive lower bound of the current budget\nperiod.",
+                    "type": "string",
+                    "format": "date-time"
+                }
+            }
+        },
         "codersdk.GroupMembersResponse": {
             "type": "object",
             "properties": {
@@ -16783,6 +26381,21 @@ const docTemplate = `{
                 }
             }
         },
+        "codersdk.ImportUserSecretsRequest": {
+            "type": "object",
+            "required": [
+                "content",
+                "format"
+            ],
+            "properties": {
+                "content": {
+                    "type": "string"
+                },
+                "format": {
+                    "$ref": "#/definitions/codersdk.SecretsFileFormat"
+                }
+            }
+        },
         "codersdk.InboxNotification": {
             "type": "object",
             "properties": {
@@ -16834,6 +26447,86 @@ const docTemplate = `{
             "properties": {
                 "label": {
                     "type": "string"
+                },
+                "url": {
+                    "type": "string"
+                }
+            }
+        },
+        "codersdk.InlineMCPServer": {
+            "type": "object",
+            "properties": {
+                "allow_in_subagents": {
+                    "type": "boolean"
+                },
+                "created_at": {
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "forward_coder_headers": {
+                    "type": "boolean"
+                },
+                "has_custom_headers": {
+                    "type": "boolean"
+                },
+                "id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "slug": {
+                    "type": "string"
+                },
+                "tool_allow_list": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "tool_deny_list": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "updated_at": {
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "url": {
+                    "description": "URL is empty unless the chat owner makes the request.",
+                    "type": "string"
+                }
+            }
+        },
+        "codersdk.InlineMCPServerRequest": {
+            "type": "object",
+            "properties": {
+                "allow_in_subagents": {
+                    "type": "boolean"
+                },
+                "forward_coder_headers": {
+                    "type": "boolean"
+                },
+                "headers": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string"
+                    }
+                },
+                "slug": {
+                    "type": "string"
+                },
+                "tool_allow_list": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "tool_deny_list": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 },
                 "url": {
                     "type": "string"
@@ -16904,10 +26597,12 @@ const docTemplate = `{
         "codersdk.JobErrorCode": {
             "type": "string",
             "enum": [
-                "REQUIRED_TEMPLATE_VARIABLES"
+                "REQUIRED_TEMPLATE_VARIABLES",
+                "INSUFFICIENT_QUOTA"
             ],
             "x-enum-varnames": [
-                "RequiredTemplateVariables"
+                "RequiredTemplateVariables",
+                "InsufficientQuota"
             ]
         },
         "codersdk.License": {
@@ -17063,6 +26758,243 @@ const docTemplate = `{
             "properties": {
                 "session_token": {
                     "type": "string"
+                }
+            }
+        },
+        "codersdk.MCPServerConfig": {
+            "type": "object",
+            "properties": {
+                "allow_in_plan_mode": {
+                    "type": "boolean"
+                },
+                "api_key_header": {
+                    "description": "API key fields (only populated for admins).",
+                    "type": "string"
+                },
+                "auth_connected": {
+                    "description": "Per-user state (populated for non-admin requests).",
+                    "type": "boolean"
+                },
+                "auth_type": {
+                    "description": "\"none\", \"oauth2\", \"api_key\", \"custom_headers\", \"user_oidc\"",
+                    "type": "string"
+                },
+                "availability": {
+                    "description": "Availability policy set by admin.",
+                    "type": "string"
+                },
+                "created_at": {
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "display_name": {
+                    "type": "string"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "forward_coder_headers": {
+                    "description": "ForwardCoderHeaders forwards the same Coder identity headers we\nsend to LLM providers (X-Coder-Owner-Id, X-Coder-Chat-Id, and the\noptional X-Coder-Subchat-Id and X-Coder-Workspace-Id) to this\nMCP server on every request. Off by default to avoid leaking\nchat identity to third-party servers.",
+                    "type": "boolean"
+                },
+                "has_api_key": {
+                    "type": "boolean"
+                },
+                "has_custom_headers": {
+                    "type": "boolean"
+                },
+                "has_oauth2_secret": {
+                    "type": "boolean"
+                },
+                "has_signing_secret": {
+                    "type": "boolean"
+                },
+                "icon_url": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "model_intent": {
+                    "type": "boolean"
+                },
+                "oauth2_auth_url": {
+                    "type": "string"
+                },
+                "oauth2_client_id": {
+                    "description": "OAuth2 fields (only populated for admins).",
+                    "type": "string"
+                },
+                "oauth2_revocation_url": {
+                    "type": "string"
+                },
+                "oauth2_scopes": {
+                    "type": "string"
+                },
+                "oauth2_token_url": {
+                    "type": "string"
+                },
+                "organization_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "slug": {
+                    "type": "string"
+                },
+                "tool_allow_list": {
+                    "description": "Tool governance.",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "tool_deny_list": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "transport": {
+                    "description": "\"streamable_http\" or \"sse\"",
+                    "type": "string"
+                },
+                "updated_at": {
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "url": {
+                    "type": "string"
+                }
+            }
+        },
+        "codersdk.MCPServerConfigACL": {
+            "type": "object",
+            "properties": {
+                "groups": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.MCPServerConfigGroup"
+                    }
+                },
+                "users": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.MCPServerConfigUser"
+                    }
+                }
+            }
+        },
+        "codersdk.MCPServerConfigGroup": {
+            "type": "object",
+            "properties": {
+                "avatar_url": {
+                    "type": "string",
+                    "format": "uri"
+                },
+                "display_name": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "members": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.ReducedUser"
+                    }
+                },
+                "name": {
+                    "type": "string"
+                },
+                "organization_display_name": {
+                    "type": "string"
+                },
+                "organization_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "organization_name": {
+                    "type": "string"
+                },
+                "quota_allowance": {
+                    "type": "integer"
+                },
+                "role": {
+                    "enum": [
+                        "read"
+                    ],
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/codersdk.MCPServerConfigRole"
+                        }
+                    ]
+                },
+                "source": {
+                    "$ref": "#/definitions/codersdk.GroupSource"
+                },
+                "total_member_count": {
+                    "description": "How many members are in this group. Shows the total count,\neven if the user is not authorized to read group member details.\nMay be greater than ` + "`" + `len(Group.Members)` + "`" + `.",
+                    "type": "integer"
+                }
+            }
+        },
+        "codersdk.MCPServerConfigRole": {
+            "type": "string",
+            "enum": [
+                "read",
+                ""
+            ],
+            "x-enum-varnames": [
+                "MCPServerConfigRoleRead",
+                "MCPServerConfigRoleDeleted"
+            ]
+        },
+        "codersdk.MCPServerConfigUser": {
+            "type": "object",
+            "required": [
+                "id",
+                "username"
+            ],
+            "properties": {
+                "avatar_url": {
+                    "type": "string",
+                    "format": "uri"
+                },
+                "id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "role": {
+                    "enum": [
+                        "read"
+                    ],
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/codersdk.MCPServerConfigRole"
+                        }
+                    ]
+                },
+                "username": {
+                    "type": "string"
+                }
+            }
+        },
+        "codersdk.MCPServerOAuth2DisconnectResponse": {
+            "type": "object",
+            "properties": {
+                "token_revocation_error": {
+                    "type": "string"
+                },
+                "token_revoked": {
+                    "type": "boolean"
                 }
             }
         },
@@ -17673,13 +27605,72 @@ const docTemplate = `{
                 }
             }
         },
+        "codersdk.OAuth2ClientType": {
+            "type": "string",
+            "enum": [
+                "confidential",
+                "public"
+            ],
+            "x-enum-varnames": [
+                "OAuth2ClientTypeConfidential",
+                "OAuth2ClientTypePublic"
+            ]
+        },
         "codersdk.OAuth2Config": {
             "type": "object",
             "properties": {
                 "github": {
                     "$ref": "#/definitions/codersdk.OAuth2GithubConfig"
+                },
+                "provider": {
+                    "$ref": "#/definitions/codersdk.OAuth2ProviderConfig"
                 }
             }
+        },
+        "codersdk.OAuth2Error": {
+            "type": "object",
+            "properties": {
+                "error": {
+                    "$ref": "#/definitions/codersdk.OAuth2ErrorCode"
+                },
+                "error_description": {
+                    "type": "string"
+                },
+                "error_uri": {
+                    "type": "string"
+                }
+            }
+        },
+        "codersdk.OAuth2ErrorCode": {
+            "type": "string",
+            "enum": [
+                "invalid_request",
+                "invalid_client",
+                "invalid_grant",
+                "unauthorized_client",
+                "unsupported_grant_type",
+                "invalid_scope",
+                "access_denied",
+                "unsupported_response_type",
+                "server_error",
+                "temporarily_unavailable",
+                "unsupported_token_type",
+                "invalid_target"
+            ],
+            "x-enum-varnames": [
+                "OAuth2ErrorCodeInvalidRequest",
+                "OAuth2ErrorCodeInvalidClient",
+                "OAuth2ErrorCodeInvalidGrant",
+                "OAuth2ErrorCodeUnauthorizedClient",
+                "OAuth2ErrorCodeUnsupportedGrantType",
+                "OAuth2ErrorCodeInvalidScope",
+                "OAuth2ErrorCodeAccessDenied",
+                "OAuth2ErrorCodeUnsupportedResponseType",
+                "OAuth2ErrorCodeServerError",
+                "OAuth2ErrorCodeTemporarilyUnavailable",
+                "OAuth2ErrorCodeUnsupportedTokenType",
+                "OAuth2ErrorCodeInvalidTarget"
+            ]
         },
         "codersdk.OAuth2GithubConfig": {
             "type": "object",
@@ -17760,7 +27751,20 @@ const docTemplate = `{
             "type": "object",
             "properties": {
                 "callback_url": {
+                    "description": "Deprecated: equal to the first entry of redirect_uris. Read\nredirect_uris instead.",
                     "type": "string"
+                },
+                "client_type": {
+                    "description": "ClientType is \"confidential\" or \"public\".",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/codersdk.OAuth2ClientType"
+                        }
+                    ]
+                },
+                "dynamically_registered": {
+                    "description": "DynamicallyRegistered is true when the app registered itself through\nDynamic Client Registration rather than being created by an admin.",
+                    "type": "boolean"
                 },
                 "endpoints": {
                     "description": "Endpoints are included in the app response for easier discovery. The OAuth2\nspec does not have a defined place to find these (for comparison, OIDC has\na '/.well-known/openid-configuration' endpoint).",
@@ -17778,6 +27782,17 @@ const docTemplate = `{
                     "format": "uuid"
                 },
                 "name": {
+                    "type": "string"
+                },
+                "redirect_uris": {
+                    "description": "RedirectURIs are the app's registered redirect URIs, primary first.",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "scope": {
+                    "description": "Scope is the space-separated list of scopes this app's tokens may be\ngranted. Empty means unrestricted. A non-empty value with no names is a\nconfigured allowlist that grants nothing.",
                     "type": "string"
                 }
             }
@@ -17809,6 +27824,14 @@ const docTemplate = `{
                 }
             }
         },
+        "codersdk.OAuth2ProviderConfig": {
+            "type": "object",
+            "properties": {
+                "enable": {
+                    "type": "boolean"
+                }
+            }
+        },
         "codersdk.OAuth2ProviderGrantType": {
             "type": "string",
             "enum": [
@@ -17837,6 +27860,14 @@ const docTemplate = `{
                 "OAuth2ProviderResponseTypeToken"
             ]
         },
+        "codersdk.OAuth2ProviderSettings": {
+            "type": "object",
+            "properties": {
+                "dynamic_client_registration_enabled": {
+                    "type": "boolean"
+                }
+            }
+        },
         "codersdk.OAuth2TokenEndpointAuthMethod": {
             "type": "string",
             "enum": [
@@ -17848,6 +27879,42 @@ const docTemplate = `{
                 "OAuth2TokenEndpointAuthMethodClientSecretBasic",
                 "OAuth2TokenEndpointAuthMethodClientSecretPost",
                 "OAuth2TokenEndpointAuthMethodNone"
+            ]
+        },
+        "codersdk.OAuth2TokenResponse": {
+            "type": "object",
+            "properties": {
+                "access_token": {
+                    "type": "string"
+                },
+                "expires_in": {
+                    "type": "integer"
+                },
+                "expiry": {
+                    "description": "Expiry is not part of RFC 6749 but is included for compatibility with\ngolang.org/x/oauth2.Token and clients that expect a timestamp.",
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "refresh_token": {
+                    "type": "string"
+                },
+                "scope": {
+                    "type": "string"
+                },
+                "token_type": {
+                    "$ref": "#/definitions/codersdk.OAuth2TokenType"
+                }
+            }
+        },
+        "codersdk.OAuth2TokenType": {
+            "type": "string",
+            "enum": [
+                "Bearer",
+                "DPoP"
+            ],
+            "x-enum-varnames": [
+                "OAuth2TokenTypeBearer",
+                "OAuth2TokenTypeDPoP"
             ]
         },
         "codersdk.OAuthConversionResponse": {
@@ -17902,6 +27969,9 @@ const docTemplate = `{
                 "auth_url_params": {
                     "type": "object"
                 },
+                "auto_repair_links": {
+                    "type": "boolean"
+                },
                 "client_cert_file": {
                     "type": "string"
                 },
@@ -17920,6 +27990,10 @@ const docTemplate = `{
                     "items": {
                         "type": "string"
                     }
+                },
+                "email_fallback": {
+                    "description": "EmailFallback allows OIDC logins to fall back to email-based matching\nwhen the ` + "`" + `linked_id` + "`" + ` (issuer+subject) does not match an existing user\nlink. INSECURE: weakens the linked_id check. It exists for IdP\nbrokers that do not issue a stable ` + "`" + `sub` + "`" + ` for the same user across\nconnections.",
+                    "type": "boolean"
                 },
                 "email_field": {
                     "type": "string"
@@ -17967,8 +28041,15 @@ const docTemplate = `{
                 "organization_mapping": {
                     "type": "object"
                 },
+                "redirect_allowed_hosts": {
+                    "description": "RedirectAllowedHosts is an allowlist of hostnames that may be used as\nthe host of the OIDC redirect_uri. When non-empty, the redirect_uri is\nconstructed from the incoming request's Host header (validated against\nthis list) instead of from AccessURL. Every listed host must also be\nregistered as a valid redirect URI in the OIDC provider. This setting\nis mutually exclusive with RedirectURL: if RedirectURL is set, this\nallowlist is ignored.",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
                 "redirect_url": {
-                    "description": "RedirectURL is optional, defaulting to 'ACCESS_URL'. Only useful in niche\nsituations where the OIDC callback domain is different from the ACCESS_URL\ndomain.",
+                    "description": "RedirectURL is optional, defaulting to 'ACCESS_URL'. Only useful in niche\nsituations where the OIDC callback domain is different from the ACCESS_URL\ndomain. The path component is ignored.",
                     "allOf": [
                         {
                             "$ref": "#/definitions/serpent.URL"
@@ -18039,6 +28120,13 @@ const docTemplate = `{
                     "type": "string",
                     "format": "date-time"
                 },
+                "default_org_member_roles": {
+                    "description": "DefaultOrgMemberRoles are unioned into every member's effective\nroles at request time. Changes propagate to all members on the\nnext request.",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
                 "description": {
                     "type": "string"
                 },
@@ -18059,6 +28147,173 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "updated_at": {
+                    "type": "string",
+                    "format": "date-time"
+                }
+            }
+        },
+        "codersdk.OrganizationAISpendReport": {
+            "type": "object",
+            "properties": {
+                "count": {
+                    "description": "Count is the number of users with token usage matching the filter.",
+                    "type": "integer"
+                },
+                "period_end": {
+                    "description": "PeriodEnd is the exclusive upper bound of the current budget\nperiod.",
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "period_start": {
+                    "description": "PeriodStart is the inclusive lower bound of the current budget\nperiod.",
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "retention_start": {
+                    "description": "RetentionStart is the oldest instant for which token usage is still\nretained. An explicit period must not start before it. Omitted when the\ndeployment does not purge AI Gateway data.",
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "totals": {
+                    "$ref": "#/definitions/codersdk.OrganizationAISpendTotals"
+                },
+                "users": {
+                    "description": "Users is the requested page, most expensive first.",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.OrganizationAISpendUser"
+                    }
+                }
+            }
+        },
+        "codersdk.OrganizationAISpendTotals": {
+            "type": "object",
+            "properties": {
+                "cost_micros": {
+                    "description": "CostMicros is the priced spend of every matching user.",
+                    "type": "integer"
+                },
+                "unpriced_usage_count": {
+                    "description": "UnpricedUsageCount is the number of token usage records without a cost\nacross every matching user.",
+                    "type": "integer"
+                }
+            }
+        },
+        "codersdk.OrganizationAISpendUser": {
+            "type": "object",
+            "properties": {
+                "avatar_url": {
+                    "type": "string"
+                },
+                "clients": {
+                    "description": "Clients are the clients the user spent through, sorted. Usage without a\nrecorded client is reported as Unknown.",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "cost_micros": {
+                    "description": "CostMicros is the user's priced spend over the period.",
+                    "type": "integer"
+                },
+                "models": {
+                    "description": "Models are the models the user spent through, sorted.",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "name": {
+                    "type": "string"
+                },
+                "providers": {
+                    "description": "Providers are the provider types the user spent through, sorted.",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "unpriced_usage_count": {
+                    "description": "UnpricedUsageCount is the number of the user's token usage records that\ncarry no cost because their model had no price when they were recorded.",
+                    "type": "integer"
+                },
+                "user_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "username": {
+                    "type": "string"
+                }
+            }
+        },
+        "codersdk.OrganizationChatModelsResponse": {
+            "type": "object",
+            "properties": {
+                "models": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.ChatModel"
+                    }
+                },
+                "providers": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.ChatModelProviderDescriptor"
+                    }
+                },
+                "unsupported_providers": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.ChatUnsupportedProvider"
+                    }
+                }
+            }
+        },
+        "codersdk.OrganizationChatSystemPromptResponse": {
+            "type": "object",
+            "properties": {
+                "system_prompt": {
+                    "type": "string"
+                }
+            }
+        },
+        "codersdk.OrganizationGroupAISpend": {
+            "type": "object",
+            "properties": {
+                "current_spend_micros": {
+                    "description": "CurrentSpendMicros is the group's spend over the current budget period.",
+                    "type": "integer"
+                },
+                "group_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "spend_limit_micros": {
+                    "description": "SpendLimitMicros is the group's configured AI spend budget per member.\nNull when the group has no configured budget.",
+                    "type": "integer"
+                },
+                "total_spend_limit_micros": {
+                    "description": "TotalSpendLimitMicros is the currently configured combined budget of the\nmembers attributed to this group, with each member's override replacing\ntheir share. Null when the group has no budget, and zero when no members\nare attributed to it.",
+                    "type": "integer"
+                }
+            }
+        },
+        "codersdk.OrganizationGroupsAISpend": {
+            "type": "object",
+            "properties": {
+                "groups": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.OrganizationGroupAISpend"
+                    }
+                },
+                "period_end": {
+                    "description": "PeriodEnd is the exclusive upper bound of the current budget\nperiod.",
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "period_start": {
+                    "description": "PeriodStart is the inclusive lower bound of the current budget\nperiod.",
                     "type": "string",
                     "format": "date-time"
                 }
@@ -18192,188 +28447,56 @@ const docTemplate = `{
                 }
             }
         },
-        "codersdk.PRInsightsModelBreakdown": {
+        "codersdk.PaginatedGroup": {
             "type": "object",
             "properties": {
-                "cost_per_merged_pr_micros": {
-                    "type": "integer"
+                "avatar_url": {
+                    "type": "string",
+                    "format": "uri"
                 },
                 "display_name": {
                     "type": "string"
                 },
-                "merge_rate": {
-                    "type": "number"
-                },
-                "merged_prs": {
-                    "type": "integer"
-                },
-                "model_config_id": {
+                "id": {
                     "type": "string",
                     "format": "uuid"
                 },
-                "provider": {
+                "name": {
                     "type": "string"
                 },
-                "total_additions": {
-                    "type": "integer"
-                },
-                "total_cost_micros": {
-                    "type": "integer"
-                },
-                "total_deletions": {
-                    "type": "integer"
-                },
-                "total_prs": {
-                    "type": "integer"
-                }
-            }
-        },
-        "codersdk.PRInsightsPullRequest": {
-            "type": "object",
-            "properties": {
-                "additions": {
-                    "type": "integer"
-                },
-                "approved": {
-                    "type": "boolean"
-                },
-                "author_avatar_url": {
+                "organization_display_name": {
                     "type": "string"
                 },
-                "author_login": {
-                    "type": "string"
-                },
-                "base_branch": {
-                    "type": "string"
-                },
-                "changed_files": {
-                    "type": "integer"
-                },
-                "changes_requested": {
-                    "type": "boolean"
-                },
-                "chat_id": {
+                "organization_id": {
                     "type": "string",
                     "format": "uuid"
                 },
-                "commits": {
-                    "type": "integer"
-                },
-                "cost_micros": {
-                    "type": "integer"
-                },
-                "created_at": {
-                    "type": "string",
-                    "format": "date-time"
-                },
-                "deletions": {
-                    "type": "integer"
-                },
-                "draft": {
-                    "type": "boolean"
-                },
-                "model_display_name": {
+                "organization_name": {
                     "type": "string"
                 },
-                "pr_number": {
+                "quota_allowance": {
                     "type": "integer"
                 },
-                "pr_title": {
-                    "type": "string"
+                "source": {
+                    "$ref": "#/definitions/codersdk.GroupSource"
                 },
-                "pr_url": {
-                    "type": "string"
-                },
-                "reviewer_count": {
-                    "type": "integer"
-                },
-                "state": {
-                    "type": "string"
-                }
-            }
-        },
-        "codersdk.PRInsightsResponse": {
-            "type": "object",
-            "properties": {
-                "by_model": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/codersdk.PRInsightsModelBreakdown"
-                    }
-                },
-                "recent_prs": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/codersdk.PRInsightsPullRequest"
-                    }
-                },
-                "summary": {
-                    "$ref": "#/definitions/codersdk.PRInsightsSummary"
-                },
-                "time_series": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/codersdk.PRInsightsTimeSeriesEntry"
-                    }
-                }
-            }
-        },
-        "codersdk.PRInsightsSummary": {
-            "type": "object",
-            "properties": {
-                "approval_rate": {
-                    "type": "number"
-                },
-                "cost_per_merged_pr_micros": {
-                    "type": "integer"
-                },
-                "merge_rate": {
-                    "type": "number"
-                },
-                "prev_cost_per_merged_pr_micros": {
-                    "type": "integer"
-                },
-                "prev_merge_rate": {
-                    "type": "number"
-                },
-                "prev_total_prs_created": {
-                    "type": "integer"
-                },
-                "prev_total_prs_merged": {
-                    "type": "integer"
-                },
-                "total_additions": {
-                    "type": "integer"
-                },
-                "total_cost_micros": {
-                    "type": "integer"
-                },
-                "total_deletions": {
-                    "type": "integer"
-                },
-                "total_prs_created": {
-                    "type": "integer"
-                },
-                "total_prs_merged": {
+                "total_member_count": {
+                    "description": "TotalMemberCount is the number of members in the group, shown even when\nthe caller cannot read individual members. The roster itself is not\nreturned by this endpoint.",
                     "type": "integer"
                 }
             }
         },
-        "codersdk.PRInsightsTimeSeriesEntry": {
+        "codersdk.PaginatedGroupsResponse": {
             "type": "object",
             "properties": {
-                "date": {
-                    "type": "string",
-                    "format": "date-time"
-                },
-                "prs_closed": {
+                "count": {
                     "type": "integer"
                 },
-                "prs_created": {
-                    "type": "integer"
-                },
-                "prs_merged": {
-                    "type": "integer"
+                "groups": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.PaginatedGroup"
+                    }
                 }
             }
         },
@@ -18631,14 +28754,6 @@ const docTemplate = `{
                 }
             }
         },
-        "codersdk.PauseTaskResponse": {
-            "type": "object",
-            "properties": {
-                "workspace_build": {
-                    "$ref": "#/definitions/codersdk.WorkspaceBuild"
-                }
-            }
-        },
         "codersdk.Permission": {
             "type": "object",
             "properties": {
@@ -18657,17 +28772,28 @@ const docTemplate = `{
         "codersdk.PostOAuth2ProviderAppRequest": {
             "type": "object",
             "required": [
-                "callback_url",
                 "name"
             ],
             "properties": {
                 "callback_url": {
+                    "description": "Deprecated: send redirect_uris instead. If both are sent, callback_url\nmust equal the first entry of redirect_uris.",
                     "type": "string"
                 },
                 "icon": {
                     "type": "string"
                 },
                 "name": {
+                    "type": "string"
+                },
+                "redirect_uris": {
+                    "description": "RedirectURIs is the ordered list of URIs the app may redirect to. The\nfirst entry is the primary. Required, unless the deprecated\ncallback_url is sent instead.",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "scope": {
+                    "description": "Scope is the space-separated list of scopes this app's tokens may be\ngranted. Leave empty, or omit, for unrestricted.",
                     "type": "string"
                 }
             }
@@ -18680,7 +28806,8 @@ const docTemplate = `{
                     "format": "uuid"
                 },
                 "app_name": {
-                    "$ref": "#/definitions/codersdk.UsageAppName"
+                    "description": "AppName is any name for the app reporting usage. The server normalizes\nit at ingestion, so a new app needs no server change. The UsageAppName\nconstants are the well-known names.",
+                    "type": "string"
                 }
             }
         },
@@ -18723,6 +28850,87 @@ const docTemplate = `{
                     "type": "boolean"
                 }
             }
+        },
+        "codersdk.PremiumFunnelEventRequest": {
+            "type": "object",
+            "required": [
+                "id",
+                "source",
+                "variant"
+            ],
+            "properties": {
+                "id": {
+                    "description": "ID identifies this click, and doubles as the attribution token that a\nlater trial signup reports.",
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "source": {
+                    "$ref": "#/definitions/codersdk.PremiumFunnelSource"
+                },
+                "variant": {
+                    "$ref": "#/definitions/codersdk.PremiumFunnelVariant"
+                }
+            }
+        },
+        "codersdk.PremiumFunnelSource": {
+            "type": "string",
+            "enum": [
+                "aibridge_session_threads",
+                "aibridge_sessions",
+                "ai_gateway_keys",
+                "ai_governance",
+                "appearance",
+                "audit_log",
+                "browser_only",
+                "connection_log",
+                "custom_roles",
+                "external_auth",
+                "groups",
+                "idp_org_sync",
+                "idp_sync",
+                "multiple_organizations",
+                "observability",
+                "provisioner_keys",
+                "provisioners",
+                "template_permissions",
+                "workspace_proxies",
+                "direct"
+            ],
+            "x-enum-varnames": [
+                "PremiumFunnelSourceAIBridgeSessionThreads",
+                "PremiumFunnelSourceAIBridgeSessions",
+                "PremiumFunnelSourceAIGatewayKeys",
+                "PremiumFunnelSourceAIGovernance",
+                "PremiumFunnelSourceAppearance",
+                "PremiumFunnelSourceAuditLog",
+                "PremiumFunnelSourceBrowserOnly",
+                "PremiumFunnelSourceConnectionLog",
+                "PremiumFunnelSourceCustomRoles",
+                "PremiumFunnelSourceExternalAuth",
+                "PremiumFunnelSourceGroups",
+                "PremiumFunnelSourceIdpOrgSync",
+                "PremiumFunnelSourceIdpSync",
+                "PremiumFunnelSourceMultipleOrganizations",
+                "PremiumFunnelSourceObservability",
+                "PremiumFunnelSourceProvisionerKeys",
+                "PremiumFunnelSourceProvisioners",
+                "PremiumFunnelSourceTemplatePermissions",
+                "PremiumFunnelSourceWorkspaceProxies",
+                "PremiumFunnelSourceDirect"
+            ]
+        },
+        "codersdk.PremiumFunnelVariant": {
+            "type": "string",
+            "enum": [
+                "premium",
+                "small",
+                "ai_governance"
+            ],
+            "x-enum-varnames": [
+                "PremiumFunnelVariantPremium",
+                "PremiumFunnelVariantSmall",
+                "PremiumFunnelVariantAIGovernance"
+            ]
         },
         "codersdk.Preset": {
             "type": "object",
@@ -18905,6 +29113,14 @@ const docTemplate = `{
                 }
             }
         },
+        "codersdk.ProposeChatTitleResponse": {
+            "type": "object",
+            "properties": {
+                "title": {
+                    "type": "string"
+                }
+            }
+        },
         "codersdk.ProvisionerConfig": {
             "type": "object",
             "properties": {
@@ -18926,6 +29142,10 @@ const docTemplate = `{
                 "daemons": {
                     "description": "Daemons is the number of built-in terraform provisioners.",
                     "type": "integer"
+                },
+                "disable_module_cache": {
+                    "description": "DisableModuleCache disables the reuse of Terraform modules cached at\ntemplate import for every template in the deployment. Templates cannot\nopt back in.",
+                    "type": "boolean"
                 },
                 "force_cancel_interval": {
                     "type": "integer"
@@ -19073,7 +29293,8 @@ const docTemplate = `{
                 },
                 "error_code": {
                     "enum": [
-                        "REQUIRED_TEMPLATE_VARIABLES"
+                        "REQUIRED_TEMPLATE_VARIABLES",
+                        "INSUFFICIENT_QUOTA"
                     ],
                     "allOf": [
                         {
@@ -19389,6 +29610,32 @@ const docTemplate = `{
                 "ProxyUnregistered"
             ]
         },
+        "codersdk.PutExperimentRuleRequest": {
+            "type": "object",
+            "properties": {
+                "condition": {
+                    "description": "Condition is required for the condition mode and must be empty\notherwise.",
+                    "type": "string"
+                },
+                "expected_revision": {
+                    "description": "ExpectedRevision must equal the current revision of the stored rule,\nor zero when no rule is stored or the stored rule has no readable\npositive revision. A different revision fails with 409 Conflict.",
+                    "type": "integer"
+                },
+                "mode": {
+                    "enum": [
+                        "inherit",
+                        "on",
+                        "off",
+                        "condition"
+                    ],
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/codersdk.ExperimentRuleMode"
+                        }
+                    ]
+                }
+            }
+        },
         "codersdk.PutExtendWorkspaceRequest": {
             "type": "object",
             "required": [
@@ -19404,17 +29651,29 @@ const docTemplate = `{
         "codersdk.PutOAuth2ProviderAppRequest": {
             "type": "object",
             "required": [
-                "callback_url",
                 "name"
             ],
             "properties": {
                 "callback_url": {
+                    "description": "Deprecated: send redirect_uris instead. If both are sent, callback_url\nmust equal the first entry of redirect_uris.",
                     "type": "string"
                 },
                 "icon": {
+                    "description": "Icon replaces the app's stored icon. Omitting it clears the stored\nicon rather than leaving it unchanged.",
                     "type": "string"
                 },
                 "name": {
+                    "type": "string"
+                },
+                "redirect_uris": {
+                    "description": "RedirectURIs is the ordered list of URIs the app may redirect to. The\nfirst entry is the primary. Omit both this and callback_url to keep the\nstored redirect URIs. Other fields are replaced. Sending an empty list\nis an error, not a way to keep the stored list.",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "scope": {
+                    "description": "Scope replaces the app's current allowlist. Omit to leave the existing\nallowlist untouched. Set to an empty string to clear it, making the app\nunrestricted.",
                     "type": "string"
                 }
             }
@@ -19466,13 +29725,22 @@ const docTemplate = `{
             "type": "string",
             "enum": [
                 "*",
+                "ai_gateway_key",
+                "ai_model_price",
+                "ai_provider",
+                "ai_seat",
                 "aibridge_interception",
                 "api_key",
                 "assign_org_role",
                 "assign_role",
                 "audit_log",
+                "boundary_log",
                 "boundary_usage",
                 "chat",
+                "chat_automation",
+                "chat_model_config",
+                "chat_project",
+                "chat_project_memory",
                 "connection_log",
                 "crypto_key",
                 "debug_info",
@@ -19484,6 +29752,7 @@ const docTemplate = `{
                 "idpsync_settings",
                 "inbox_notification",
                 "license",
+                "mcp_server_config",
                 "notification_message",
                 "notification_preference",
                 "notification_template",
@@ -19498,27 +29767,37 @@ const docTemplate = `{
                 "replicas",
                 "system",
                 "tailnet_coordinator",
-                "task",
                 "template",
                 "usage_event",
                 "user",
                 "user_secret",
+                "user_skill",
                 "webpush_subscription",
                 "workspace",
                 "workspace_agent_devcontainers",
                 "workspace_agent_resource_monitor",
+                "workspace_build_orchestration",
                 "workspace_dormant",
                 "workspace_proxy"
             ],
             "x-enum-varnames": [
                 "ResourceWildcard",
+                "ResourceAIGatewayKey",
+                "ResourceAiModelPrice",
+                "ResourceAIProvider",
+                "ResourceAiSeat",
                 "ResourceAibridgeInterception",
                 "ResourceApiKey",
                 "ResourceAssignOrgRole",
                 "ResourceAssignRole",
                 "ResourceAuditLog",
+                "ResourceBoundaryLog",
                 "ResourceBoundaryUsage",
                 "ResourceChat",
+                "ResourceChatAutomation",
+                "ResourceChatModelConfig",
+                "ResourceChatProject",
+                "ResourceChatProjectMemory",
                 "ResourceConnectionLog",
                 "ResourceCryptoKey",
                 "ResourceDebugInfo",
@@ -19530,6 +29809,7 @@ const docTemplate = `{
                 "ResourceIdpsyncSettings",
                 "ResourceInboxNotification",
                 "ResourceLicense",
+                "ResourceMCPServerConfig",
                 "ResourceNotificationMessage",
                 "ResourceNotificationPreference",
                 "ResourceNotificationTemplate",
@@ -19544,15 +29824,16 @@ const docTemplate = `{
                 "ResourceReplicas",
                 "ResourceSystem",
                 "ResourceTailnetCoordinator",
-                "ResourceTask",
                 "ResourceTemplate",
                 "ResourceUsageEvent",
                 "ResourceUser",
                 "ResourceUserSecret",
+                "ResourceUserSkill",
                 "ResourceWebpushSubscription",
                 "ResourceWorkspace",
                 "ResourceWorkspaceAgentDevcontainers",
                 "ResourceWorkspaceAgentResourceMonitor",
+                "ResourceWorkspaceBuildOrchestration",
                 "ResourceWorkspaceDormant",
                 "ResourceWorkspaceProxy"
             ]
@@ -19752,6 +30033,7 @@ const docTemplate = `{
                 "health_settings",
                 "notifications_settings",
                 "prebuilds_settings",
+                "oauth2_provider_settings",
                 "workspace_proxy",
                 "organization",
                 "oauth2_provider_app",
@@ -19766,7 +30048,23 @@ const docTemplate = `{
                 "workspace_app",
                 "task",
                 "ai_seat",
-                "chat"
+                "ai_provider",
+                "ai_provider_key",
+                "ai_gateway_key",
+                "group_ai_budget",
+                "user_ai_budget_override",
+                "chat",
+                "chat_project",
+                "chat_project_memory",
+                "mcp_server_config",
+                "chat_model_config",
+                "chat_automation",
+                "user_secret",
+                "user_skill",
+                "chat_instruction_settings",
+                "chat_operational_settings",
+                "chat_organization_system_prompt",
+                "experiment_rule"
             ],
             "x-enum-varnames": [
                 "ResourceTypeTemplate",
@@ -19782,6 +30080,7 @@ const docTemplate = `{
                 "ResourceTypeHealthSettings",
                 "ResourceTypeNotificationsSettings",
                 "ResourceTypePrebuildsSettings",
+                "ResourceTypeOAuth2ProviderSettings",
                 "ResourceTypeWorkspaceProxy",
                 "ResourceTypeOrganization",
                 "ResourceTypeOAuth2ProviderApp",
@@ -19796,7 +30095,23 @@ const docTemplate = `{
                 "ResourceTypeWorkspaceApp",
                 "ResourceTypeTask",
                 "ResourceTypeAISeat",
-                "ResourceTypeChat"
+                "ResourceTypeAIProvider",
+                "ResourceTypeAIProviderKey",
+                "ResourceTypeAIGatewayKey",
+                "ResourceTypeGroupAIBudget",
+                "ResourceTypeUserAIBudgetOverride",
+                "ResourceTypeChat",
+                "ResourceTypeChatProject",
+                "ResourceTypeChatProjectMemory",
+                "ResourceTypeMCPServerConfig",
+                "ResourceTypeChatModelConfig",
+                "ResourceTypeChatAutomation",
+                "ResourceTypeUserSecret",
+                "ResourceTypeUserSkill",
+                "ResourceTypeChatInstructionSettings",
+                "ResourceTypeChatOperationalSettings",
+                "ResourceTypeChatOrganizationSystemPrompt",
+                "ResourceTypeExperimentRule"
             ]
         },
         "codersdk.Response": {
@@ -19819,14 +30134,6 @@ const docTemplate = `{
                 }
             }
         },
-        "codersdk.ResumeTaskResponse": {
-            "type": "object",
-            "properties": {
-                "workspace_build": {
-                    "$ref": "#/definitions/codersdk.WorkspaceBuild"
-                }
-            }
-        },
         "codersdk.RetentionConfig": {
             "type": "object",
             "properties": {
@@ -19836,6 +30143,10 @@ const docTemplate = `{
                 },
                 "audit_logs": {
                     "description": "AuditLogs controls how long audit log entries are retained.\nSet to 0 to disable (keep indefinitely).",
+                    "type": "integer"
+                },
+                "boundary_logs": {
+                    "description": "BoundaryLogs controls how long boundary audit log entries are\nretained. Boundary logs record every HTTP request processed by\na Boundary confinement proxy. Set to 0 to disable automatic\ndeletion (keep indefinitely). Adjust to match your\norganization's regulatory requirements.",
                     "type": "integer"
                 },
                 "connection_logs": {
@@ -19908,6 +30219,17 @@ const docTemplate = `{
                 }
             }
         },
+        "codersdk.RotateChatAutomationSecretResponse": {
+            "type": "object",
+            "properties": {
+                "webhook_secret": {
+                    "type": "string"
+                },
+                "webhook_secret_version": {
+                    "type": "integer"
+                }
+            }
+        },
         "codersdk.SSHConfig": {
             "type": "object",
             "properties": {
@@ -19943,6 +30265,19 @@ const docTemplate = `{
                 }
             }
         },
+        "codersdk.SecretsFileFormat": {
+            "type": "string",
+            "enum": [
+                "env",
+                "json",
+                "yaml"
+            ],
+            "x-enum-varnames": [
+                "SecretsFileFormatEnv",
+                "SecretsFileFormatJSON",
+                "SecretsFileFormatYAML"
+            ]
+        },
         "codersdk.ServerSentEvent": {
             "type": "object",
             "properties": {
@@ -19965,19 +30300,54 @@ const docTemplate = `{
                 "ServerSentEventTypeError"
             ]
         },
+        "codersdk.SessionCountApp": {
+            "type": "object",
+            "properties": {
+                "count": {
+                    "type": "integer"
+                },
+                "display_name": {
+                    "description": "DisplayName is the registry's name for a known app, otherwise the\nnormalized identifier itself.",
+                    "type": "string"
+                },
+                "family": {
+                    "description": "Family is the group this app totals under.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/codersdk.AppFamilyName"
+                        }
+                    ]
+                },
+                "icon": {
+                    "description": "Icon is a bundled path under /icon/, empty if the app has none.",
+                    "type": "string"
+                }
+            }
+        },
         "codersdk.SessionCountDeploymentStats": {
             "type": "object",
             "properties": {
+                "apps": {
+                    "description": "Apps holds one entry per reported app name, each carrying the family it\ntotals under. The fields below duplicate those totals for one release.",
+                    "type": "object",
+                    "additionalProperties": {
+                        "$ref": "#/definitions/codersdk.SessionCountApp"
+                    }
+                },
                 "jetbrains": {
+                    "description": "Deprecated: total Apps by Family instead.",
                     "type": "integer"
                 },
                 "reconnecting_pty": {
+                    "description": "Deprecated: total Apps by Family instead.",
                     "type": "integer"
                 },
                 "ssh": {
+                    "description": "Deprecated: total Apps by Family instead.",
                     "type": "integer"
                 },
                 "vscode": {
+                    "description": "Deprecated: total Apps by Family instead.",
                     "type": "integer"
                 }
             }
@@ -20087,6 +30457,17 @@ const docTemplate = `{
                 }
             }
         },
+        "codersdk.SubmitToolResultsRequest": {
+            "type": "object",
+            "properties": {
+                "results": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.ToolResult"
+                    }
+                }
+            }
+        },
         "codersdk.SupportConfig": {
             "type": "object",
             "properties": {
@@ -20153,256 +30534,6 @@ const docTemplate = `{
                 }
             }
         },
-        "codersdk.Task": {
-            "type": "object",
-            "properties": {
-                "created_at": {
-                    "type": "string",
-                    "format": "date-time"
-                },
-                "current_state": {
-                    "$ref": "#/definitions/codersdk.TaskStateEntry"
-                },
-                "display_name": {
-                    "type": "string"
-                },
-                "id": {
-                    "type": "string",
-                    "format": "uuid"
-                },
-                "initial_prompt": {
-                    "type": "string"
-                },
-                "name": {
-                    "type": "string"
-                },
-                "organization_id": {
-                    "type": "string",
-                    "format": "uuid"
-                },
-                "owner_avatar_url": {
-                    "type": "string"
-                },
-                "owner_id": {
-                    "type": "string",
-                    "format": "uuid"
-                },
-                "owner_name": {
-                    "type": "string"
-                },
-                "status": {
-                    "enum": [
-                        "pending",
-                        "initializing",
-                        "active",
-                        "paused",
-                        "unknown",
-                        "error"
-                    ],
-                    "allOf": [
-                        {
-                            "$ref": "#/definitions/codersdk.TaskStatus"
-                        }
-                    ]
-                },
-                "template_display_name": {
-                    "type": "string"
-                },
-                "template_icon": {
-                    "type": "string"
-                },
-                "template_id": {
-                    "type": "string",
-                    "format": "uuid"
-                },
-                "template_name": {
-                    "type": "string"
-                },
-                "template_version_id": {
-                    "type": "string",
-                    "format": "uuid"
-                },
-                "updated_at": {
-                    "type": "string",
-                    "format": "date-time"
-                },
-                "workspace_agent_health": {
-                    "$ref": "#/definitions/codersdk.WorkspaceAgentHealth"
-                },
-                "workspace_agent_id": {
-                    "format": "uuid",
-                    "allOf": [
-                        {
-                            "$ref": "#/definitions/uuid.NullUUID"
-                        }
-                    ]
-                },
-                "workspace_agent_lifecycle": {
-                    "$ref": "#/definitions/codersdk.WorkspaceAgentLifecycle"
-                },
-                "workspace_app_id": {
-                    "format": "uuid",
-                    "allOf": [
-                        {
-                            "$ref": "#/definitions/uuid.NullUUID"
-                        }
-                    ]
-                },
-                "workspace_build_number": {
-                    "type": "integer"
-                },
-                "workspace_id": {
-                    "format": "uuid",
-                    "allOf": [
-                        {
-                            "$ref": "#/definitions/uuid.NullUUID"
-                        }
-                    ]
-                },
-                "workspace_name": {
-                    "type": "string"
-                },
-                "workspace_status": {
-                    "enum": [
-                        "pending",
-                        "starting",
-                        "running",
-                        "stopping",
-                        "stopped",
-                        "failed",
-                        "canceling",
-                        "canceled",
-                        "deleting",
-                        "deleted"
-                    ],
-                    "allOf": [
-                        {
-                            "$ref": "#/definitions/codersdk.WorkspaceStatus"
-                        }
-                    ]
-                }
-            }
-        },
-        "codersdk.TaskLogEntry": {
-            "type": "object",
-            "properties": {
-                "content": {
-                    "type": "string"
-                },
-                "id": {
-                    "type": "integer"
-                },
-                "time": {
-                    "type": "string",
-                    "format": "date-time"
-                },
-                "type": {
-                    "$ref": "#/definitions/codersdk.TaskLogType"
-                }
-            }
-        },
-        "codersdk.TaskLogType": {
-            "type": "string",
-            "enum": [
-                "input",
-                "output"
-            ],
-            "x-enum-varnames": [
-                "TaskLogTypeInput",
-                "TaskLogTypeOutput"
-            ]
-        },
-        "codersdk.TaskLogsResponse": {
-            "type": "object",
-            "properties": {
-                "logs": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/codersdk.TaskLogEntry"
-                    }
-                },
-                "snapshot": {
-                    "type": "boolean"
-                },
-                "snapshot_at": {
-                    "type": "string"
-                }
-            }
-        },
-        "codersdk.TaskSendRequest": {
-            "type": "object",
-            "properties": {
-                "input": {
-                    "type": "string"
-                }
-            }
-        },
-        "codersdk.TaskState": {
-            "type": "string",
-            "enum": [
-                "working",
-                "idle",
-                "complete",
-                "failed"
-            ],
-            "x-enum-varnames": [
-                "TaskStateWorking",
-                "TaskStateIdle",
-                "TaskStateComplete",
-                "TaskStateFailed"
-            ]
-        },
-        "codersdk.TaskStateEntry": {
-            "type": "object",
-            "properties": {
-                "message": {
-                    "type": "string"
-                },
-                "state": {
-                    "$ref": "#/definitions/codersdk.TaskState"
-                },
-                "timestamp": {
-                    "type": "string",
-                    "format": "date-time"
-                },
-                "uri": {
-                    "type": "string"
-                }
-            }
-        },
-        "codersdk.TaskStatus": {
-            "type": "string",
-            "enum": [
-                "pending",
-                "initializing",
-                "active",
-                "paused",
-                "unknown",
-                "error"
-            ],
-            "x-enum-varnames": [
-                "TaskStatusPending",
-                "TaskStatusInitializing",
-                "TaskStatusActive",
-                "TaskStatusPaused",
-                "TaskStatusUnknown",
-                "TaskStatusError"
-            ]
-        },
-        "codersdk.TasksListResponse": {
-            "type": "object",
-            "properties": {
-                "count": {
-                    "type": "integer"
-                },
-                "tasks": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/codersdk.Task"
-                    }
-                }
-            }
-        },
         "codersdk.TelemetryConfig": {
             "type": "object",
             "properties": {
@@ -20431,6 +30562,9 @@ const docTemplate = `{
                 "activity_bump_ms": {
                     "type": "integer"
                 },
+                "agents_allowed": {
+                    "type": "boolean"
+                },
                 "allow_user_autostart": {
                     "description": "AllowUserAutostart and AllowUserAutostop are enterprise-only. Their\nvalues are only used if your license is entitled to use the advanced\ntemplate scheduling feature.",
                     "type": "boolean"
@@ -20439,6 +30573,10 @@ const docTemplate = `{
                     "type": "boolean"
                 },
                 "allow_user_cancel_workspace_jobs": {
+                    "type": "boolean"
+                },
+                "allow_workspace_renames": {
+                    "description": "AllowWorkspaceRenames permits users to rename workspaces built from this\ntemplate. Renaming can be destructive for templates whose Terraform\nreferences the workspace name.",
                     "type": "boolean"
                 },
                 "autostart_requirement": {
@@ -20485,7 +30623,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "disable_module_cache": {
-                    "description": "DisableModuleCache disables the use of cached Terraform modules during\nprovisioning.",
+                    "description": "DisableModuleCache disables the use of cached Terraform modules during\nprovisioning for this template. It is read-only while\nModuleCacheDisabledByDeployment is true.",
                     "type": "boolean"
                 },
                 "display_name": {
@@ -20504,6 +30642,10 @@ const docTemplate = `{
                 },
                 "max_port_share_level": {
                     "$ref": "#/definitions/codersdk.WorkspaceAgentPortShareLevel"
+                },
+                "module_cache_disabled_by_deployment": {
+                    "description": "ModuleCacheDisabledByDeployment reports that the deployment disables the\nTerraform module cache for every template. Templates cannot opt back in,\nso the effective state is disabled regardless of DisableModuleCache.",
+                    "type": "boolean"
                 },
                 "name": {
                     "type": "string"
@@ -20531,6 +30673,10 @@ const docTemplate = `{
                 "require_active_version": {
                     "description": "RequireActiveVersion mandates that workspaces are built with the active\ntemplate version.",
                     "type": "boolean"
+                },
+                "time_til_autostop_notify_ms": {
+                    "description": "TimeTilAutostopNotifyMillis is the duration before the workspace's\nautostop deadline at which a reminder notification is sent. 0 disables\nthe notification.",
+                    "type": "integer"
                 },
                 "time_til_dormant_autodelete_ms": {
                     "type": "integer"
@@ -20665,6 +30811,317 @@ const docTemplate = `{
             "additionalProperties": {
                 "$ref": "#/definitions/codersdk.TransitionStats"
             }
+        },
+        "codersdk.TemplateBuilderBase": {
+            "type": "object",
+            "properties": {
+                "agents": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.TemplateBuilderBaseAgent"
+                    }
+                },
+                "description": {
+                    "type": "string"
+                },
+                "icon": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "os": {
+                    "type": "string"
+                },
+                "prerequisites": {
+                    "type": "string"
+                },
+                "variables": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.TemplateBuilderModuleVariable"
+                    }
+                }
+            }
+        },
+        "codersdk.TemplateBuilderBaseAgent": {
+            "type": "object",
+            "properties": {
+                "default": {
+                    "description": "Default reports whether modules attach to this agent when they do not\nname one.",
+                    "type": "boolean"
+                },
+                "display_name": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                }
+            }
+        },
+        "codersdk.TemplateBuilderBasesResponse": {
+            "type": "object",
+            "properties": {
+                "bases": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.TemplateBuilderBase"
+                    }
+                }
+            }
+        },
+        "codersdk.TemplateBuilderComposeModule": {
+            "type": "object",
+            "properties": {
+                "agent_name": {
+                    "description": "AgentName targets a base coder_agent by name. Empty uses the base default.",
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "variables": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string"
+                    }
+                }
+            }
+        },
+        "codersdk.TemplateBuilderComposeRequest": {
+            "type": "object",
+            "properties": {
+                "base_template_id": {
+                    "type": "string"
+                },
+                "base_variable_values": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string"
+                    }
+                },
+                "modules": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.TemplateBuilderComposeModule"
+                    }
+                }
+            }
+        },
+        "codersdk.TemplateBuilderConfig": {
+            "type": "object",
+            "properties": {
+                "disabled": {
+                    "type": "boolean"
+                },
+                "registry_url": {
+                    "type": "string"
+                }
+            }
+        },
+        "codersdk.TemplateBuilderCreateTemplateRequest": {
+            "type": "object",
+            "required": [
+                "name",
+                "organization_id"
+            ],
+            "properties": {
+                "base_template_id": {
+                    "type": "string"
+                },
+                "base_variable_values": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string"
+                    }
+                },
+                "description": {
+                    "type": "string",
+                    "maxLength": 128
+                },
+                "display_name": {
+                    "type": "string"
+                },
+                "icon": {
+                    "type": "string"
+                },
+                "modules": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.TemplateBuilderComposeModule"
+                    }
+                },
+                "name": {
+                    "type": "string"
+                },
+                "organization_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "provisioner_tags": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string"
+                    }
+                },
+                "session_id": {
+                    "description": "SessionID is the wizard session this request belongs to, as reported to\nPOST /api/v2/templatebuilder/sessions. It is optional and used only to\nattribute a build failure to the session that produced it.",
+                    "type": "string",
+                    "format": "uuid"
+                }
+            }
+        },
+        "codersdk.TemplateBuilderCreateTemplateResponse": {
+            "type": "object",
+            "properties": {
+                "template": {
+                    "$ref": "#/definitions/codersdk.Template"
+                }
+            }
+        },
+        "codersdk.TemplateBuilderModule": {
+            "type": "object",
+            "properties": {
+                "category": {
+                    "type": "string"
+                },
+                "compatible_os": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "conflicts_with": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "description": {
+                    "type": "string"
+                },
+                "display_name": {
+                    "type": "string"
+                },
+                "icon": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "variables": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.TemplateBuilderModuleVariable"
+                    }
+                },
+                "version": {
+                    "type": "string"
+                }
+            }
+        },
+        "codersdk.TemplateBuilderModuleVariable": {
+            "type": "object",
+            "properties": {
+                "default": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "description": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "required": {
+                    "type": "boolean"
+                },
+                "sensitive": {
+                    "type": "boolean"
+                },
+                "type": {
+                    "$ref": "#/definitions/codersdk.TemplateBuilderVariableType"
+                }
+            }
+        },
+        "codersdk.TemplateBuilderModulesResponse": {
+            "type": "object",
+            "properties": {
+                "modules": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.TemplateBuilderModule"
+                    }
+                }
+            }
+        },
+        "codersdk.TemplateBuilderSessionEventType": {
+            "type": "string",
+            "enum": [
+                "wizard_entry",
+                "compose_completion"
+            ],
+            "x-enum-varnames": [
+                "TemplateBuilderSessionEventWizardEntry",
+                "TemplateBuilderSessionEventComposeCompletion"
+            ]
+        },
+        "codersdk.TemplateBuilderSessionRequest": {
+            "type": "object",
+            "required": [
+                "event_type",
+                "session_id"
+            ],
+            "properties": {
+                "base_template_id": {
+                    "type": "string"
+                },
+                "duration_seconds": {
+                    "type": "number"
+                },
+                "event_type": {
+                    "enum": [
+                        "wizard_entry",
+                        "compose_completion"
+                    ],
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/codersdk.TemplateBuilderSessionEventType"
+                        }
+                    ]
+                },
+                "module_ids": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "session_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "success": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "codersdk.TemplateBuilderVariableType": {
+            "type": "string",
+            "enum": [
+                "string",
+                "number",
+                "bool"
+            ],
+            "x-enum-varnames": [
+                "TemplateBuilderVariableTypeString",
+                "TemplateBuilderVariableTypeNumber",
+                "TemplateBuilderVariableTypeBool"
+            ]
         },
         "codersdk.TemplateExample": {
             "type": "object",
@@ -21231,6 +31688,19 @@ const docTemplate = `{
                 "TerminalFontJetBrainsMono"
             ]
         },
+        "codersdk.ThemeMode": {
+            "type": "string",
+            "enum": [
+                "",
+                "sync",
+                "single"
+            ],
+            "x-enum-varnames": [
+                "ThemeModeUnset",
+                "ThemeModeSync",
+                "ThemeModeSingle"
+            ]
+        },
         "codersdk.ThinkingDisplayMode": {
             "type": "string",
             "enum": [
@@ -21277,6 +31747,23 @@ const docTemplate = `{
                 }
             }
         },
+        "codersdk.ToolResult": {
+            "type": "object",
+            "properties": {
+                "is_error": {
+                    "type": "boolean"
+                },
+                "output": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "tool_call_id": {
+                    "type": "string"
+                }
+            }
+        },
         "codersdk.TraceConfig": {
             "type": "object",
             "properties": {
@@ -21307,6 +31794,32 @@ const docTemplate = `{
                 }
             }
         },
+        "codersdk.UpdateAIProviderRequest": {
+            "type": "object",
+            "properties": {
+                "api_keys": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.AIProviderKeyMutation"
+                    }
+                },
+                "base_url": {
+                    "type": "string"
+                },
+                "display_name": {
+                    "type": "string"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "icon": {
+                    "type": "string"
+                },
+                "settings": {
+                    "$ref": "#/definitions/codersdk.AIProviderSettings"
+                }
+            }
+        },
         "codersdk.UpdateActiveTemplateVersion": {
             "type": "object",
             "required": [
@@ -21331,6 +31844,9 @@ const docTemplate = `{
                 "application_name": {
                     "type": "string"
                 },
+                "codernauts_enabled": {
+                    "type": "boolean"
+                },
                 "logo_url": {
                     "type": "string"
                 },
@@ -21344,10 +31860,245 @@ const docTemplate = `{
                 }
             }
         },
+        "codersdk.UpdateChatACL": {
+            "type": "object",
+            "properties": {
+                "group_roles": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "$ref": "#/definitions/codersdk.ChatRole"
+                    }
+                },
+                "user_roles": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "$ref": "#/definitions/codersdk.ChatRole"
+                    }
+                }
+            }
+        },
+        "codersdk.UpdateChatAutoArchiveDaysRequest": {
+            "type": "object",
+            "properties": {
+                "auto_archive_days": {
+                    "type": "integer"
+                }
+            }
+        },
+        "codersdk.UpdateChatAutomationRequest": {
+            "type": "object",
+            "properties": {
+                "enabled": {
+                    "description": "Enabled disables or re-enables the automation. Disabling removes the\nmessages the automation queued that have not started. Re-enabling a\nschedule resumes at its next future occurrence; occurrences missed\nwhile it was disabled do not run.",
+                    "type": "boolean"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "new_chat_model_config_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "prompt": {
+                    "type": "string"
+                },
+                "reasoning_effort": {
+                    "description": "ReasoningEffort sets the effort of new chats. An empty string clears\nthe override, so new chats use the model's default.",
+                    "type": "string"
+                },
+                "schedule_cron": {
+                    "type": "string"
+                },
+                "schedule_time_zone": {
+                    "type": "string"
+                },
+                "target_chat_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "when_busy": {
+                    "enum": [
+                        "queue",
+                        "skip"
+                    ],
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/codersdk.ChatAutomationWhenBusy"
+                        }
+                    ]
+                }
+            }
+        },
+        "codersdk.UpdateChatDebugLoggingAllowUsersRequest": {
+            "type": "object",
+            "properties": {
+                "allow_users": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "codersdk.UpdateChatDebugRetentionDaysRequest": {
+            "type": "object",
+            "properties": {
+                "debug_retention_days": {
+                    "type": "integer"
+                }
+            }
+        },
+        "codersdk.UpdateChatModelACLRequest": {
+            "type": "object",
+            "properties": {
+                "group_roles": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "$ref": "#/definitions/codersdk.ChatRole"
+                    }
+                },
+                "user_roles": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "$ref": "#/definitions/codersdk.ChatRole"
+                    }
+                }
+            }
+        },
+        "codersdk.UpdateChatModelOverrideRequest": {
+            "type": "object",
+            "properties": {
+                "model_config_id": {
+                    "type": "string"
+                },
+                "reasoning_effort": {
+                    "type": "string"
+                }
+            }
+        },
+        "codersdk.UpdateChatModelRequest": {
+            "type": "object",
+            "properties": {
+                "ai_provider_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "compression_threshold": {
+                    "type": "integer"
+                },
+                "context_limit": {
+                    "type": "integer"
+                },
+                "display_name": {
+                    "type": "string"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "is_default": {
+                    "type": "boolean"
+                },
+                "model": {
+                    "type": "string"
+                },
+                "model_config": {
+                    "$ref": "#/definitions/codersdk.ChatModelCallConfig"
+                }
+            }
+        },
+        "codersdk.UpdateChatPersonalModelOverridesAdminSettingsRequest": {
+            "type": "object",
+            "properties": {
+                "allow_users": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "codersdk.UpdateChatPlanModeInstructionsRequest": {
+            "type": "object",
+            "properties": {
+                "plan_mode_instructions": {
+                    "type": "string"
+                }
+            }
+        },
+        "codersdk.UpdateChatProjectRequest": {
+            "type": "object",
+            "properties": {
+                "description": {
+                    "type": "string"
+                },
+                "icon": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                }
+            }
+        },
+        "codersdk.UpdateChatRequest": {
+            "type": "object",
+            "properties": {
+                "archived": {
+                    "type": "boolean"
+                },
+                "labels": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string"
+                    }
+                },
+                "manage_automations_enabled": {
+                    "description": "ManageAutomationsEnabled turns the manage_automations tool on or\noff for a root chat. Only the chat owner may set it. Enabling it\nrequires the chat-automations experiment for the owner; disabling\nis always accepted. Experimental.",
+                    "type": "boolean"
+                },
+                "pin_order": {
+                    "description": "PinOrder controls the chat's pinned state and position.\n- nil: no change to pin state.\n- 0: unpin the chat.\n- \u003e0 (chat is unpinned): pin the chat, appending it to\n  the end of the pinned list. The specific value is\n  ignored; the server assigns the next available position.\n- \u003e0 (chat is already pinned): move the chat to the\n  requested position, shifting neighbors as needed. The\n  value is clamped to [1, pinned_count].",
+                    "type": "integer"
+                },
+                "plan_mode": {
+                    "description": "PlanMode switches the chat's persistent plan mode.\nnil: no change, ptr to \"plan\": enable, ptr to \"\": clear.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/codersdk.ChatPlanMode"
+                        }
+                    ]
+                },
+                "read": {
+                    "description": "Read moves the owner's read cursor, which drives HasUnread.\n- nil: no change.\n- true: mark every existing message as read.\n- false: clear the cursor so the chat reads as unread again.\n\nThe cursor is owner-scoped, so only the chat owner may set this.\nOpening a chat's stream marks it read, so marking the chat the\nowner is currently viewing as unread does not persist.",
+                    "type": "boolean"
+                },
+                "title": {
+                    "description": "Title, when set, is stored as the user title even when its text is\nunchanged, so a generated title never replaces it afterwards. It is\nvalidated like CreateChatRequest.Title.",
+                    "type": "string"
+                },
+                "workspace_id": {
+                    "type": "string",
+                    "format": "uuid"
+                }
+            }
+        },
         "codersdk.UpdateChatRetentionDaysRequest": {
             "type": "object",
             "properties": {
                 "retention_days": {
+                    "type": "integer"
+                }
+            }
+        },
+        "codersdk.UpdateChatSystemPromptRequest": {
+            "type": "object",
+            "properties": {
+                "include_default_system_prompt": {
+                    "type": "boolean"
+                },
+                "system_prompt": {
+                    "type": "string"
+                }
+            }
+        },
+        "codersdk.UpdateChatWorkspaceTTLRequest": {
+            "type": "object",
+            "properties": {
+                "workspace_ttl_ms": {
+                    "description": "WorkspaceTTLMillis is the workspace TTL in milliseconds.\nZero means disabled; the template's own autostop setting applies.",
                     "type": "integer"
                 }
             }
@@ -21369,9 +32120,146 @@ const docTemplate = `{
                 }
             }
         },
+        "codersdk.UpdateMCPServerConfigACLRequest": {
+            "type": "object",
+            "properties": {
+                "group_roles": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "$ref": "#/definitions/codersdk.MCPServerConfigRole"
+                    }
+                },
+                "user_roles": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "$ref": "#/definitions/codersdk.MCPServerConfigRole"
+                    }
+                }
+            }
+        },
+        "codersdk.UpdateMCPServerConfigRequest": {
+            "type": "object",
+            "properties": {
+                "allow_in_plan_mode": {
+                    "type": "boolean"
+                },
+                "api_key_header": {
+                    "type": "string"
+                },
+                "api_key_value": {
+                    "type": "string"
+                },
+                "auth_type": {
+                    "type": "string",
+                    "enum": [
+                        "none",
+                        "oauth2",
+                        "api_key",
+                        "custom_headers",
+                        "user_oidc"
+                    ]
+                },
+                "availability": {
+                    "type": "string",
+                    "enum": [
+                        "force_on",
+                        "default_on",
+                        "default_off"
+                    ]
+                },
+                "custom_headers": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string"
+                    }
+                },
+                "description": {
+                    "type": "string"
+                },
+                "display_name": {
+                    "type": "string"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "forward_coder_headers": {
+                    "description": "ForwardCoderHeaders, when set, updates whether Coder identity\nheaders are forwarded on every outgoing MCP request.",
+                    "type": "boolean"
+                },
+                "icon_url": {
+                    "type": "string"
+                },
+                "model_intent": {
+                    "type": "boolean"
+                },
+                "oauth2_auth_url": {
+                    "type": "string"
+                },
+                "oauth2_client_id": {
+                    "type": "string"
+                },
+                "oauth2_client_secret": {
+                    "type": "string"
+                },
+                "oauth2_revocation_url": {
+                    "description": "OAuth2RevocationURL is validated in the handler because a\nvalidate tag would reject the pointer to \"\" that clears it.",
+                    "type": "string"
+                },
+                "oauth2_scopes": {
+                    "type": "string"
+                },
+                "oauth2_token_url": {
+                    "type": "string"
+                },
+                "signing_secret": {
+                    "description": "SigningSecret replaces the shared signing key. Omit to preserve it;\nan empty string clears it. It is never returned.",
+                    "type": "string"
+                },
+                "slug": {
+                    "type": "string"
+                },
+                "tool_allow_list": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "tool_deny_list": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "transport": {
+                    "type": "string",
+                    "enum": [
+                        "streamable_http",
+                        "sse"
+                    ]
+                },
+                "url": {
+                    "type": "string"
+                }
+            }
+        },
+        "codersdk.UpdateOrganizationChatSystemPromptRequest": {
+            "type": "object",
+            "properties": {
+                "system_prompt": {
+                    "type": "string"
+                }
+            }
+        },
         "codersdk.UpdateOrganizationRequest": {
             "type": "object",
             "properties": {
+                "default_org_member_roles": {
+                    "description": "DefaultOrgMemberRoles, when non-nil, replaces the org's default\nmember roles.",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
                 "description": {
                     "type": "string"
                 },
@@ -21394,14 +32282,6 @@ const docTemplate = `{
                     "items": {
                         "type": "string"
                     }
-                }
-            }
-        },
-        "codersdk.UpdateTaskInputRequest": {
-            "type": "object",
-            "properties": {
-                "input": {
-                    "type": "string"
                 }
             }
         },
@@ -21439,6 +32319,10 @@ const docTemplate = `{
                     "description": "ActivityBumpMillis allows optionally specifying the activity bump\nduration for all workspaces created from this template. Defaults to 1h\nbut can be set to 0 to disable activity bumping.",
                     "type": "integer"
                 },
+                "agents_allowed": {
+                    "description": "AgentsAllowed controls whether Coder Agents can create workspaces using\nthis template. If omitted, the current value is preserved.",
+                    "type": "boolean"
+                },
                 "allow_user_autostart": {
                     "type": "boolean"
                 },
@@ -21446,6 +32330,10 @@ const docTemplate = `{
                     "type": "boolean"
                 },
                 "allow_user_cancel_workspace_jobs": {
+                    "type": "boolean"
+                },
+                "allow_workspace_renames": {
+                    "description": "AllowWorkspaceRenames permits users to rename workspaces built from this\ntemplate. Renaming can be destructive for templates whose Terraform\nreferences the workspace name.",
                     "type": "boolean"
                 },
                 "autostart_requirement": {
@@ -21477,7 +32365,7 @@ const docTemplate = `{
                     "type": "boolean"
                 },
                 "disable_module_cache": {
-                    "description": "DisableModuleCache disables the using of cached Terraform modules during\nprovisioning. It is recommended not to disable this.",
+                    "description": "DisableModuleCache disables the using of cached Terraform modules during\nprovisioning. It is ignored while the deployment disables the module\ncache for all templates. It is recommended not to disable this.",
                     "type": "boolean"
                 },
                 "display_name": {
@@ -21499,6 +32387,10 @@ const docTemplate = `{
                     "description": "RequireActiveVersion mandates workspaces built using this template\nuse the active version of the template. This option has no\neffect on template admins.",
                     "type": "boolean"
                 },
+                "time_til_autostop_notify_ms": {
+                    "description": "TimeTilAutostopNotifyMillis allows optionally specifying the duration\nbefore the autostop deadline at which a reminder notification is sent for\nworkspaces created from this template. Defaults to 0 (disabled). Omitting\nthe field keeps the existing value.",
+                    "type": "integer"
+                },
                 "time_til_dormant_autodelete_ms": {
                     "type": "integer"
                 },
@@ -21506,7 +32398,7 @@ const docTemplate = `{
                     "type": "integer"
                 },
                 "update_workspace_dormant_at": {
-                    "description": "UpdateWorkspaceDormant updates the dormant_at field of workspaces spawned\nfrom the template. This is useful for preventing dormant workspaces being immediately\ndeleted when updating the dormant_ttl field to a new, shorter value.",
+                    "description": "UpdateWorkspaceDormantAt updates the dormant_at field of workspaces spawned\nfrom the template. This is useful for preventing dormant workspaces being\nimmediately deleted when updating the dormant_ttl field to a new, shorter\nvalue.",
                     "type": "boolean"
                 },
                 "update_workspace_last_used_at": {
@@ -21529,8 +32421,93 @@ const docTemplate = `{
                 "terminal_font": {
                     "$ref": "#/definitions/codersdk.TerminalFontName"
                 },
+                "theme_dark": {
+                    "description": "ThemeDark is required when ThemeMode is \"sync\". In \"single\" mode\nan empty value means \"preserve the previously persisted slot\"\nrather than \"clear the slot\", so partial updates that send only\none slot keep the other intact.",
+                    "type": "string",
+                    "enum": [
+                        "light",
+                        "light-protan-deuter",
+                        "light-tritan",
+                        "dark",
+                        "dark-protan-deuter",
+                        "dark-tritan"
+                    ]
+                },
+                "theme_light": {
+                    "description": "ThemeLight is required when ThemeMode is \"sync\". In \"single\"\nmode an empty value means \"preserve the previously persisted\nslot\" rather than \"clear the slot\", so partial updates that send\nonly one slot keep the other intact.",
+                    "type": "string",
+                    "enum": [
+                        "light",
+                        "light-protan-deuter",
+                        "light-tritan",
+                        "dark",
+                        "dark-protan-deuter",
+                        "dark-tritan"
+                    ]
+                },
+                "theme_mode": {
+                    "description": "ThemeMode is optional for backward compatibility. When empty,\nthe server leaves theme_mode, theme_light, and theme_dark\nunchanged so older CLI clients do not erase sync-mode settings.\nLegacy auto preferences are the exception: they clear theme_mode\nso clients can migrate the old sync-with-system setting.",
+                    "enum": [
+                        "sync",
+                        "single"
+                    ],
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/codersdk.ThemeMode"
+                        }
+                    ]
+                },
                 "theme_preference": {
                     "type": "string"
+                }
+            }
+        },
+        "codersdk.UpdateUserChatCompactionThresholdRequest": {
+            "type": "object",
+            "properties": {
+                "threshold_percent": {
+                    "type": "integer",
+                    "maximum": 100,
+                    "minimum": 0
+                }
+            }
+        },
+        "codersdk.UpdateUserChatDebugLoggingRequest": {
+            "type": "object",
+            "properties": {
+                "debug_logging_enabled": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "codersdk.UpdateUserChatPersonalModelOverrideRequest": {
+            "type": "object",
+            "properties": {
+                "mode": {
+                    "$ref": "#/definitions/codersdk.ChatPersonalModelOverrideMode"
+                },
+                "model_config_id": {
+                    "type": "string"
+                },
+                "reasoning_effort": {
+                    "type": "string"
+                }
+            }
+        },
+        "codersdk.UpdateUserEmailRequest": {
+            "type": "object",
+            "required": [
+                "new_email",
+                "old_email"
+            ],
+            "properties": {
+                "new_email": {
+                    "type": "string",
+                    "format": "email"
+                },
+                "old_email": {
+                    "type": "string",
+                    "format": "email"
                 }
             }
         },
@@ -21562,8 +32539,17 @@ const docTemplate = `{
         "codersdk.UpdateUserPreferenceSettingsRequest": {
             "type": "object",
             "properties": {
-                "task_notification_alert_dismissed": {
+                "agent_chat_send_shortcut": {
+                    "$ref": "#/definitions/codersdk.AgentChatSendShortcut"
+                },
+                "code_diff_display_mode": {
+                    "$ref": "#/definitions/codersdk.AgentDisplayMode"
+                },
+                "collapse_assistant_steps": {
                     "type": "boolean"
+                },
+                "shell_tool_display_mode": {
+                    "$ref": "#/definitions/codersdk.AgentDisplayMode"
                 },
                 "thinking_display_mode": {
                     "$ref": "#/definitions/codersdk.ThinkingDisplayMode"
@@ -21576,6 +32562,11 @@ const docTemplate = `{
                 "username"
             ],
             "properties": {
+                "avatar_url": {
+                    "description": "AvatarURL is only applied for users whose login type is password or\nnone. For other login types the avatar is synced from the identity\nprovider on login, so a submitted value is ignored.",
+                    "type": "string",
+                    "format": "uri"
+                },
                 "name": {
                     "type": "string"
                 },
@@ -21602,6 +32593,9 @@ const docTemplate = `{
                 "description": {
                     "type": "string"
                 },
+                "enabled": {
+                    "type": "boolean"
+                },
                 "env_name": {
                     "type": "string"
                 },
@@ -21609,6 +32603,15 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "value": {
+                    "type": "string"
+                }
+            }
+        },
+        "codersdk.UpdateUserSkillRequest": {
+            "type": "object",
+            "properties": {
+                "content": {
+                    "description": "Content must be SKILL.md-format Markdown with YAML frontmatter. The\nfrontmatter must include name, may include description, and must be\nfollowed by a non-empty body.",
                     "type": "string"
                 }
             }
@@ -21706,12 +32709,86 @@ const docTemplate = `{
                 }
             }
         },
+        "codersdk.UploadChatFileResponse": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string",
+                    "format": "uuid"
+                }
+            }
+        },
+        "codersdk.UploadChatWorkspaceFileResponse": {
+            "type": "object",
+            "properties": {
+                "media_type": {
+                    "description": "MediaType is the client-declared content type for display.",
+                    "type": "string"
+                },
+                "name": {
+                    "description": "Name is the final basename of the uploaded file.",
+                    "type": "string"
+                },
+                "path": {
+                    "description": "Path is the absolute path of the file on the workspace.",
+                    "type": "string"
+                },
+                "size": {
+                    "description": "Size is the number of bytes written to the workspace.",
+                    "type": "integer"
+                },
+                "workspace_id": {
+                    "description": "WorkspaceID is the workspace whose filesystem received the\nbytes. Message parts referencing this upload must carry it.",
+                    "type": "string",
+                    "format": "uuid"
+                }
+            }
+        },
         "codersdk.UploadResponse": {
             "type": "object",
             "properties": {
                 "hash": {
                     "type": "string",
                     "format": "uuid"
+                }
+            }
+        },
+        "codersdk.UpsertAIModelPricesRequest": {
+            "type": "object",
+            "properties": {
+                "prices": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.AIModelPriceUpsert"
+                    }
+                }
+            }
+        },
+        "codersdk.UpsertGroupAIBudgetRequest": {
+            "type": "object",
+            "properties": {
+                "spend_limit_micros": {
+                    "description": "SpendLimitMicros must not exceed MaxAISpendLimitMicros.",
+                    "type": "integer",
+                    "minimum": 0
+                }
+            }
+        },
+        "codersdk.UpsertUserAIBudgetOverrideRequest": {
+            "type": "object",
+            "required": [
+                "group_id"
+            ],
+            "properties": {
+                "group_id": {
+                    "description": "GroupID is the group the user's spend is attributed to. The user must\nbe a member of this group.",
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "spend_limit_micros": {
+                    "description": "SpendLimitMicros must not exceed MaxAISpendLimitMicros.",
+                    "type": "integer",
+                    "minimum": 0
                 }
             }
         },
@@ -21749,21 +32826,6 @@ const docTemplate = `{
                     ]
                 }
             }
-        },
-        "codersdk.UsageAppName": {
-            "type": "string",
-            "enum": [
-                "vscode",
-                "jetbrains",
-                "reconnecting-pty",
-                "ssh"
-            ],
-            "x-enum-varnames": [
-                "UsageAppNameVscode",
-                "UsageAppNameJetbrains",
-                "UsageAppNameReconnectingPty",
-                "UsageAppNameSSH"
-            ]
         },
         "codersdk.UsagePeriod": {
             "type": "object",
@@ -21869,6 +32931,83 @@ const docTemplate = `{
                 }
             }
         },
+        "codersdk.UserAIBudgetOverride": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "group_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "spend_limit_micros": {
+                    "type": "integer"
+                },
+                "updated_at": {
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "user_id": {
+                    "type": "string",
+                    "format": "uuid"
+                }
+            }
+        },
+        "codersdk.UserAIProviderKeyConfig": {
+            "type": "object",
+            "properties": {
+                "byok_enabled": {
+                    "type": "boolean"
+                },
+                "has_provider_api_key": {
+                    "type": "boolean"
+                },
+                "has_user_api_key": {
+                    "type": "boolean"
+                },
+                "provider": {
+                    "$ref": "#/definitions/codersdk.AIProviderSummary"
+                }
+            }
+        },
+        "codersdk.UserAISpendStatus": {
+            "type": "object",
+            "properties": {
+                "current_spend_micros": {
+                    "description": "CurrentSpendMicros is the user's spend on their effective group over\nthe current budget period.",
+                    "type": "integer"
+                },
+                "effective_budget": {
+                    "description": "EffectiveBudget is the spend limit that applies to the user, whether it\ncame from a group budget or a user override. Null when no budget\napplies, leaving the user's spend unlimited.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/codersdk.AIBudgetLimit"
+                        }
+                    ]
+                },
+                "effective_group_id": {
+                    "description": "EffectiveGroupID is the group the spend is attributed to, falling back to\nthe Everyone group when no budget applies. Null only when the user has no\norganization membership.",
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "period_end": {
+                    "description": "PeriodEnd is the exclusive upper bound of the current budget\nperiod.",
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "period_start": {
+                    "description": "PeriodStart is the inclusive lower bound of the current budget\nperiod.",
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "user_id": {
+                    "type": "string",
+                    "format": "uuid"
+                }
+            }
+        },
         "codersdk.UserActivity": {
             "type": "object",
             "properties": {
@@ -21936,8 +33075,85 @@ const docTemplate = `{
                 "terminal_font": {
                     "$ref": "#/definitions/codersdk.TerminalFontName"
                 },
-                "theme_preference": {
+                "theme_dark": {
+                    "description": "Ignored when ThemeMode is \"single\"",
                     "type": "string"
+                },
+                "theme_light": {
+                    "description": "Ignored when ThemeMode is \"single\"",
+                    "type": "string"
+                },
+                "theme_mode": {
+                    "$ref": "#/definitions/codersdk.ThemeMode"
+                },
+                "theme_preference": {
+                    "description": "ThemePreference is the legacy single-field appearance setting. In\n\"single\" mode it mirrors the active theme. In \"sync\" mode modern\nclients normally mirror the active OS slot, but older clients can\nupdate only this field, so it may diverge from ThemeLight or\nThemeDark until a modern client saves the full appearance state\nagain.",
+                    "type": "string"
+                }
+            }
+        },
+        "codersdk.UserChatCompactionThreshold": {
+            "type": "object",
+            "properties": {
+                "model_config_id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "threshold_percent": {
+                    "type": "integer"
+                }
+            }
+        },
+        "codersdk.UserChatCompactionThresholds": {
+            "type": "object",
+            "properties": {
+                "thresholds": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.UserChatCompactionThreshold"
+                    }
+                }
+            }
+        },
+        "codersdk.UserChatCustomPrompt": {
+            "type": "object",
+            "properties": {
+                "custom_prompt": {
+                    "type": "string"
+                }
+            }
+        },
+        "codersdk.UserChatDebugLoggingSettings": {
+            "type": "object",
+            "properties": {
+                "debug_logging_enabled": {
+                    "type": "boolean"
+                },
+                "forced_by_deployment": {
+                    "type": "boolean"
+                },
+                "user_toggle_allowed": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "codersdk.UserChatPersonalModelOverridesResponse": {
+            "type": "object",
+            "properties": {
+                "deployment_defaults": {
+                    "$ref": "#/definitions/codersdk.ChatPersonalModelOverrideDeploymentDefaults"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "explore": {
+                    "$ref": "#/definitions/codersdk.ChatPersonalModelOverride"
+                },
+                "general": {
+                    "$ref": "#/definitions/codersdk.ChatPersonalModelOverride"
+                },
+                "root": {
+                    "$ref": "#/definitions/codersdk.ChatPersonalModelOverride"
                 }
             }
         },
@@ -22023,8 +33239,17 @@ const docTemplate = `{
         "codersdk.UserPreferenceSettings": {
             "type": "object",
             "properties": {
-                "task_notification_alert_dismissed": {
+                "agent_chat_send_shortcut": {
+                    "$ref": "#/definitions/codersdk.AgentChatSendShortcut"
+                },
+                "code_diff_display_mode": {
+                    "$ref": "#/definitions/codersdk.AgentDisplayMode"
+                },
+                "collapse_assistant_steps": {
                     "type": "boolean"
+                },
+                "shell_tool_display_mode": {
+                    "$ref": "#/definitions/codersdk.AgentDisplayMode"
                 },
                 "thinking_display_mode": {
                     "$ref": "#/definitions/codersdk.ThinkingDisplayMode"
@@ -22081,10 +33306,72 @@ const docTemplate = `{
                 "description": {
                     "type": "string"
                 },
+                "enabled": {
+                    "description": "Enabled controls whether the secret is injected into workspaces.\nDisabled secrets remain visible and editable, but are not added\nto the agent manifest, so they are not exposed as environment\nvariables or written to secret files.",
+                    "type": "boolean"
+                },
                 "env_name": {
                     "type": "string"
                 },
                 "file_path": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "updated_at": {
+                    "type": "string",
+                    "format": "date-time"
+                }
+            }
+        },
+        "codersdk.UserSecretsCapabilities": {
+            "type": "object",
+            "properties": {
+                "file_path_delivery_enabled": {
+                    "description": "FilePathDeliveryEnabled reports whether Coder writes stored file paths\ninto workspaces. Stored paths are preserved either way.",
+                    "type": "boolean"
+                }
+            }
+        },
+        "codersdk.UserSkill": {
+            "type": "object",
+            "properties": {
+                "content": {
+                    "type": "string"
+                },
+                "created_at": {
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "updated_at": {
+                    "type": "string",
+                    "format": "date-time"
+                }
+            }
+        },
+        "codersdk.UserSkillMetadata": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "description": {
                     "type": "string"
                 },
                 "id": {
@@ -22203,6 +33490,7 @@ const docTemplate = `{
             "type": "object",
             "properties": {
                 "allow_renames": {
+                    "description": "AllowRenames is the effective rename permission for this workspace,\nderived from the template's allow_workspace_renames setting and the\ndeprecated deployment-wide flag.",
                     "type": "boolean"
                 },
                 "automatic_updates": {
@@ -22295,14 +33583,6 @@ const docTemplate = `{
                     "items": {
                         "$ref": "#/definitions/codersdk.SharedWorkspaceActor"
                     }
-                },
-                "task_id": {
-                    "description": "TaskID, if set, indicates that the workspace is relevant to the given codersdk.Task.",
-                    "allOf": [
-                        {
-                            "$ref": "#/definitions/uuid.NullUUID"
-                        }
-                    ]
                 },
                 "template_active_version_id": {
                     "type": "string",
@@ -22445,6 +33725,13 @@ const docTemplate = `{
                 "logs_overflowed": {
                     "type": "boolean"
                 },
+                "metadata": {
+                    "description": "Metadata is only populated on the workspaces list endpoint when the\nrequest opts in with the include_agent_metadata search key, and it\nonly carries the requested keys. The description's script is always\nempty here: it can be long, and list consumers want values.",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.WorkspaceAgentMetadata"
+                    }
+                },
                 "name": {
                     "type": "string"
                 },
@@ -22452,12 +33739,8 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "parent_id": {
-                    "format": "uuid",
-                    "allOf": [
-                        {
-                            "$ref": "#/definitions/uuid.NullUUID"
-                        }
-                    ]
+                    "type": "string",
+                    "format": "uuid"
                 },
                 "ready_at": {
                     "type": "string",
@@ -22612,12 +33895,8 @@ const docTemplate = `{
                     ]
                 },
                 "subagent_id": {
-                    "format": "uuid",
-                    "allOf": [
-                        {
-                            "$ref": "#/definitions/uuid.NullUUID"
-                        }
-                    ]
+                    "type": "string",
+                    "format": "uuid"
                 },
                 "workspace_folder": {
                     "type": "string"
@@ -22656,6 +33935,38 @@ const docTemplate = `{
                 "WorkspaceAgentDevcontainerStatusStopping",
                 "WorkspaceAgentDevcontainerStatusDeleting",
                 "WorkspaceAgentDevcontainerStatusError"
+            ]
+        },
+        "codersdk.WorkspaceAgentGitServerMessage": {
+            "type": "object",
+            "properties": {
+                "message": {
+                    "type": "string"
+                },
+                "repositories": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/codersdk.WorkspaceAgentRepoChanges"
+                    }
+                },
+                "scanned_at": {
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "type": {
+                    "$ref": "#/definitions/codersdk.WorkspaceAgentGitServerMessageType"
+                }
+            }
+        },
+        "codersdk.WorkspaceAgentGitServerMessageType": {
+            "type": "string",
+            "enum": [
+                "changes",
+                "error"
+            ],
+            "x-enum-varnames": [
+                "WorkspaceAgentGitServerMessageTypeChanges",
+                "WorkspaceAgentGitServerMessageTypeError"
             ]
         },
         "codersdk.WorkspaceAgentHealth": {
@@ -22797,6 +34108,56 @@ const docTemplate = `{
                 }
             }
         },
+        "codersdk.WorkspaceAgentMetadata": {
+            "type": "object",
+            "properties": {
+                "description": {
+                    "$ref": "#/definitions/codersdk.WorkspaceAgentMetadataDescription"
+                },
+                "result": {
+                    "$ref": "#/definitions/codersdk.WorkspaceAgentMetadataResult"
+                }
+            }
+        },
+        "codersdk.WorkspaceAgentMetadataDescription": {
+            "type": "object",
+            "properties": {
+                "display_name": {
+                    "type": "string"
+                },
+                "interval": {
+                    "type": "integer"
+                },
+                "key": {
+                    "type": "string"
+                },
+                "script": {
+                    "type": "string"
+                },
+                "timeout": {
+                    "type": "integer"
+                }
+            }
+        },
+        "codersdk.WorkspaceAgentMetadataResult": {
+            "type": "object",
+            "properties": {
+                "age": {
+                    "description": "Age is the number of seconds since the metadata was collected.\nIt is provided in addition to CollectedAt to protect against clock skew.",
+                    "type": "integer"
+                },
+                "collected_at": {
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "error": {
+                    "type": "string"
+                },
+                "value": {
+                    "type": "string"
+                }
+            }
+        },
         "codersdk.WorkspaceAgentPortShare": {
             "type": "object",
             "properties": {
@@ -22873,6 +34234,26 @@ const docTemplate = `{
                 }
             }
         },
+        "codersdk.WorkspaceAgentRepoChanges": {
+            "type": "object",
+            "properties": {
+                "branch": {
+                    "type": "string"
+                },
+                "remote_origin": {
+                    "type": "string"
+                },
+                "removed": {
+                    "type": "boolean"
+                },
+                "repo_root": {
+                    "type": "string"
+                },
+                "unified_diff": {
+                    "type": "string"
+                }
+            }
+        },
         "codersdk.WorkspaceAgentScript": {
             "type": "object",
             "properties": {
@@ -22881,6 +34262,9 @@ const docTemplate = `{
                 },
                 "display_name": {
                     "type": "string"
+                },
+                "exit_code": {
+                    "type": "integer"
                 },
                 "id": {
                     "type": "string",
@@ -22905,10 +34289,28 @@ const docTemplate = `{
                 "start_blocks_login": {
                     "type": "boolean"
                 },
+                "status": {
+                    "$ref": "#/definitions/codersdk.WorkspaceAgentScriptStatus"
+                },
                 "timeout": {
                     "type": "integer"
                 }
             }
+        },
+        "codersdk.WorkspaceAgentScriptStatus": {
+            "type": "string",
+            "enum": [
+                "ok",
+                "exit_failure",
+                "timed_out",
+                "pipes_left_open"
+            ],
+            "x-enum-varnames": [
+                "WorkspaceAgentScriptStatusOK",
+                "WorkspaceAgentScriptStatusExitFailure",
+                "WorkspaceAgentScriptStatusTimedOut",
+                "WorkspaceAgentScriptStatusPipesLeftOpen"
+            ]
         },
         "codersdk.WorkspaceAgentStartupScriptBehavior": {
             "type": "string",
@@ -23136,10 +34538,6 @@ const docTemplate = `{
                     "type": "string",
                     "format": "date-time"
                 },
-                "has_ai_task": {
-                    "description": "Deprecated: This field has been deprecated in favor of Task WorkspaceID.",
-                    "type": "boolean"
-                },
                 "has_external_agent": {
                     "type": "boolean"
                 },
@@ -23245,6 +34643,19 @@ const docTemplate = `{
                 "workspace_owner_name": {
                     "description": "WorkspaceOwnerName is the username of the owner of the workspace.",
                     "type": "string"
+                }
+            }
+        },
+        "codersdk.WorkspaceBuildDebugEventRequest": {
+            "type": "object",
+            "required": [
+                "id"
+            ],
+            "properties": {
+                "id": {
+                    "description": "ID identifies this click so a later step of the funnel can be\nattributed to it.",
+                    "type": "string",
+                    "format": "uuid"
                 }
             }
         },
@@ -24267,6 +35678,71 @@ const docTemplate = `{
         "key.NodePublic": {
             "type": "object"
         },
+        "legacyscim.SCIMUser": {
+            "type": "object",
+            "properties": {
+                "active": {
+                    "description": "Active is a ptr to prevent the empty value from being interpreted as false.",
+                    "type": "boolean"
+                },
+                "emails": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "display": {
+                                "type": "string"
+                            },
+                            "primary": {
+                                "type": "boolean"
+                            },
+                            "type": {
+                                "type": "string"
+                            },
+                            "value": {
+                                "type": "string",
+                                "format": "email"
+                            }
+                        }
+                    }
+                },
+                "groups": {
+                    "type": "array",
+                    "items": {}
+                },
+                "id": {
+                    "type": "string"
+                },
+                "meta": {
+                    "type": "object",
+                    "properties": {
+                        "resourceType": {
+                            "type": "string"
+                        }
+                    }
+                },
+                "name": {
+                    "type": "object",
+                    "properties": {
+                        "familyName": {
+                            "type": "string"
+                        },
+                        "givenName": {
+                            "type": "string"
+                        }
+                    }
+                },
+                "schemas": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "userName": {
+                    "type": "string"
+                }
+            }
+        },
         "netcheck.Report": {
             "type": "object",
             "properties": {
@@ -24280,10 +35756,6 @@ const docTemplate = `{
                 },
                 "globalV6": {
                     "description": "[ip]:port of global IPv6",
-                    "type": "string"
-                },
-                "hairPinning": {
-                    "description": "HairPinning is whether the router supports communicating\nbetween two local devices through the NATted public IP address\n(on IPv4).",
                     "type": "string"
                 },
                 "icmpv4": {
@@ -24356,31 +35828,6 @@ const docTemplate = `{
                 },
                 "upnP": {
                     "description": "UPnP is whether UPnP appears present on the LAN.\nEmpty means not checked.",
-                    "type": "string"
-                }
-            }
-        },
-        "oauth2.Token": {
-            "type": "object",
-            "properties": {
-                "access_token": {
-                    "description": "AccessToken is the token that authorizes and authenticates\nthe requests.",
-                    "type": "string"
-                },
-                "expires_in": {
-                    "description": "ExpiresIn is the OAuth2 wire format \"expires_in\" field,\nwhich specifies how many seconds later the token expires,\nrelative to an unknown time base approximately around \"now\".\nIt is the application's responsibility to populate\n` + "`" + `Expiry` + "`" + ` from ` + "`" + `ExpiresIn` + "`" + ` when required.",
-                    "type": "integer"
-                },
-                "expiry": {
-                    "description": "Expiry is the optional expiration time of the access token.\n\nIf zero, [TokenSource] implementations will reuse the same\ntoken forever and RefreshToken or equivalent\nmechanisms for that TokenSource will not be used.",
-                    "type": "string"
-                },
-                "refresh_token": {
-                    "description": "RefreshToken is a token that's used by the application\n(as opposed to the user) to refresh the access token\nif it expires.",
-                    "type": "string"
-                },
-                "token_type": {
-                    "description": "TokenType is the type of token.\nThe Type method returns either this or \"Bearer\", the default.",
                     "type": "string"
                 }
             }
@@ -24518,19 +35965,19 @@ const docTemplate = `{
             "type": "object",
             "properties": {
                 "forceQuery": {
-                    "description": "append a query ('?') even if RawQuery is empty",
+                    "description": "ForceQuery indicates whether the original URL contained a query ('?') character.\nWhen set, the String method will include a trailing '?', even when RawQuery is empty.",
                     "type": "boolean"
                 },
                 "fragment": {
-                    "description": "fragment for references, without '#'",
+                    "description": "fragment for references (without '#')",
                     "type": "string"
                 },
                 "host": {
-                    "description": "host or host:port (see Hostname and Port methods)",
+                    "description": "\"host\" or \"host:port\" (see Hostname and Port methods)",
                     "type": "string"
                 },
                 "omitHost": {
-                    "description": "do not emit empty host (authority)",
+                    "description": "OmitHost indicates the URL has an empty host (authority).\nWhen set, the String method will not include the host when it is empty.",
                     "type": "boolean"
                 },
                 "opaque": {
@@ -24542,15 +35989,15 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "rawFragment": {
-                    "description": "encoded fragment hint (see EscapedFragment method)",
+                    "description": "RawFragment is an optional field containing an encoded fragment hint.\nSee the EscapedFragment method for more details.\n\nIn general, code should call EscapedFragment instead of reading RawFragment.",
                     "type": "string"
                 },
                 "rawPath": {
-                    "description": "encoded path hint (see EscapedPath method)",
+                    "description": "RawPath is an optional field containing an encoded path hint.\nSee the EscapedPath method for more details.\n\nIn general, code should call EscapedPath instead of reading RawPath.",
                     "type": "string"
                 },
                 "rawQuery": {
-                    "description": "encoded query values, without '?'",
+                    "description": "RawQuery contains the encoded query values, without the initial '?'.\nUse URL.Query to decode the query.",
                     "type": "string"
                 },
                 "scheme": {
@@ -24712,18 +36159,6 @@ const docTemplate = `{
         "url.Userinfo": {
             "type": "object"
         },
-        "uuid.NullUUID": {
-            "type": "object",
-            "properties": {
-                "uuid": {
-                    "type": "string"
-                },
-                "valid": {
-                    "description": "Valid is true if UUID is not NULL",
-                    "type": "boolean"
-                }
-            }
-        },
         "workspaceapps.AccessMethod": {
             "type": "string",
             "enum": [
@@ -24845,6 +36280,93 @@ const docTemplate = `{
                 }
             }
         },
+        "workspacesdk.AgentUpdate": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "lifecycle": {
+                    "$ref": "#/definitions/codersdk.WorkspaceAgentLifecycle"
+                }
+            }
+        },
+        "workspacesdk.BuildUpdate": {
+            "type": "object",
+            "properties": {
+                "job_status": {
+                    "$ref": "#/definitions/codersdk.ProvisionerJobStatus"
+                },
+                "transition": {
+                    "$ref": "#/definitions/codersdk.WorkspaceTransition"
+                }
+            }
+        },
+        "workspacesdk.ConnectionWatchEvent": {
+            "type": "object",
+            "properties": {
+                "agent_update": {
+                    "$ref": "#/definitions/workspacesdk.AgentUpdate"
+                },
+                "build_update": {
+                    "$ref": "#/definitions/workspacesdk.BuildUpdate"
+                },
+                "error": {
+                    "$ref": "#/definitions/workspacesdk.WatchError"
+                }
+            }
+        },
+        "workspacesdk.WatchError": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "$ref": "#/definitions/workspacesdk.WatchErrorCode"
+                },
+                "details": {
+                    "type": "string"
+                },
+                "message": {
+                    "type": "string"
+                },
+                "retryable": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "workspacesdk.WatchErrorCode": {
+            "type": "integer",
+            "enum": [
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6
+            ],
+            "x-enum-comments": {
+                "_": "Ensure that zero value is not a valid code"
+            },
+            "x-enum-descriptions": [
+                "Ensure that zero value is not a valid code",
+                "",
+                "",
+                "",
+                "",
+                "",
+                ""
+            ],
+            "x-enum-varnames": [
+                "_",
+                "WatchErrorTooManyAgents",
+                "WatchErrorNameNotFound",
+                "WatchErrorNoAgents",
+                "WatchErrorServerShutdown",
+                "WatchErrorDatabase",
+                "WatchErrorInternal"
+            ]
+        },
         "wsproxysdk.CryptoKeysResponse": {
             "type": "object",
             "properties": {
@@ -24952,9 +36474,14 @@ const docTemplate = `{
         }
     },
     "securityDefinitions": {
+        "AIGatewayKey": {
+            "type": "apiKey",
+            "name": "X-AI-Governance-Gateway-Key",
+            "in": "header"
+        },
         "Authorization": {
             "type": "apiKey",
-            "name": "Authorizaiton",
+            "name": "Authorization",
             "in": "header"
         },
         "CoderSessionToken": {
@@ -24962,14 +36489,24 @@ const docTemplate = `{
             "name": "Coder-Session-Token",
             "in": "header"
         }
-    }
+    },
+    "tags": [
+        {
+            "description": "Workspace agent endpoints. These power the workspace agent daemon defined by the ` + "`" + `coder_agent` + "`" + ` Terraform resource. This API is NOT the Coder Agents Chats API. For programmatic access to AI Coder Agents, see the Chats API.",
+            "name": "Agents"
+        },
+        {
+            "description": "Programmatic API for Coder Agents (the user-facing \"Coder Agents\" / \"Chats\" product). Use these endpoints to create, list, and manage AI coding agent sessions.",
+            "name": "Chats"
+        }
+    ]
 }`
 
 // SwaggerInfo holds exported Swagger Info so clients can modify it
 var SwaggerInfo = &swag.Spec{
 	Version:          "2.0",
 	Host:             "",
-	BasePath:         "/api/v2",
+	BasePath:         "/",
 	Schemes:          []string{},
 	Title:            "Coder API",
 	Description:      "Coderd is the service created by running coder server. It is a thin API that connects workspaces, provisioners and users. coderd stores its state in Postgres and is the only service that communicates with Postgres.",

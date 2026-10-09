@@ -1,30 +1,129 @@
-import type { Meta, StoryObj } from "@storybook/react-vite";
-import type { FC } from "react";
+import type { Decorator, Meta, StoryObj } from "@storybook/react-vite";
 import { useQueryClient } from "react-query";
-import { chatUsageLimitStatusKey } from "#/api/queries/chats";
+import { userEvent, within } from "storybook/test";
+import { meAISpendKey } from "#/api/queries/users";
+import { getWorkspaceQuotaQueryKey } from "#/api/queries/workspaceQuota";
+import { workspacesKey } from "#/api/queries/workspaces";
+import type {
+	UserAISpendStatus,
+	WorkspaceQuota,
+	WorkspacesResponse,
+} from "#/api/typesGenerated";
+import {
+	MockDefaultOrganization,
+	MockPermissions,
+	MockUserOwner,
+} from "#/testHelpers/entities";
+import {
+	withAuthProvider,
+	withDashboardProvider,
+} from "#/testHelpers/storybook";
 import { UsageIndicator } from "./UsageIndicator";
 
-const withUsageLimitStatus =
-	(status: {
-		is_limited: boolean;
-		period?: "day" | "week" | "month";
-		spend_limit_micros?: number;
-		current_spend: number;
-		period_start?: string;
-		period_end?: string;
-	}) =>
-	(Story: FC) => {
-		const queryClient = useQueryClient();
-		queryClient.setQueryData(chatUsageLimitStatusKey, status);
-		return <Story />;
-	};
+const withAISpend = (status: UserAISpendStatus) => (Story: React.FC) => {
+	const queryClient = useQueryClient();
+	queryClient.setQueryData(meAISpendKey, status);
+	return <Story />;
+};
 
-const periodStart = new Date().toISOString();
-const periodEnd = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+const withWorkspaceQuota = (quota: WorkspaceQuota) => (Story: React.FC) => {
+	const queryClient = useQueryClient();
+	queryClient.setQueryData(
+		getWorkspaceQuotaQueryKey(
+			MockDefaultOrganization.name,
+			MockUserOwner.username,
+		),
+		quota,
+	);
+	return <Story />;
+};
+
+const withWorkspaceCount = (count: number) => (Story: React.FC) => {
+	const queryClient = useQueryClient();
+	queryClient.setQueryData(workspacesKey(userWorkspacesRequest), {
+		workspaces: [],
+		count,
+	} satisfies WorkspacesResponse);
+	return <Story />;
+};
+
+const withUnavailableWorkspaceCount = function WithUnavailableWorkspaceCount(
+	Story: React.FC,
+) {
+	const queryClient = useQueryClient();
+	queryClient.setQueryData(workspacesKey(userWorkspacesRequest), {
+		workspaces: [],
+		count: -1,
+	} satisfies WorkspacesResponse);
+	return <Story />;
+};
+
+// Mirrors the sidebar footer wrapper: a fixed-width container with
+// container-type set so the trigger inside reacts to the wrapper's width
+// instead of the viewport's.
+const withUsageIndicatorFrame = (
+	widthClassName = "w-[320px]",
+	frameTestId?: string,
+): Decorator => {
+	return (Story) => (
+		<div
+			data-testid={frameTestId}
+			className={`flex h-12 min-w-0 items-stretch justify-end rounded-md bg-surface-secondary @container ${widthClassName}`}
+		>
+			<Story />
+		</div>
+	);
+};
+
+const openUsageMenu = async (canvasElement: HTMLElement) => {
+	const canvas = within(canvasElement);
+	await userEvent.click(canvas.getByRole("button"));
+};
+
+const aiSpendStatus = (
+	overrides: Partial<UserAISpendStatus> = {},
+): UserAISpendStatus => ({
+	user_id: MockUserOwner.id,
+	effective_group_id: "group-1",
+	effective_budget: { spend_limit_micros: 50_000_000, limit_source: "group" },
+	current_spend_micros: 12_500_000,
+	period_start: "2026-07-01T00:00:00Z",
+	period_end: "2026-08-01T00:00:00Z",
+	...overrides,
+});
+
+const noBudgetStatus = aiSpendStatus({
+	effective_group_id: null,
+	effective_budget: null,
+	current_spend_micros: 0,
+});
+
+const userWorkspacesRequest = {
+	q: `owner:me organization:${MockDefaultOrganization.name}`,
+	limit: 0,
+};
+const noWorkspaceQuota = {
+	credits_consumed: 0,
+	budget: 0,
+} satisfies WorkspaceQuota;
+const defaultWorkspaceQuota = {
+	credits_consumed: 30,
+	budget: 100,
+} satisfies WorkspaceQuota;
 
 const meta: Meta<typeof UsageIndicator> = {
 	title: "pages/AgentsPage/UsageIndicator",
 	component: UsageIndicator,
+	decorators: [
+		withAuthProvider,
+		withDashboardProvider,
+		withUsageIndicatorFrame(),
+	],
+	parameters: {
+		user: MockUserOwner,
+		permissions: MockPermissions,
+		features: ["aibridge"],
+	},
 };
 
 export default meta;
@@ -32,61 +131,168 @@ type Story = StoryObj<typeof UsageIndicator>;
 
 export const LowUsage: Story = {
 	decorators: [
-		withUsageLimitStatus({
-			is_limited: true,
-			period: "month",
-			spend_limit_micros: 50_000_000,
-			current_spend: 12_500_000,
-			period_start: periodStart,
-			period_end: periodEnd,
-		}),
+		withAISpend(aiSpendStatus()),
+		withWorkspaceQuota(noWorkspaceQuota),
 	],
 };
 
 export const MediumUsage: Story = {
 	decorators: [
-		withUsageLimitStatus({
-			is_limited: true,
-			period: "week",
-			spend_limit_micros: 20_000_000,
-			current_spend: 16_000_000,
-			period_start: periodStart,
-			period_end: periodEnd,
-		}),
+		withAISpend(
+			aiSpendStatus({
+				effective_budget: {
+					spend_limit_micros: 20_000_000,
+					limit_source: "group",
+				},
+				current_spend_micros: 16_000_000,
+			}),
+		),
+		withWorkspaceQuota(noWorkspaceQuota),
 	],
 };
 
 export const HighUsage: Story = {
 	decorators: [
-		withUsageLimitStatus({
-			is_limited: true,
-			period: "day",
-			spend_limit_micros: 10_000_000,
-			current_spend: 9_500_000,
-			period_start: periodStart,
-			period_end: periodEnd,
-		}),
+		withAISpend(
+			aiSpendStatus({
+				effective_budget: {
+					spend_limit_micros: 10_000_000,
+					limit_source: "group",
+				},
+				current_spend_micros: 9_500_000,
+			}),
+		),
+		withWorkspaceQuota(noWorkspaceQuota),
 	],
 };
 
 export const LimitExceeded: Story = {
 	decorators: [
-		withUsageLimitStatus({
-			is_limited: true,
-			period: "month",
-			spend_limit_micros: 30_000_000,
-			current_spend: 32_000_000,
-			period_start: periodStart,
-			period_end: periodEnd,
+		withAISpend(
+			aiSpendStatus({
+				effective_budget: {
+					spend_limit_micros: 30_000_000,
+					limit_source: "group",
+				},
+				current_spend_micros: 32_000_000,
+			}),
+		),
+		withWorkspaceQuota(noWorkspaceQuota),
+	],
+};
+
+export const WorkspaceQuotaOnly: Story = {
+	decorators: [
+		withAISpend(noBudgetStatus),
+		withWorkspaceQuota(defaultWorkspaceQuota),
+		withWorkspaceCount(3),
+	],
+	play: async ({ canvasElement }) => {
+		await openUsageMenu(canvasElement);
+	},
+};
+
+export const UsageAndWorkspaceQuota: Story = {
+	decorators: [
+		withAISpend(aiSpendStatus()),
+		withWorkspaceQuota(defaultWorkspaceQuota),
+		withWorkspaceCount(3),
+	],
+	play: async ({ canvasElement }) => {
+		await openUsageMenu(canvasElement);
+	},
+};
+
+export const TriggerTiny: Story = {
+	decorators: [
+		withUsageIndicatorFrame("w-[240px]", "usage-indicator-frame"),
+		withAISpend(aiSpendStatus()),
+		withWorkspaceQuota(defaultWorkspaceQuota),
+		withWorkspaceCount(3),
+	],
+};
+
+export const WorkspaceQuotaUnused: Story = {
+	decorators: [
+		withAISpend(noBudgetStatus),
+		withWorkspaceQuota({
+			credits_consumed: 0,
+			budget: 100,
 		}),
 	],
 };
 
+export const WorkspaceQuotaWithoutBudget: Story = {
+	decorators: [
+		withAISpend(noBudgetStatus),
+		withWorkspaceQuota({
+			credits_consumed: 20,
+			budget: 0,
+		}),
+		withWorkspaceCount(1),
+	],
+	play: async ({ canvasElement }) => {
+		await openUsageMenu(canvasElement);
+	},
+};
+
+export const WorkspaceQuotaExceeded: Story = {
+	decorators: [
+		withAISpend(noBudgetStatus),
+		withWorkspaceQuota({
+			credits_consumed: 125,
+			budget: 100,
+		}),
+		withWorkspaceCount(7),
+	],
+	play: async ({ canvasElement }) => {
+		await openUsageMenu(canvasElement);
+	},
+};
+
+export const WorkspaceQuotaWithoutWorkspaceCount: Story = {
+	decorators: [
+		withAISpend(noBudgetStatus),
+		withWorkspaceQuota(defaultWorkspaceQuota),
+		withUnavailableWorkspaceCount,
+	],
+	play: async ({ canvasElement }) => {
+		await openUsageMenu(canvasElement);
+	},
+};
+
 export const NotLimited: Story = {
 	decorators: [
-		withUsageLimitStatus({
-			is_limited: false,
-			current_spend: 0,
-		}),
+		withAISpend(noBudgetStatus),
+		withWorkspaceQuota(noWorkspaceQuota),
 	],
+};
+
+export const ZeroBudget: Story = {
+	decorators: [
+		withAISpend(
+			aiSpendStatus({
+				effective_budget: { spend_limit_micros: 0, limit_source: "group" },
+				current_spend_micros: 0,
+			}),
+		),
+		withWorkspaceQuota(noWorkspaceQuota),
+	],
+	play: async ({ canvasElement }) => {
+		const canvas = within(canvasElement);
+		const trigger = await canvas.findByRole("button");
+		await userEvent.click(trigger);
+	},
+};
+
+export const GatewayUnavailable: Story = {
+	parameters: { features: [], experiments: [] },
+	decorators: [
+		withAISpend(aiSpendStatus()),
+		withWorkspaceQuota(defaultWorkspaceQuota),
+		withWorkspaceCount(3),
+	],
+	play: async ({ canvasElement }) => {
+		await openUsageMenu(canvasElement);
+	},
 };

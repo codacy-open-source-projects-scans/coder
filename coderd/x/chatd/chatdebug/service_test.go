@@ -25,13 +25,14 @@ import (
 )
 
 type testFixture struct {
-	ctx   context.Context
-	db    database.Store
-	svc   *chatdebug.Service
-	org   database.Organization
-	owner database.User
-	chat  database.Chat
-	model database.ChatModelConfig
+	ctx      context.Context
+	db       database.Store
+	svc      *chatdebug.Service
+	org      database.Organization
+	owner    database.User
+	chat     database.Chat
+	model    database.ChatModelConfig
+	provider string
 }
 
 func TestService_IsEnabled(t *testing.T) {
@@ -39,7 +40,7 @@ func TestService_IsEnabled(t *testing.T) {
 
 	ctx := testutil.Context(t, testutil.WaitLong)
 	db, _, _ := dbtestutil.NewDBWithSQLDB(t)
-	_, owner, chat, model := seedChat(ctx, t, db)
+	_, owner, chat, model := seedChat(t, db)
 	require.NotEqual(t, uuid.Nil, model.ID)
 
 	svc := chatdebug.NewService(db, testutil.Logger(t), nil)
@@ -77,7 +78,7 @@ func TestService_IsEnabled_AlwaysEnable(t *testing.T) {
 
 	ctx := testutil.Context(t, testutil.WaitLong)
 	db, _, _ := dbtestutil.NewDBWithSQLDB(t)
-	_, owner, chat, model := seedChat(ctx, t, db)
+	_, owner, chat, model := seedChat(t, db)
 	require.NotEqual(t, uuid.Nil, model.ID)
 
 	svc := chatdebug.NewService(db, testutil.Logger(t), nil, chatdebug.WithAlwaysEnable(true))
@@ -98,11 +99,11 @@ func TestService_CreateRun(t *testing.T) {
 	t.Parallel()
 
 	fixture := newFixture(t)
-	rootChat := insertChat(fixture.ctx, t, fixture.db, fixture.org.ID, fixture.owner.ID, fixture.model.ID)
-	parentChat := insertChat(fixture.ctx, t, fixture.db, fixture.org.ID, fixture.owner.ID, fixture.model.ID)
-	triggerMsg := insertMessage(fixture.ctx, t, fixture.db, fixture.chat.ID,
+	rootChat := insertChat(t, fixture.db, fixture.org.ID, fixture.owner.ID, fixture.model.ID)
+	parentChat := insertChat(t, fixture.db, fixture.org.ID, fixture.owner.ID, fixture.model.ID)
+	triggerMsg := insertMessage(t, fixture.db, fixture.chat.ID,
 		fixture.owner.ID, fixture.model.ID, database.ChatMessageRoleUser, "trigger")
-	historyTipMsg := insertMessage(fixture.ctx, t, fixture.db, fixture.chat.ID,
+	historyTipMsg := insertMessage(t, fixture.db, fixture.chat.ID,
 		fixture.owner.ID, fixture.model.ID, database.ChatMessageRoleAssistant,
 		"history-tip")
 
@@ -115,7 +116,7 @@ func TestService_CreateRun(t *testing.T) {
 		HistoryTipMessageID: historyTipMsg.ID,
 		Kind:                chatdebug.KindChatTurn,
 		Status:              chatdebug.StatusInProgress,
-		Provider:            fixture.model.Provider,
+		Provider:            fixture.provider,
 		Model:               fixture.model.Model,
 		Summary: map[string]any{
 			"phase": "create",
@@ -126,7 +127,7 @@ func TestService_CreateRun(t *testing.T) {
 	assertRunMatches(t, run, fixture.chat.ID, rootChat.ID, parentChat.ID,
 		fixture.model.ID, triggerMsg.ID, historyTipMsg.ID,
 		chatdebug.KindChatTurn, chatdebug.StatusInProgress,
-		fixture.model.Provider, fixture.model.Model,
+		fixture.provider, fixture.model.Model,
 		`{"count":1,"phase":"create"}`)
 
 	stored, err := fixture.db.GetChatDebugRunByID(fixture.ctx, run.ID)
@@ -279,7 +280,7 @@ func TestService_CreateStep(t *testing.T) {
 
 	fixture := newFixture(t)
 	run := createRun(t, fixture)
-	historyTipMsg := insertMessage(fixture.ctx, t, fixture.db, fixture.chat.ID,
+	historyTipMsg := insertMessage(t, fixture.db, fixture.chat.ID,
 		fixture.owner.ID, fixture.model.ID, database.ChatMessageRoleAssistant,
 		"history-tip")
 
@@ -424,7 +425,7 @@ func TestService_CreateStep_ChatIDMismatchReportsNotFound(t *testing.T) {
 	// attach a step to the existing run using the wrong chat_id.
 	// The insert's locked_run WHERE fails on chat_id, producing
 	// sql.ErrNoRows; classifyMissingRun must report not-found.
-	otherChat := insertChat(fixture.ctx, t, fixture.db, fixture.org.ID,
+	otherChat := insertChat(t, fixture.db, fixture.org.ID,
 		fixture.owner.ID, fixture.model.ID)
 
 	_, err := fixture.svc.CreateStep(fixture.ctx, chatdebug.CreateStepParams{
@@ -454,7 +455,7 @@ func TestService_UpdateStep(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	assistantMsg := insertMessage(fixture.ctx, t, fixture.db, fixture.chat.ID,
+	assistantMsg := insertMessage(t, fixture.db, fixture.chat.ID,
 		fixture.owner.ID, fixture.model.ID, database.ChatMessageRoleAssistant,
 		"assistant")
 	finishedAt := time.Now().UTC().Round(time.Microsecond)
@@ -470,7 +471,7 @@ func TestService_UpdateStep(t *testing.T) {
 			ResponseStatus: 200,
 			DurationMs:     25,
 		}},
-		Metadata:   map[string]any{"provider": fixture.model.Provider},
+		Metadata:   map[string]any{"provider": fixture.provider},
 		FinishedAt: finishedAt,
 	})
 	require.NoError(t, err)
@@ -487,7 +488,7 @@ func TestService_UpdateStep(t *testing.T) {
 		`[{"number":1,"response_status":200,"duration_ms":25}]`,
 		string(updated.Attempts),
 	)
-	require.JSONEq(t, `{"provider":"`+fixture.model.Provider+`"}`,
+	require.JSONEq(t, `{"provider":"`+fixture.provider+`"}`,
 		string(updated.Metadata))
 	require.True(t, updated.FinishedAt.Valid)
 	storedSteps, err := fixture.db.GetChatDebugStepsByRunID(fixture.ctx, run.ID)
@@ -598,12 +599,12 @@ func TestService_DeleteAfterMessageID(t *testing.T) {
 	t.Parallel()
 
 	fixture := newFixture(t)
-	low := insertMessage(fixture.ctx, t, fixture.db, fixture.chat.ID, fixture.owner.ID,
+	low := insertMessage(t, fixture.db, fixture.chat.ID, fixture.owner.ID,
 		fixture.model.ID, database.ChatMessageRoleAssistant, "low")
-	threshold := insertMessage(fixture.ctx, t, fixture.db, fixture.chat.ID,
+	threshold := insertMessage(t, fixture.db, fixture.chat.ID,
 		fixture.owner.ID, fixture.model.ID, database.ChatMessageRoleAssistant,
 		"threshold")
-	high := insertMessage(fixture.ctx, t, fixture.db, fixture.chat.ID, fixture.owner.ID,
+	high := insertMessage(t, fixture.db, fixture.chat.ID, fixture.owner.ID,
 		fixture.model.ID, database.ChatMessageRoleAssistant, "high")
 	require.Less(t, low.ID, threshold.ID)
 	require.Less(t, threshold.ID, high.ID)
@@ -685,7 +686,7 @@ func TestService_FinalizeStale(t *testing.T) {
 
 	ctx := testutil.Context(t, testutil.WaitLong)
 	db, _ := dbtestutil.NewDB(t)
-	_, owner, chat, model := seedChat(ctx, t, db)
+	_, owner, chat, model := seedChat(t, db)
 	require.NotEqual(t, uuid.Nil, owner.ID)
 
 	staleTime := time.Now().Add(-10 * time.Minute).UTC().Round(time.Microsecond)
@@ -733,7 +734,7 @@ func TestService_FinalizeStale_BroadcastsFinalizeEvent(t *testing.T) {
 
 	ctx := testutil.Context(t, testutil.WaitLong)
 	db, _ := dbtestutil.NewDB(t)
-	_, owner, chat, model := seedChat(ctx, t, db)
+	_, owner, chat, model := seedChat(t, db)
 	require.NotEqual(t, uuid.Nil, owner.ID)
 
 	staleTime := time.Now().Add(-10 * time.Minute).UTC().Round(time.Microsecond)
@@ -796,7 +797,7 @@ func TestService_FinalizeStale_NoChangesDoesNotBroadcast(t *testing.T) {
 
 	ctx := testutil.Context(t, testutil.WaitLong)
 	db, _ := dbtestutil.NewDB(t)
-	_, owner, chat, _ := seedChat(ctx, t, db)
+	_, owner, chat, _ := seedChat(t, db)
 	require.NotEqual(t, uuid.Nil, owner.ID)
 
 	memoryPubsub := dbpubsub.NewInMemory()
@@ -1018,7 +1019,7 @@ func TestService_PublishesEvents(t *testing.T) {
 
 	ctx := testutil.Context(t, testutil.WaitLong)
 	db, _ := dbtestutil.NewDB(t)
-	_, owner, chat, model := seedChat(ctx, t, db)
+	_, owner, chat, model := seedChat(t, db)
 	require.NotEqual(t, uuid.Nil, owner.ID)
 
 	memoryPubsub := dbpubsub.NewInMemory()
@@ -1069,20 +1070,22 @@ func newFixture(t *testing.T) testFixture {
 
 	ctx := testutil.Context(t, testutil.WaitLong)
 	db, _ := dbtestutil.NewDB(t)
-	org, owner, chat, model := seedChat(ctx, t, db)
+	org, owner, chat, model := seedChat(t, db)
+	prov, err := db.GetAIProviderByID(ctx, model.AIProviderID.UUID)
+	require.NoError(t, err)
 	return testFixture{
-		ctx:   ctx,
-		db:    db,
-		svc:   chatdebug.NewService(db, testutil.Logger(t), nil),
-		org:   org,
-		owner: owner,
-		chat:  chat,
-		model: model,
+		ctx:      ctx,
+		db:       db,
+		svc:      chatdebug.NewService(db, testutil.Logger(t), nil),
+		org:      org,
+		owner:    owner,
+		chat:     chat,
+		model:    model,
+		provider: string(prov.Type),
 	}
 }
 
 func seedChat(
-	ctx context.Context,
 	t *testing.T,
 	db database.Store,
 ) (database.Organization, database.User, database.Chat, database.ChatModelConfig) {
@@ -1091,38 +1094,21 @@ func seedChat(
 	org := dbgen.Organization(t, db, database.Organization{})
 	owner := dbgen.User(t, db, database.User{})
 	providerName := "openai"
-	_, err := db.InsertChatProvider(ctx, database.InsertChatProviderParams{
-		Provider:             providerName,
-		DisplayName:          "OpenAI",
-		APIKey:               "test-key",
-		CreatedBy:            uuid.NullUUID{UUID: owner.ID, Valid: true},
-		Enabled:              true,
-		CentralApiKeyEnabled: true,
+	dbgen.ChatProvider(t, db, database.ChatProvider{
+		Provider:    providerName,
+		DisplayName: "OpenAI",
 	})
-	require.NoError(t, err)
 
-	model, err := db.InsertChatModelConfig(ctx,
-		database.InsertChatModelConfigParams{
-			Provider:             providerName,
-			Model:                "model-" + uuid.NewString(),
-			DisplayName:          "Test Model",
-			CreatedBy:            uuid.NullUUID{UUID: owner.ID, Valid: true},
-			UpdatedBy:            uuid.NullUUID{UUID: owner.ID, Valid: true},
-			Enabled:              true,
-			IsDefault:            true,
-			ContextLimit:         128000,
-			CompressionThreshold: 70,
-			Options:              json.RawMessage(`{}`),
-		},
-	)
-	require.NoError(t, err)
+	model := dbgen.ChatModelConfig(t, db, database.ChatModelConfig{
+		Model:     "model-" + uuid.NewString(),
+		IsDefault: true,
+	})
 
-	chat := insertChat(ctx, t, db, org.ID, owner.ID, model.ID)
+	chat := insertChat(t, db, org.ID, owner.ID, model.ID)
 	return org, owner, chat, model
 }
 
 func insertChat(
-	ctx context.Context,
 	t *testing.T,
 	db database.Store,
 	orgID uuid.UUID,
@@ -1131,20 +1117,16 @@ func insertChat(
 ) database.Chat {
 	t.Helper()
 
-	chat, err := db.InsertChat(ctx, database.InsertChatParams{
+	chat := dbgen.Chat(t, db, database.Chat{
 		OrganizationID:    orgID,
-		Status:            database.ChatStatusWaiting,
-		ClientType:        database.ChatClientTypeUi,
 		OwnerID:           ownerID,
 		LastModelConfigID: modelID,
 		Title:             "chat-" + uuid.NewString(),
 	})
-	require.NoError(t, err)
 	return chat
 }
 
 func insertMessage(
-	ctx context.Context,
 	t *testing.T,
 	db database.Store,
 	chatID uuid.UUID,
@@ -1160,29 +1142,15 @@ func insertMessage(
 	})
 	require.NoError(t, err)
 
-	messages, err := db.InsertChatMessages(ctx, database.InsertChatMessagesParams{
-		ChatID:              chatID,
-		CreatedBy:           []uuid.UUID{createdBy},
-		ModelConfigID:       []uuid.UUID{modelID},
-		Role:                []database.ChatMessageRole{role},
-		Content:             []string{string(parts.RawMessage)},
-		ContentVersion:      []int16{chatprompt.CurrentContentVersion},
-		Visibility:          []database.ChatMessageVisibility{database.ChatMessageVisibilityBoth},
-		InputTokens:         []int64{0},
-		OutputTokens:        []int64{0},
-		TotalTokens:         []int64{0},
-		ReasoningTokens:     []int64{0},
-		CacheCreationTokens: []int64{0},
-		CacheReadTokens:     []int64{0},
-		ContextLimit:        []int64{0},
-		Compressed:          []bool{false},
-		TotalCostMicros:     []int64{0},
-		RuntimeMs:           []int64{0},
-		ProviderResponseID:  []string{""},
+	msg := dbgen.ChatMessage(t, db, database.ChatMessage{
+		ChatID:         chatID,
+		CreatedBy:      uuid.NullUUID{UUID: createdBy, Valid: true},
+		ModelConfigID:  uuid.NullUUID{UUID: modelID, Valid: true},
+		Role:           role,
+		Content:        parts,
+		ContentVersion: chatprompt.CurrentContentVersion,
 	})
-	require.NoError(t, err)
-	require.Len(t, messages, 1)
-	return messages[0]
+	return msg
 }
 
 func createRun(t *testing.T, fixture testFixture) database.ChatDebugRun {
@@ -1193,7 +1161,7 @@ func createRun(t *testing.T, fixture testFixture) database.ChatDebugRun {
 		ModelConfigID: fixture.model.ID,
 		Kind:          chatdebug.KindChatTurn,
 		Status:        chatdebug.StatusInProgress,
-		Provider:      fixture.model.Provider,
+		Provider:      fixture.provider,
 		Model:         fixture.model.Model,
 	})
 	require.NoError(t, err)

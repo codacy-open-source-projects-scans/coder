@@ -1,9 +1,23 @@
 package chatd
 
-// WaitUntilIdleForTest waits for background chat work tracked by the server to
-// finish without shutting the server down. Tests use this to assert final
-// database state only after asynchronous chat processing has completed.
-// Close waits for the same tracked work, but also stops the server.
-func WaitUntilIdleForTest(server *Server) {
-	server.drainInflight()
+import (
+	"testing"
+
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+)
+
+// StageAnomalyCount returns the stage anomaly count for reason.
+var StageAnomalyCount = anomalyCount
+
+// DefaultTaskTimeout is the per-attempt task timeout.
+const DefaultTaskTimeout = defaultTaskTimeout
+
+// SpanAttr returns the span attribute key, or "" when unset.
+func SpanAttr(t *testing.T, span sdktrace.ReadOnlySpan, key string) string {
+	t.Helper()
+	value, ok := spanAttribute(t, span, key)
+	if !ok {
+		return ""
+	}
+	return value.Emit()
 }

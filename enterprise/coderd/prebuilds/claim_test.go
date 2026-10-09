@@ -134,11 +134,11 @@ func TestClaimPrebuild(t *testing.T) {
 				clock.Set(dbtime.Now())
 				ctx := testutil.Context(t, testutil.WaitSuperLong)
 				db, pubsub := dbtestutil.NewDB(t)
+				logger := testutil.Logger(t)
 
 				spy := newStoreSpy(db, tc.claimingErr)
 				expectedPrebuildsCount := desiredInstances * presetCount
 
-				logger := testutil.Logger(t)
 				client, _, api, owner := coderdenttest.NewWithAPI(t, &coderdenttest.Options{
 					Options: &coderdtest.Options{
 						Database: spy,
@@ -176,6 +176,10 @@ func TestClaimPrebuild(t *testing.T) {
 					10,
 					nil,
 				)
+				go reconciler.Run(ctx)
+				t.Cleanup(func() {
+					reconciler.Stop(testutil.Context(t, testutil.WaitShort), nil)
+				})
 				var claimer agplprebuilds.Claimer = prebuilds.NewEnterpriseClaimer()
 				api.AGPL.PrebuildsClaimer.Store(&claimer)
 
@@ -201,7 +205,6 @@ func TestClaimPrebuild(t *testing.T) {
 					actions, err := reconciler.CalculateActions(ctx, *ps)
 					require.NoError(t, err)
 					require.NotNil(t, actions)
-
 					require.NoError(t, reconciler.ReconcilePreset(ctx, *ps))
 				}
 
@@ -242,7 +245,7 @@ func TestClaimPrebuild(t *testing.T) {
 					t.Logf("found %d running prebuilds so far, want %d", len(runningPrebuilds), expectedPrebuildsCount)
 
 					return len(runningPrebuilds) == expectedPrebuildsCount
-				}, testutil.WaitSuperLong, testutil.IntervalSlow)
+				}, testutil.WaitSuperLong, testutil.IntervalFast)
 
 				// When: a user creates a new workspace with a preset for which prebuilds are configured.
 				workspaceName := strings.ReplaceAll(testutil.GetRandomName(t), "_", "-")
@@ -353,8 +356,8 @@ func TestClaimPrebuild(t *testing.T) {
 
 					t.Logf("found %d running prebuilds so far, want %d", len(rows), expectedPrebuildsCount)
 
-					return len(runningPrebuilds) == expectedPrebuildsCount
-				}, testutil.WaitSuperLong, testutil.IntervalSlow)
+					return len(rows) == expectedPrebuildsCount
+				}, testutil.WaitSuperLong, testutil.IntervalFast)
 
 				// Then: when restarting the created workspace (which claimed a prebuild), it should not try and claim a new prebuild.
 				// Prebuilds should ONLY be used for net-new workspaces.

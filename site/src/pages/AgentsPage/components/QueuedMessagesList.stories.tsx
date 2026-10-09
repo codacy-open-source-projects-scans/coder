@@ -1,25 +1,25 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, fn, userEvent, within } from "storybook/test";
 import type { ChatQueuedMessage } from "#/api/typesGenerated";
+import {
+	MockChatAutomation,
+	MockChatQueuedMessage,
+} from "#/testHelpers/chatEntities";
 import { QueuedMessagesList } from "./QueuedMessagesList";
 
 // Helper to build a ChatQueuedMessage with minimal boilerplate.
-function makeMessage(
+function buildMessage(
 	id: number,
 	content: ChatQueuedMessage["content"],
 ): ChatQueuedMessage {
-	return {
-		id,
-		chat_id: "test-chat-id",
-		content,
-		created_at: new Date().toISOString(),
-	};
+	return { ...MockChatQueuedMessage, id, content };
 }
 
 const meta: Meta<typeof QueuedMessagesList> = {
 	title: "pages/AgentsPage/QueuedMessagesList",
 	component: QueuedMessagesList,
 	args: {
+		automationNames: { names: new Map(), status: "settled" },
 		onDelete: fn(),
 		onPromote: fn(),
 	},
@@ -46,18 +46,98 @@ const textContent = (text: string): ChatQueuedMessage["content"] =>
 // A single queued message with text-part content.
 export const SingleMessage: Story = {
 	args: {
-		messages: [makeMessage(1, textContent("Run the test suite"))],
+		messages: [buildMessage(1, textContent("Run the test suite"))],
 	},
 };
 
-// Several messages queued up at once.
+// Several messages queued up at once. The phone viewport hides the
+// Enter-to-send hint below the sm breakpoint.
 export const SeveralMessages: Story = {
 	args: {
 		messages: [
-			makeMessage(1, textContent("Install dependencies")),
-			makeMessage(2, textContent("Run database migrations")),
-			makeMessage(3, textContent("Start the dev server")),
+			buildMessage(1, textContent("Install dependencies")),
+			buildMessage(2, textContent("Run database migrations")),
+			buildMessage(3, textContent("Start the dev server")),
 		],
+	},
+	parameters: {
+		viewport: { defaultViewport: "mobile1" },
+		pixel: { matrix: { viewports: ["phone"] } },
+	},
+};
+
+const mockLongNameAutomation = {
+	...MockChatAutomation,
+	id: "5c4b3a29-1807-4f6e-9d5c-4b3a29180706",
+	name: "Nightly regression triage for the payments service across every staging region and canary cluster, with a summary of flaky tests",
+};
+
+export const AutomationMessages: Story = {
+	decorators: [
+		(Story) => (
+			<div className="max-w-[390px]">
+				<Story />
+			</div>
+		),
+	],
+	args: {
+		messages: [
+			{
+				...buildMessage(1, textContent("Check the nightly build.")),
+				automation_id: MockChatAutomation.id,
+				input_id: "0b6c4e2a-1f3d-4b5c-8a9e-7d6c5b4a3f2e",
+			},
+			{
+				...buildMessage(2, textContent("Summarize open issues.")),
+				automation_id: "3e9d8c7b-6a5f-4e3d-8c2b-1a0f9e8d7c6b",
+				input_id: "9a8b7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+			},
+			{
+				...buildMessage(3, textContent("Triage last night's failures.")),
+				automation_id: mockLongNameAutomation.id,
+				input_id: "1d2e3f4a-5b6c-4d7e-8f9a-0b1c2d3e4f5a",
+			},
+			buildMessage(4, textContent("Run the test suite")),
+		],
+		automationNames: {
+			names: new Map([
+				[MockChatAutomation.id, MockChatAutomation.name],
+				[mockLongNameAutomation.id, mockLongNameAutomation.name],
+			]),
+			status: "settled",
+		},
+	},
+};
+
+export const AutomationMessagesLoading: Story = {
+	...AutomationMessages,
+	args: {
+		...AutomationMessages.args,
+		automationNames: {
+			names: new Map([[MockChatAutomation.id, MockChatAutomation.name]]),
+			status: "loading",
+		},
+	},
+};
+
+// Opens the first label's tooltip to capture the named state.
+export const AutomationLabelTooltip: Story = {
+	...AutomationMessages,
+	play: async ({ canvasElement }) => {
+		const canvas = within(canvasElement);
+		const [label] = await canvas.findAllByRole("button", {
+			name: /^Automation run/,
+		});
+		await userEvent.hover(label);
+	},
+};
+
+// Opens the first label's tooltip after the automations list failed.
+export const AutomationLabelTooltipError: Story = {
+	...AutomationLabelTooltip,
+	args: {
+		...AutomationMessages.args,
+		automationNames: { names: new Map(), status: "error" },
 	},
 };
 
@@ -66,13 +146,13 @@ export const MixedContentTypes: Story = {
 	args: {
 		messages: [
 			// Typed text content.
-			makeMessage(1, textContent("Plain text content")),
+			buildMessage(1, textContent("Plain text content")),
 			// Attachment-only message falls back to the generic label.
-			makeMessage(2, [
+			buildMessage(2, [
 				{ type: "file", file_id: "img-1", media_type: "image/png" },
 			] as ChatQueuedMessage["content"]),
 			// Empty content falls back to the generic label.
-			makeMessage(3, [] as ChatQueuedMessage["content"]),
+			buildMessage(3, [] as ChatQueuedMessage["content"]),
 		],
 	},
 };
@@ -81,7 +161,7 @@ export const MixedContentTypes: Story = {
 export const LongQueue: Story = {
 	args: {
 		messages: Array.from({ length: 10 }, (_, i) =>
-			makeMessage(i + 1, textContent(`Queued task number ${i + 1}`)),
+			buildMessage(i + 1, textContent(`Queued task number ${i + 1}`)),
 		),
 	},
 };
@@ -90,13 +170,13 @@ export const LongQueue: Story = {
 export const LongMessageText: Story = {
 	args: {
 		messages: [
-			makeMessage(
+			buildMessage(
 				1,
 				textContent(
 					"This is an extremely long queued message that should be truncated by the component layout because it exceeds the available horizontal space in the queue list container",
 				),
 			),
-			makeMessage(2, textContent("Short follow-up")),
+			buildMessage(2, textContent("Short follow-up")),
 		],
 	},
 };
@@ -105,7 +185,7 @@ export const LongMessageText: Story = {
 export const MultiLineTextTruncation: Story = {
 	args: {
 		messages: [
-			makeMessage(
+			buildMessage(
 				1,
 				textContent(
 					"First line of the message\nSecond line that should be hidden",
@@ -113,21 +193,13 @@ export const MultiLineTextTruncation: Story = {
 			),
 		],
 	},
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		// The first line and ellipsis should be visible in the same span.
-		const textSpan = canvas.getByText(/First line of the message…/);
-		expect(textSpan).toBeInTheDocument();
-		// The second line should not appear anywhere.
-		expect(canvas.queryByText(/Second line/)).not.toBeInTheDocument();
-	},
 };
 
 // A message with both text and a file attachment shows the ImageIcon badge.
 export const WithAttachments: Story = {
 	args: {
 		messages: [
-			makeMessage(1, [
+			buildMessage(1, [
 				{ type: "text", text: "Check this screenshot" },
 				{ type: "file", file_id: "abc-123", media_type: "image/png" },
 			] as ChatQueuedMessage["content"]),
@@ -139,7 +211,7 @@ export const WithAttachments: Story = {
 export const AttachmentsOnly: Story = {
 	args: {
 		messages: [
-			makeMessage(1, [
+			buildMessage(1, [
 				{ type: "file", file_id: "img-1", media_type: "image/png" },
 				{ type: "file", file_id: "img-2", media_type: "image/jpeg" },
 			] as ChatQueuedMessage["content"]),
@@ -147,46 +219,39 @@ export const AttachmentsOnly: Story = {
 	},
 };
 
-// Clicking Edit on a message with attachments passes file blocks to onEdit.
-export const EditPassesFileBlocks: Story = {
+// Queued messages retain send and delete actions without exposing edit.
+export const ActionsExcludeEdit: Story = {
 	args: {
-		onEdit: fn(),
-		messages: [
-			makeMessage(1, [
-				{ type: "text", text: "Check this screenshot" },
-				{ type: "file", file_id: "abc-123", media_type: "image/png" },
-			] as ChatQueuedMessage["content"]),
-		],
-	},
-	play: async ({ canvasElement, args }) => {
-		const canvas = within(canvasElement);
-		const editButton = canvas.getByRole("button", { name: "Edit" });
-		await userEvent.click(editButton);
-		expect(args.onEdit).toHaveBeenCalledWith(1, "Check this screenshot", [
-			{ type: "file", file_id: "abc-123", media_type: "image/png" },
-		]);
+		messages: [buildMessage(1, textContent("Run the linter"))],
 	},
 };
 
-// Clicking Edit on an attachment-only message passes file blocks with empty text.
-export const EditAttachmentOnlyMessage: Story = {
+let rejectQueuedDelete: ((error: Error) => void) | undefined;
+
+// Deleting hides the row optimistically and disables sibling actions while
+// pending; a rejected delete restores the row and re-enables actions.
+export const DeleteRejectionRestoresRow: Story = {
 	args: {
-		onEdit: fn(),
 		messages: [
-			makeMessage(1, [
-				{ type: "file", file_id: "img-1", media_type: "image/png" },
-				{ type: "file", file_id: "img-2", media_type: "image/jpeg" },
-			] as ChatQueuedMessage["content"]),
+			buildMessage(1, textContent("First queued")),
+			buildMessage(2, textContent("Second queued")),
 		],
+		onDelete: () =>
+			new Promise<void>((_, reject) => {
+				rejectQueuedDelete = reject;
+			}),
 	},
-	play: async ({ canvasElement, args }) => {
+	play: async ({ canvasElement }) => {
 		const canvas = within(canvasElement);
-		const editButton = canvas.getByRole("button", { name: "Edit" });
-		await userEvent.click(editButton);
-		expect(args.onEdit).toHaveBeenCalledWith(1, "", [
-			{ type: "file", file_id: "img-1", media_type: "image/png" },
-			{ type: "file", file_id: "img-2", media_type: "image/jpeg" },
-		]);
+		const removeButtons = canvas.getAllByRole("button", {
+			name: "Remove from queue",
+		});
+		await userEvent.click(removeButtons[0]);
+
+		if (!rejectQueuedDelete) {
+			throw new Error("onDelete was not invoked");
+		}
+		rejectQueuedDelete(new Error("delete failed"));
 	},
 };
 
@@ -194,14 +259,35 @@ export const EditAttachmentOnlyMessage: Story = {
 export const MixedQueueWithAttachments: Story = {
 	args: {
 		messages: [
-			makeMessage(1, textContent("Run the linter")),
-			makeMessage(2, [
+			buildMessage(1, textContent("Run the linter")),
+			buildMessage(2, [
 				{ type: "text", text: "Fix this layout bug" },
 				{ type: "file", file_id: "img-a", media_type: "image/png" },
 			] as ChatQueuedMessage["content"]),
-			makeMessage(3, [
+			buildMessage(3, [
 				{ type: "file", file_id: "img-b", media_type: "image/png" },
 			] as ChatQueuedMessage["content"]),
 		],
+	},
+};
+
+export const HookNotice: Story = {
+	args: {
+		messages: [
+			buildMessage(1, [
+				{ type: "text", text: "Deploy to production" },
+				{ type: "hook-notice", text: "Deployment prompts are audited." },
+			]),
+		],
+	},
+	play: async ({ canvasElement }) => {
+		const canvas = within(canvasElement);
+		const trigger = canvas.getByRole("button", {
+			name: "Lifecycle hook notice: Deployment prompts are audited.",
+		});
+		await userEvent.tab();
+		expect(trigger).toHaveFocus();
+		const tooltip = await within(document.body).findByRole("tooltip");
+		expect(tooltip).toHaveTextContent("Deployment prompts are audited.");
 	},
 };

@@ -5,6 +5,7 @@ package chatretry
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"golang.org/x/xerrors"
@@ -20,21 +21,9 @@ const (
 	// MaxDelay is the upper bound for the exponential backoff
 	// duration. Matches the cap used in coder/mux.
 	MaxDelay = 60 * time.Second
-
-	// MaxAttempts is the upper bound on retry attempts before
-	// giving up. With a 60s max backoff this allows roughly
-	// 25 minutes of retries, which is reasonable for transient
-	// LLM provider issues.
-	MaxAttempts = 25
 )
 
 type ClassifiedError = chaterror.ClassifiedError
-
-// IsRetryable determines whether an error from an LLM provider is
-// transient and worth retrying.
-func IsRetryable(err error) bool {
-	return chaterror.Classify(err).Retryable
-}
 
 // Delay returns the backoff duration for the given 0-indexed attempt.
 // Uses exponential backoff: min(InitialDelay * 2^attempt, MaxDelay).
@@ -60,6 +49,29 @@ func effectiveDelay(attempt int, classified ClassifiedError) time.Duration {
 	return delay
 }
 
+func contextError(ctx context.Context) error {
+	if cause := context.Cause(ctx); cause != nil {
+		return cause
+	}
+	return ctx.Err()
+}
+
+// classifyProviderAttemptError must be called after the caller's context
+// has been checked. Provider clients can surface remote stream resets as
+// bare context.Canceled, which this converts into a retryable transport reset.
+func classifyProviderAttemptError(err error) (ClassifiedError, error) {
+	classified := chaterror.Classify(err)
+	if classified.Retryable || classified.StatusCode != 0 || !errors.Is(err, context.Canceled) {
+		return classified, err
+	}
+	wrapped := errors.Join(chaterror.ErrProviderTransportReset, err)
+	reclassified := chaterror.Classify(wrapped)
+	if !reclassified.Retryable {
+		return classified, err
+	}
+	return reclassified, wrapped
+}
+
 // RetryFn is the function to retry. It receives a context and returns
 // an error. The context may be a child of the original with adjusted
 // deadlines for individual attempts.
@@ -71,36 +83,48 @@ type RetryFn func(ctx context.Context) error
 type OnRetryFn func(attempt int, err error, classified ClassifiedError, delay time.Duration)
 
 // Retry calls fn repeatedly until it succeeds, returns a
-// non-retryable error, ctx is canceled, or MaxAttempts is reached.
-// Retries use exponential backoff capped at MaxDelay, unless the
-// normalized error includes a longer provider Retry-After hint.
+// non-retryable error, ctx is canceled, or it has been retried
+// maxRetries times. Retries use exponential backoff capped at
+// MaxDelay, unless the normalized error includes a longer provider
+// Retry-After hint. maxRetries must be at least 1; otherwise Retry
+// returns an error without calling fn.
+//
+// When fn returns bare context.Canceled while ctx is still alive, Retry
+// treats it as a provider transport reset and retries it.
 //
 // The onRetry callback (if non-nil) is called before each retry
 // attempt, giving the caller a chance to reset state, log, or
 // publish status events.
-func Retry(ctx context.Context, fn RetryFn, onRetry OnRetryFn) error {
+func Retry(ctx context.Context, maxRetries int, fn RetryFn, onRetry OnRetryFn) error {
+	if maxRetries < 1 {
+		return xerrors.Errorf("max retries must be positive, got %d", maxRetries)
+	}
 	var attempt int
 	for {
+		if ctxErr := contextError(ctx); ctxErr != nil {
+			return ctxErr
+		}
+
 		err := fn(ctx)
 		if err == nil {
 			return nil
 		}
 
-		classified := chaterror.Classify(err)
+		// fn runs with ctx. If it canceled the caller's context, that cause
+		// wins over the provider error returned from fn.
+		if ctxErr := contextError(ctx); ctxErr != nil {
+			return ctxErr
+		}
+
+		classified, err := classifyProviderAttemptError(err)
 		if !classified.Retryable {
 			return chaterror.WithClassification(err, classified)
 		}
 
-		// If the caller's context is already done, return the
-		// context error so cancellation propagates cleanly.
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-
 		attempt++
-		if attempt >= MaxAttempts {
+		if attempt > maxRetries {
 			return chaterror.WithClassification(
-				xerrors.Errorf("max retry attempts (%d) exceeded: %w", MaxAttempts, err),
+				xerrors.Errorf("max retries (%d) exceeded: %w", maxRetries, err),
 				classified,
 			)
 		}
@@ -115,7 +139,7 @@ func Retry(ctx context.Context, fn RetryFn, onRetry OnRetryFn) error {
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return ctx.Err()
+			return contextError(ctx)
 		case <-timer.C:
 		}
 	}

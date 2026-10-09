@@ -2,12 +2,12 @@
 package db2sdk
 
 import (
+	"cmp"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/url"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -19,13 +19,13 @@ import (
 	"tailscale.com/tailcfg"
 
 	agentproto "github.com/coder/coder/v2/agent/proto"
+	aibridgeutils "github.com/coder/coder/v2/aibridge/utils"
 	"github.com/coder/coder/v2/coderd/database"
 	"github.com/coder/coder/v2/coderd/database/dbtime"
 	"github.com/coder/coder/v2/coderd/externalauth/gitprovider"
 	"github.com/coder/coder/v2/coderd/rbac"
 	"github.com/coder/coder/v2/coderd/rbac/policy"
 	"github.com/coder/coder/v2/coderd/render"
-	"github.com/coder/coder/v2/coderd/util/ptr"
 	"github.com/coder/coder/v2/coderd/util/slice"
 	"github.com/coder/coder/v2/coderd/workspaceapps/appurl"
 	"github.com/coder/coder/v2/coderd/x/chatd/chatprompt"
@@ -40,6 +40,81 @@ func APIAllowListTarget(entry rbac.AllowListElement) codersdk.APIAllowListTarget
 		Type: codersdk.RBACResource(entry.Type),
 		ID:   entry.ID,
 	}
+}
+
+// AIProvider converts a database row plus its API keys into the
+// codersdk shape. The caller is responsible for ensuring the row and
+// keys have been decrypted (i.e. fetched through the dbcrypt-wrapped
+// store). Each api_key is masked via aibridge utils.MaskSecret and
+// write-only fields on Settings are stripped, so the result is safe
+// to echo back in API responses.
+func AIProvider(row database.AIProvider, keys []database.AIProviderKey) (codersdk.AIProvider, error) {
+	display := row.Name
+	if row.DisplayName.Valid && row.DisplayName.String != "" {
+		display = row.DisplayName.String
+	}
+	out := codersdk.AIProvider{
+		ID:          row.ID,
+		Type:        codersdk.AIProviderType(row.Type),
+		Name:        row.Name,
+		DisplayName: display,
+		Icon:        row.Icon,
+		Enabled:     row.Enabled,
+		BaseURL:     row.BaseUrl,
+		APIKeys:     maskAIProviderKeys(keys),
+		CreatedAt:   row.CreatedAt,
+		UpdatedAt:   row.UpdatedAt,
+	}
+	s, err := AIProviderSettings(row.Settings)
+	if err != nil {
+		return codersdk.AIProvider{}, xerrors.Errorf("decode settings: %w", err)
+	}
+	out.Settings = redactAIProviderSettings(s)
+	return out, nil
+}
+
+// AIProviderSettings parses the on-disk JSON form back into a codersdk
+// settings value. SQL NULL and the empty string decode to the zero
+// value.
+func AIProviderSettings(col sql.NullString) (codersdk.AIProviderSettings, error) {
+	if !col.Valid || col.String == "" {
+		return codersdk.AIProviderSettings{}, nil
+	}
+	var s codersdk.AIProviderSettings
+	if err := json.Unmarshal([]byte(col.String), &s); err != nil {
+		return codersdk.AIProviderSettings{}, err
+	}
+	return s, nil
+}
+
+// maskAIProviderKeys converts the supplied database rows into the
+// public-facing AIProviderKey shape, preserving order. Plaintext is
+// replaced by a non-reversible mask (see aibridgeutils.MaskSecret) so
+// the result is safe to embed in API responses.
+func maskAIProviderKeys(keys []database.AIProviderKey) []codersdk.AIProviderKey {
+	out := make([]codersdk.AIProviderKey, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, codersdk.AIProviderKey{
+			ID:        k.ID,
+			Masked:    aibridgeutils.MaskSecret(k.APIKey),
+			CreatedAt: k.CreatedAt,
+		})
+	}
+	return out
+}
+
+// redactAIProviderSettings strips write-only fields from a settings
+// value so it can be safely echoed back in API responses.
+func redactAIProviderSettings(s codersdk.AIProviderSettings) codersdk.AIProviderSettings {
+	out := s
+	if out.Bedrock != nil {
+		// Deep-copy so we don't mutate the caller's struct.
+		b := *out.Bedrock
+		b.AccessKey = nil
+		b.AccessKeySecret = nil
+		out.Bedrock = &b
+	}
+	return out
 }
 
 type ExternalAuthMeta struct {
@@ -123,11 +198,11 @@ func TemplateVersionParameterFromPreview(param previewtypes.Parameter) (codersdk
 		}
 		if validation.Min != nil {
 			//nolint:gosec // No other choice
-			sdkParam.ValidationMin = ptr.Ref(int32(*validation.Min))
+			sdkParam.ValidationMin = new(int32(*validation.Min))
 		}
 		if validation.Max != nil {
 			//nolint:gosec // No other choice
-			sdkParam.ValidationMax = ptr.Ref(int32(*validation.Max))
+			sdkParam.ValidationMax = new(int32(*validation.Max))
 		}
 	}
 
@@ -279,12 +354,6 @@ func User(user database.User, organizationIDs []uuid.UUID) codersdk.User {
 	return convertedUser
 }
 
-func Users(users []database.User, organizationIDs map[uuid.UUID][]uuid.UUID) []codersdk.User {
-	return slice.List(users, func(user database.User) codersdk.User {
-		return User(user, organizationIDs[user.ID])
-	})
-}
-
 func Group(row database.GetGroupsRow, members []database.GroupMember, totalMemberCount int) codersdk.Group {
 	return codersdk.Group{
 		ID:                      row.Group.ID,
@@ -293,6 +362,24 @@ func Group(row database.GetGroupsRow, members []database.GroupMember, totalMembe
 		OrganizationID:          row.Group.OrganizationID,
 		AvatarURL:               row.Group.AvatarURL,
 		Members:                 ReducedUsersFromGroupMembers(members),
+		TotalMemberCount:        totalMemberCount,
+		QuotaAllowance:          int(row.Group.QuotaAllowance),
+		Source:                  codersdk.GroupSource(row.Group.Source),
+		OrganizationName:        row.OrganizationName,
+		OrganizationDisplayName: row.OrganizationDisplayName,
+	}
+}
+
+// PaginatedGroup converts a group row into the slim summary returned by the
+// paginated groups endpoint, which omits the member roster and carries only
+// the total member count.
+func PaginatedGroup(row database.GetGroupsRow, totalMemberCount int) codersdk.PaginatedGroup {
+	return codersdk.PaginatedGroup{
+		ID:                      row.Group.ID,
+		Name:                    row.Group.Name,
+		DisplayName:             row.Group.DisplayName,
+		OrganizationID:          row.Group.OrganizationID,
+		AvatarURL:               row.Group.AvatarURL,
 		TotalMemberCount:        totalMemberCount,
 		QuotaAllowance:          int(row.Group.QuotaAllowance),
 		Source:                  codersdk.GroupSource(row.Group.Source),
@@ -391,11 +478,19 @@ func TemplateVersionParameterOptionFromPreview(option *previewtypes.ParameterOpt
 }
 
 func OAuth2ProviderApp(accessURL *url.URL, dbApp database.OAuth2ProviderApp) codersdk.OAuth2ProviderApp {
+	uris := dbApp.RegisteredRedirectURIs()
 	return codersdk.OAuth2ProviderApp{
-		ID:          dbApp.ID,
-		Name:        dbApp.Name,
-		CallbackURL: dbApp.CallbackURL,
-		Icon:        dbApp.Icon,
+		ID:           dbApp.ID,
+		Name:         dbApp.Name,
+		RedirectURIs: uris,
+		CallbackURL:  uris[0],
+		Icon:         dbApp.Icon,
+		Scope:        rbac.CanonicalScopeList(dbApp.Scope.String),
+		ClientType:   codersdk.OAuth2ClientType(dbApp.ClientType),
+		// The column allows NULL, although every write path sets a value. A
+		// NULL reads as false, which keeps the client update guards closed but
+		// hides the scope narrowing warning for that app.
+		DynamicallyRegistered: dbApp.DynamicallyRegistered.Bool,
 		Endpoints: codersdk.OAuth2AppEndpoints{
 			Authorization: accessURL.ResolveReference(&url.URL{
 				Path: "/oauth2/authorize",
@@ -501,8 +596,8 @@ func WorkspaceAgent(derpMap *tailcfg.DERPMap, coordinator tailnet.Coordinator,
 	if node != nil {
 		workspaceAgent.DERPLatency = map[string]codersdk.DERPRegion{}
 		for rawRegion, latency := range node.DERPLatency {
-			regionParts := strings.SplitN(rawRegion, "-", 2)
-			regionID, err := strconv.Atoi(regionParts[0])
+			regionIDStr, _, _ := strings.Cut(rawRegion, "-")
+			regionID, err := strconv.Atoi(regionIDStr)
 			if err != nil {
 				return codersdk.WorkspaceAgent{}, xerrors.Errorf("convert derp region id %q: %w", rawRegion, err)
 			}
@@ -592,14 +687,12 @@ func AppSubdomain(dbApp database.WorkspaceApp, agentName, workspaceName, ownerNa
 }
 
 func Apps(dbApps []database.WorkspaceApp, statuses []database.WorkspaceAppStatus, agent database.WorkspaceAgent, ownerName string, workspace database.WorkspaceTable) []codersdk.WorkspaceApp {
-	sort.Slice(dbApps, func(i, j int) bool {
-		if dbApps[i].DisplayOrder != dbApps[j].DisplayOrder {
-			return dbApps[i].DisplayOrder < dbApps[j].DisplayOrder
-		}
-		if dbApps[i].DisplayName != dbApps[j].DisplayName {
-			return dbApps[i].DisplayName < dbApps[j].DisplayName
-		}
-		return dbApps[i].Slug < dbApps[j].Slug
+	slices.SortFunc(dbApps, func(a, b database.WorkspaceApp) int {
+		return cmp.Or(
+			cmp.Compare(a.DisplayOrder, b.DisplayOrder),
+			cmp.Compare(a.DisplayName, b.DisplayName),
+			cmp.Compare(a.Slug, b.Slug),
+		)
 	})
 
 	statusesByAppID := map[uuid.UUID][]database.WorkspaceAppStatus{}
@@ -675,6 +768,27 @@ func WorkspaceAgentLog(log database.WorkspaceAgentLog) codersdk.WorkspaceAgentLo
 	}
 }
 
+func WorkspaceAgentScript(dbScript database.GetWorkspaceAgentScriptsByAgentIDsRow) codersdk.WorkspaceAgentScript {
+	script := codersdk.WorkspaceAgentScript{
+		ID:               dbScript.ID,
+		LogPath:          dbScript.LogPath,
+		LogSourceID:      dbScript.LogSourceID,
+		Script:           dbScript.Script,
+		Cron:             dbScript.Cron,
+		RunOnStart:       dbScript.RunOnStart,
+		RunOnStop:        dbScript.RunOnStop,
+		StartBlocksLogin: dbScript.StartBlocksLogin,
+		Timeout:          time.Duration(dbScript.TimeoutSeconds) * time.Second,
+		DisplayName:      dbScript.DisplayName,
+		ExitCode:         nullInt32Ptr(dbScript.ExitCode),
+	}
+	if dbScript.Status.Valid {
+		status := codersdk.WorkspaceAgentScriptStatus(dbScript.Status.WorkspaceAgentScriptTimingStatus)
+		script.Status = &status
+	}
+	return script
+}
+
 func ProvisionerDaemon(dbDaemon database.ProvisionerDaemon) codersdk.ProvisionerDaemon {
 	result := codersdk.ProvisionerDaemon{
 		ID:             dbDaemon.ID,
@@ -710,8 +824,8 @@ func RecentProvisionerDaemons(now time.Time, staleInterval time.Duration, daemon
 	}
 
 	// Ensure stable order for display and for tests
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].Name < results[j].Name
+	slices.SortFunc(results, func(a, b codersdk.ProvisionerDaemon) int {
+		return cmp.Compare(a.Name, b.Name)
 	})
 
 	return results
@@ -806,10 +920,11 @@ func Organization(organization database.Organization) codersdk.Organization {
 			DisplayName: organization.DisplayName,
 			Icon:        organization.Icon,
 		},
-		Description: organization.Description,
-		CreatedAt:   organization.CreatedAt,
-		UpdatedAt:   organization.UpdatedAt,
-		IsDefault:   organization.IsDefault,
+		Description:           organization.Description,
+		CreatedAt:             organization.CreatedAt,
+		UpdatedAt:             organization.UpdatedAt,
+		IsDefault:             organization.IsDefault,
+		DefaultOrgMemberRoles: organization.DefaultOrgMemberRoles,
 	}
 }
 
@@ -876,6 +991,13 @@ func WorkspaceRoleActions(role codersdk.WorkspaceRole) []policy.Action {
 			policy.ActionWorkspaceStart,
 			policy.ActionWorkspaceStop,
 		}
+	}
+	return []policy.Action{}
+}
+
+func ChatRoleActions(role codersdk.ChatRole) []policy.Action {
+	if role == codersdk.ChatRoleRead {
+		return []policy.Action{policy.ActionRead}
 	}
 	return []policy.Action{}
 }
@@ -989,46 +1111,6 @@ func PreviewParameterValidation(v *previewtypes.ParameterValidation) codersdk.Pr
 	}
 }
 
-func AIBridgeInterception(interception database.AIBridgeInterception, initiator database.VisibleUser, tokenUsages []database.AIBridgeTokenUsage, userPrompts []database.AIBridgeUserPrompt, toolUsages []database.AIBridgeToolUsage) codersdk.AIBridgeInterception {
-	sdkTokenUsages := slice.List(tokenUsages, AIBridgeTokenUsage)
-	sort.Slice(sdkTokenUsages, func(i, j int) bool {
-		// created_at ASC
-		return sdkTokenUsages[i].CreatedAt.Before(sdkTokenUsages[j].CreatedAt)
-	})
-	sdkUserPrompts := slice.List(userPrompts, AIBridgeUserPrompt)
-	sort.Slice(sdkUserPrompts, func(i, j int) bool {
-		// created_at ASC
-		return sdkUserPrompts[i].CreatedAt.Before(sdkUserPrompts[j].CreatedAt)
-	})
-	sdkToolUsages := slice.List(toolUsages, AIBridgeToolUsage)
-	sort.Slice(sdkToolUsages, func(i, j int) bool {
-		// created_at ASC
-		return sdkToolUsages[i].CreatedAt.Before(sdkToolUsages[j].CreatedAt)
-	})
-	intc := codersdk.AIBridgeInterception{
-		ID:           interception.ID,
-		Initiator:    MinimalUserFromVisibleUser(initiator),
-		Provider:     interception.Provider,
-		ProviderName: interception.ProviderName,
-		Model:        interception.Model,
-		Metadata:     jsonOrEmptyMap(interception.Metadata),
-		StartedAt:    interception.StartedAt,
-		TokenUsages:  sdkTokenUsages,
-		UserPrompts:  sdkUserPrompts,
-		ToolUsages:   sdkToolUsages,
-	}
-	if interception.APIKeyID.Valid {
-		intc.APIKeyID = &interception.APIKeyID.String
-	}
-	if interception.EndedAt.Valid {
-		intc.EndedAt = &interception.EndedAt.Time
-	}
-	if interception.Client.Valid {
-		intc.Client = &interception.Client.String
-	}
-	return intc
-}
-
 func AIBridgeSession(row database.ListAIBridgeSessionsRow) codersdk.AIBridgeSession {
 	session := codersdk.AIBridgeSession{
 		ID: row.SessionID,
@@ -1051,6 +1133,15 @@ func AIBridgeSession(row database.ListAIBridgeSessionsRow) codersdk.AIBridgeSess
 			CacheWriteInputTokens: row.CacheWriteInputTokens,
 		},
 	}
+	// NetworkCalls is only meaningful when the session passed through Agent
+	// Firewall. When it did not, leave it nil so the UI renders "Disabled"
+	// rather than a misleading zero count.
+	if row.FirewallActive {
+		session.NetworkCalls = &codersdk.AIBridgeSessionNetworkCallSummary{
+			Total:   row.NetworkCallsTotal,
+			Blocked: row.NetworkCallsBlocked,
+		}
+	}
 	// Ensure non-nil slices for JSON serialization.
 	if session.Providers == nil {
 		session.Providers = []string{}
@@ -1070,73 +1161,43 @@ func AIBridgeSession(row database.ListAIBridgeSessionsRow) codersdk.AIBridgeSess
 	return session
 }
 
-func AIBridgeTokenUsage(usage database.AIBridgeTokenUsage) codersdk.AIBridgeTokenUsage {
-	return codersdk.AIBridgeTokenUsage{
-		ID:                    usage.ID,
-		InterceptionID:        usage.InterceptionID,
-		ProviderResponseID:    usage.ProviderResponseID,
-		InputTokens:           usage.InputTokens,
-		OutputTokens:          usage.OutputTokens,
-		CacheReadInputTokens:  usage.CacheReadInputTokens,
-		CacheWriteInputTokens: usage.CacheWriteInputTokens,
-		Metadata:              jsonOrEmptyMap(usage.Metadata),
-		CreatedAt:             usage.CreatedAt,
-	}
-}
-
-func AIBridgeUserPrompt(prompt database.AIBridgeUserPrompt) codersdk.AIBridgeUserPrompt {
-	return codersdk.AIBridgeUserPrompt{
-		ID:                 prompt.ID,
-		InterceptionID:     prompt.InterceptionID,
-		ProviderResponseID: prompt.ProviderResponseID,
-		Prompt:             prompt.Prompt,
-		Metadata:           jsonOrEmptyMap(prompt.Metadata),
-		CreatedAt:          prompt.CreatedAt,
-	}
-}
-
-func AIBridgeToolUsage(usage database.AIBridgeToolUsage) codersdk.AIBridgeToolUsage {
-	return codersdk.AIBridgeToolUsage{
-		ID:                 usage.ID,
-		InterceptionID:     usage.InterceptionID,
-		ProviderResponseID: usage.ProviderResponseID,
-		ServerURL:          usage.ServerUrl.String,
-		Tool:               usage.Tool,
-		Input:              usage.Input,
-		Injected:           usage.Injected,
-		InvocationError:    usage.InvocationError.String,
-		Metadata:           jsonOrEmptyMap(usage.Metadata),
-		CreatedAt:          usage.CreatedAt,
-	}
+// AIBridgeSessionThreadsParams groups the session row and its subresources for
+// AIBridgeSessionThreads. Named fields avoid transposing the several adjacent
+// slice arguments (notably TopDomains and NetworkCalls) at the call site.
+type AIBridgeSessionThreadsParams struct {
+	Session       database.ListAIBridgeSessionsRow
+	Interceptions []database.ListAIBridgeSessionThreadsRow
+	TokenUsages   []database.AIBridgeTokenUsage
+	ToolUsages    []database.AIBridgeToolUsage
+	UserPrompts   []database.AIBridgeUserPrompt
+	ModelThoughts []database.AIBridgeModelThought
+	TopDomains    []database.GetAIBridgeSessionTopDomainsRow
+	NetworkCalls  []database.BoundaryLog
 }
 
 // AIBridgeSessionThreads converts session metadata and thread interceptions
 // into the threads response. It groups interceptions into threads, builds
 // agentic actions from tool usages and model thoughts, and aggregates
 // token usage with metadata.
-func AIBridgeSessionThreads(
-	session database.ListAIBridgeSessionsRow,
-	interceptions []database.ListAIBridgeSessionThreadsRow,
-	tokenUsages []database.AIBridgeTokenUsage,
-	toolUsages []database.AIBridgeToolUsage,
-	userPrompts []database.AIBridgeUserPrompt,
-	modelThoughts []database.AIBridgeModelThought,
-) codersdk.AIBridgeSessionThreadsResponse {
+func AIBridgeSessionThreads(p AIBridgeSessionThreadsParams) codersdk.AIBridgeSessionThreadsResponse {
+	session := p.Session
+	interceptions := p.Interceptions
+
 	// Index subresources by interception ID.
 	tokensByInterception := make(map[uuid.UUID][]database.AIBridgeTokenUsage, len(interceptions))
-	for _, tu := range tokenUsages {
+	for _, tu := range p.TokenUsages {
 		tokensByInterception[tu.InterceptionID] = append(tokensByInterception[tu.InterceptionID], tu)
 	}
 	toolsByInterception := make(map[uuid.UUID][]database.AIBridgeToolUsage, len(interceptions))
-	for _, tu := range toolUsages {
+	for _, tu := range p.ToolUsages {
 		toolsByInterception[tu.InterceptionID] = append(toolsByInterception[tu.InterceptionID], tu)
 	}
 	promptsByInterception := make(map[uuid.UUID][]database.AIBridgeUserPrompt, len(interceptions))
-	for _, up := range userPrompts {
+	for _, up := range p.UserPrompts {
 		promptsByInterception[up.InterceptionID] = append(promptsByInterception[up.InterceptionID], up)
 	}
 	thoughtsByInterception := make(map[uuid.UUID][]database.AIBridgeModelThought, len(interceptions))
-	for _, mt := range modelThoughts {
+	for _, mt := range p.ModelThoughts {
 		thoughtsByInterception[mt.InterceptionID] = append(thoughtsByInterception[mt.InterceptionID], mt)
 	}
 
@@ -1174,7 +1235,7 @@ func AIBridgeSessionThreads(
 
 	// Aggregate session-level token usage metadata from all token
 	// usages in the session (not just the page).
-	sessionTokenMeta := aggregateTokenMetadata(tokenUsages)
+	sessionTokenMeta := aggregateTokenMetadata(p.TokenUsages)
 
 	resp := codersdk.AIBridgeSessionThreadsResponse{
 		ID: session.SessionID,
@@ -1211,7 +1272,50 @@ func AIBridgeSessionThreads(
 	if !session.EndedAt.IsZero() {
 		resp.EndedAt = &session.EndedAt
 	}
+	// NetworkCalls is only meaningful when the session passed through Agent
+	// Firewall. When it did not, leave it nil so the UI renders "Disabled"
+	// rather than a misleading zero count.
+	if session.FirewallActive {
+		resp.NetworkCalls = &codersdk.AIBridgeSessionNetworkCallSummary{
+			Total:   session.NetworkCallsTotal,
+			Blocked: session.NetworkCallsBlocked,
+		}
+	}
+	for _, d := range p.TopDomains {
+		resp.NetworkTopDomains = append(resp.NetworkTopDomains, codersdk.AIBridgeSessionNetworkDomain{
+			Domain: d.Domain,
+			Count:  d.Count,
+		})
+		// TotalDomains is the same on every row (a window aggregate); take it
+		// from the last row processed.
+		resp.NetworkDomainCount = d.TotalDomains
+	}
+	resp.NetworkCallLogs = AgentFirewallLogs(p.NetworkCalls)
 	return resp
+}
+
+// AgentFirewallLogs converts boundary logs to their SDK representation.
+// Allowed is derived from MatchedRule being non-NULL.
+func AgentFirewallLogs(logs []database.BoundaryLog) []codersdk.AgentFirewallLog {
+	results := make([]codersdk.AgentFirewallLog, 0, len(logs))
+	for _, l := range logs {
+		bl := codersdk.AgentFirewallLog{
+			ID:             l.ID,
+			SessionID:      l.SessionID,
+			SequenceNumber: l.SequenceNumber,
+			Allowed:        l.MatchedRule.Valid,
+			CreatedAt:      l.CreatedAt,
+			Proto:          l.Proto,
+			Method:         l.Method,
+			Detail:         l.Detail,
+			CapturedAt:     &l.CapturedAt,
+		}
+		if l.MatchedRule.Valid {
+			bl.MatchedRule = &l.MatchedRule.String
+		}
+		results = append(results, bl)
+	}
+	return results
 }
 
 func buildAIBridgeThread(
@@ -1250,6 +1354,25 @@ func buildAIBridgeThread(
 		if prompts := promptsByInterception[rootIntc.ID]; len(prompts) > 0 {
 			thread.Prompt = &prompts[0].Prompt
 		}
+		if rootIntc.AgentFirewallSessionID.Valid {
+			id := rootIntc.AgentFirewallSessionID.UUID
+			thread.AgentFirewallSessionID = &id
+		}
+		if rootIntc.AgentFirewallSequenceNumber.Valid {
+			n := rootIntc.AgentFirewallSequenceNumber.Int32
+			thread.AgentFirewallSequenceNumber = &n
+		}
+		// Surface the terminal upstream error from the root interception. The
+		// message is only meaningful alongside a type, so it is nested to avoid
+		// a half-populated error on the response.
+		if rootIntc.ErrorType.Valid {
+			errType := string(rootIntc.ErrorType.AIBridgeInterceptionErrorType)
+			thread.ErrorType = &errType
+			if rootIntc.ErrorMessage.Valid {
+				errMsg := rootIntc.ErrorMessage.String
+				thread.ErrorMessage = &errMsg
+			}
+		}
 	}
 
 	// Compute thread time bounds from interceptions.
@@ -1265,13 +1388,13 @@ func buildAIBridgeThread(
 		}
 	}
 
-	// Build agentic actions grouped by interception. Each interception that
-	// has tool calls produces one action with all its tool calls, thinking
-	// blocks, and token usage.
+	// Build one action per interception. Child interceptions always produce
+	// an action, including when they have no tool calls. The root action is
+	// emitted only when the actual thread-root interception has tool calls.
 	var actions []codersdk.AIBridgeAgenticAction
 	for _, intc := range interceptions {
 		tools := toolsByInterception[intc.ID]
-		if len(tools) == 0 {
+		if intc.ID == threadID && len(tools) == 0 {
 			continue
 		}
 
@@ -1304,10 +1427,12 @@ func buildAIBridgeThread(
 		}
 
 		actions = append(actions, codersdk.AIBridgeAgenticAction{
-			Model:      intc.Model,
-			TokenUsage: actionTokenUsage,
-			Thinking:   thinking,
-			ToolCalls:  toolCalls,
+			InterceptionID: intc.ID,
+			Model:          intc.Model,
+			Attribution:    aiBridgeInterceptionAttribution(intc),
+			TokenUsage:     actionTokenUsage,
+			Thinking:       thinking,
+			ToolCalls:      toolCalls,
 		})
 	}
 
@@ -1317,6 +1442,10 @@ func buildAIBridgeThread(
 	}
 
 	thread.AgenticActions = actions
+
+	if rootIntc != nil && rootIntc.ID == threadID {
+		thread.Attribution = aiBridgeInterceptionAttribution(*rootIntc)
+	}
 
 	// Aggregate thread-level token usage.
 	var threadTokens []database.AIBridgeTokenUsage
@@ -1397,6 +1526,74 @@ func flattenAndSum(sums map[string]int64, prefix string, m map[string]json.RawMe
 	}
 }
 
+func GroupAIBudget(b database.GroupAIBudget) codersdk.GroupAIBudget {
+	return codersdk.GroupAIBudget{
+		GroupID:          b.GroupID,
+		SpendLimitMicros: b.SpendLimitMicros,
+		CreatedAt:        b.CreatedAt,
+		UpdatedAt:        b.UpdatedAt,
+	}
+}
+
+func UserAIBudgetOverride(o database.UserAIBudgetOverride) codersdk.UserAIBudgetOverride {
+	return codersdk.UserAIBudgetOverride{
+		UserID:           o.UserID,
+		GroupID:          o.GroupID,
+		SpendLimitMicros: o.SpendLimitMicros,
+		CreatedAt:        o.CreatedAt,
+		UpdatedAt:        o.UpdatedAt,
+	}
+}
+
+func OrganizationGroupAISpend(row database.GetOrganizationGroupsAISpendRow) codersdk.OrganizationGroupAISpend {
+	group := codersdk.OrganizationGroupAISpend{
+		GroupID:            row.GroupID,
+		CurrentSpendMicros: row.CurrentSpendMicros,
+	}
+	if row.SpendLimitMicros.Valid {
+		group.SpendLimitMicros = &row.SpendLimitMicros.Int64
+	}
+	if row.TotalSpendLimitMicros.Valid {
+		group.TotalSpendLimitMicros = &row.TotalSpendLimitMicros.Int64
+	}
+	return group
+}
+
+func OrganizationAISpendUser(row database.ListOrganizationAISpendUsersRow) codersdk.OrganizationAISpendUser {
+	return codersdk.OrganizationAISpendUser{
+		UserID:             row.UserID,
+		Username:           row.Username,
+		Name:               row.Name,
+		AvatarURL:          row.AvatarURL,
+		CostMicros:         row.CostMicros,
+		UnpricedUsageCount: row.UnpricedUsageCount,
+		Providers:          row.Providers,
+		Clients:            row.Clients,
+		Models:             row.Models,
+	}
+}
+
+func GroupMemberAISpend(row database.GetGroupMembersAISpendRow, queriedGroupID uuid.UUID) codersdk.GroupMemberAISpend {
+	member := codersdk.GroupMemberAISpend{
+		UserID:           row.UserID,
+		GroupSpendMicros: row.GroupSpendMicros,
+	}
+	if row.EffectiveGroupID.Valid {
+		member.EffectiveGroupID = &row.EffectiveGroupID.UUID
+	}
+	if row.EffectiveSpendLimitMicros.Valid {
+		member.EffectiveBudget = &codersdk.AIBudgetLimit{
+			SpendLimitMicros: row.EffectiveSpendLimitMicros.Int64,
+			LimitSource:      codersdk.AIBudgetLimitSource(row.EffectiveLimitSource.String),
+		}
+	}
+	// Set the deprecated alias only when the queried group is effective.
+	if row.EffectiveGroupID.Valid && row.EffectiveGroupID.UUID == queriedGroupID {
+		member.GroupBudget = member.EffectiveBudget
+	}
+	return member
+}
+
 func InvalidatedPresets(invalidatedPresets []database.UpdatePresetsLastInvalidatedAtRow) []codersdk.InvalidatedPreset {
 	var presets []codersdk.InvalidatedPreset
 	for _, p := range invalidatedPresets {
@@ -1407,6 +1604,17 @@ func InvalidatedPresets(invalidatedPresets []database.UpdatePresetsLastInvalidat
 		})
 	}
 	return presets
+}
+
+// aiBridgeInterceptionAttribution builds attribution from the dedicated
+// interception columns. It returns nil when no workspace context is recorded.
+func aiBridgeInterceptionAttribution(intc database.AIBridgeInterception) codersdk.AIBridgeAttribution {
+	if !intc.WorkspaceID.Valid {
+		return nil
+	}
+	return codersdk.AIBridgeAttribution{
+		"workspace_id": intc.WorkspaceID.UUID.String(),
+	}
 }
 
 // sanitizeCredentialHint ensures the hint looks masked before exposing
@@ -1452,12 +1660,15 @@ func ChatMessage(m database.ChatMessage) codersdk.ChatMessage {
 		createdBy = nil
 	}
 	msg := codersdk.ChatMessage{
-		ID:            m.ID,
-		ChatID:        m.ChatID,
-		CreatedBy:     createdBy,
-		ModelConfigID: modelConfigID,
-		CreatedAt:     m.CreatedAt,
-		Role:          codersdk.ChatMessageRole(m.Role),
+		ID:              m.ID,
+		ChatID:          m.ChatID,
+		CreatedBy:       createdBy,
+		ModelConfigID:   modelConfigID,
+		CreatedAt:       m.CreatedAt,
+		Role:            codersdk.ChatMessageRole(m.Role),
+		QueuedMessageID: nullInt64Ptr(m.QueuedMessageID),
+		AutomationID:    nullUUIDPtr(m.AutomationID),
+		InputID:         nullUUIDPtr(m.InputID),
 	}
 	if m.Content.Valid {
 		parts, err := chatMessageParts(m)
@@ -1522,6 +1733,8 @@ func ChatQueuedMessage(message database.ChatQueuedMessage) codersdk.ChatQueuedMe
 		ModelConfigID: nullUUIDPtr(message.ModelConfigID),
 		Content:       parts,
 		CreatedAt:     message.CreatedAt,
+		AutomationID:  nullUUIDPtr(message.AutomationID),
+		InputID:       nullUUIDPtr(message.InputID),
 	}
 }
 
@@ -1540,11 +1753,82 @@ func chatMessageParts(m database.ChatMessage) ([]codersdk.ChatMessagePart, error
 	if err != nil {
 		return nil, err
 	}
-	// Strip internal-only fields before API responses.
+	// Strip internal-only fields before API responses. Hook context
+	// parts are model-only and must never reach clients.
+	filtered := parts[:0]
 	for i := range parts {
+		if parts[i].Type == codersdk.ChatMessagePartTypeHookContext {
+			continue
+		}
 		parts[i].StripInternal()
+		filtered = append(filtered, parts[i])
 	}
-	return parts, nil
+	return filtered, nil
+}
+
+func AIModelPrices(dbPrices []database.AIModelPrice) []codersdk.AIModelPrice {
+	out := make([]codersdk.AIModelPrice, 0, len(dbPrices))
+	for _, dbPrice := range dbPrices {
+		out = append(out, AIModelPrice(dbPrice))
+	}
+	return out
+}
+
+func AIModelPrice(dbPrice database.AIModelPrice) codersdk.AIModelPrice {
+	return codersdk.AIModelPrice{
+		Provider:        dbPrice.Provider,
+		Model:           dbPrice.Model,
+		InputPrice:      nullInt64Ptr(dbPrice.InputPrice),
+		OutputPrice:     nullInt64Ptr(dbPrice.OutputPrice),
+		CacheReadPrice:  nullInt64Ptr(dbPrice.CacheReadPrice),
+		CacheWritePrice: nullInt64Ptr(dbPrice.CacheWritePrice),
+		Source:          codersdk.AIModelPriceSource(dbPrice.Source),
+		CreatedAt:       dbPrice.CreatedAt,
+		UpdatedAt:       dbPrice.UpdatedAt,
+	}
+}
+
+// ChatAutomation converts a chat automation row to its SDK form. The
+// webhook secret hash is never included. nextRuns are the upcoming schedule
+// runs the caller computed; a nil slice is returned as empty.
+func ChatAutomation(row database.ChatAutomation, nextRuns []time.Time) codersdk.ChatAutomation {
+	automation := codersdk.ChatAutomation{
+		ID:                   row.ID,
+		OrganizationID:       row.OrganizationID,
+		OwnerID:              row.OwnerID,
+		Name:                 row.Name,
+		CreatedByChatID:      nullUUIDPtr(row.CreatedByChatID),
+		Kind:                 codersdk.ChatAutomationKind(row.Kind),
+		Enabled:              row.Enabled,
+		TargetMode:           codersdk.ChatAutomationTargetMode(row.TargetMode),
+		TargetChatID:         nullUUIDPtr(row.TargetChatID),
+		NewChatModelConfigID: nullUUIDPtr(row.NewChatModelConfigID),
+		WebhookSecretVersion: row.WebhookSecretVersion,
+		WebhookConsumedAt:    nullTimePtr(row.WebhookConsumedAt),
+		Prompt:               row.Prompt,
+		ScheduleCron:         nullStringPtr(row.ScheduleCron),
+		ScheduleTimeZone:     nullStringPtr(row.ScheduleTimeZone),
+		ScheduleNextRunAt:    nullTimePtr(row.ScheduleNextRunAt),
+		NextRunTimes:         nextRuns,
+		CreatedAt:            row.CreatedAt,
+		UpdatedAt:            row.UpdatedAt,
+	}
+	if automation.NextRunTimes == nil {
+		automation.NextRunTimes = []time.Time{}
+	}
+	if row.ReasoningEffort.Valid {
+		effort := string(row.ReasoningEffort.ChatReasoningEffort)
+		automation.ReasoningEffort = &effort
+	}
+	if row.WhenBusy.Valid {
+		whenBusy := codersdk.ChatAutomationWhenBusy(row.WhenBusy.ChatAutomationWhenBusy)
+		automation.WhenBusy = &whenBusy
+	}
+	if row.WebhookUse.Valid {
+		webhookUse := codersdk.ChatAutomationWebhookUse(row.WebhookUse.ChatAutomationWebhookUse)
+		automation.WebhookUse = &webhookUse
+	}
+	return automation
 }
 
 func nullUUIDPtr(v uuid.NullUUID) *uuid.UUID {
@@ -1563,6 +1847,13 @@ func nullInt64Ptr(v sql.NullInt64) *int64 {
 	return &value
 }
 
+func nullInt32Ptr(n sql.NullInt32) *int32 {
+	if !n.Valid {
+		return nil
+	}
+	return &n.Int32
+}
+
 func nullStringPtr(v sql.NullString) *string {
 	if !v.Valid {
 		return nil
@@ -1579,6 +1870,73 @@ func nullTimePtr(v sql.NullTime) *time.Time {
 	return &value
 }
 
+const fallbackChatLastErrorMessage = "The chat request failed unexpectedly."
+
+func decodeChatLastError(raw pqtype.NullRawMessage) *codersdk.ChatError {
+	if !raw.Valid {
+		return nil
+	}
+
+	var payload codersdk.ChatError
+	if err := json.Unmarshal(raw.RawMessage, &payload); err != nil {
+		return &codersdk.ChatError{
+			Message: fallbackChatLastErrorMessage,
+			Kind:    codersdk.ChatErrorKindGeneric,
+		}
+	}
+
+	payload.Message = strings.TrimSpace(payload.Message)
+	payload.Detail = strings.TrimSpace(payload.Detail)
+	payload.Kind = codersdk.ChatErrorKind(strings.TrimSpace(string(payload.Kind)))
+	payload.Provider = strings.TrimSpace(payload.Provider)
+	if payload.Kind == "" {
+		payload.Kind = codersdk.ChatErrorKindGeneric
+	}
+	if payload.Message == "" {
+		payload.Message = fallbackChatLastErrorMessage
+	}
+	return &payload
+}
+
+func ChatProject(project database.ChatProject) codersdk.ChatProject {
+	return codersdk.ChatProject{
+		ID:             project.ID,
+		OrganizationID: project.OrganizationID,
+		OwnerID:        project.OwnerID,
+		Name:           project.Name,
+		Description:    project.Description,
+		Icon:           project.Icon,
+		CreatedAt:      project.CreatedAt,
+		UpdatedAt:      project.UpdatedAt,
+	}
+}
+
+func ChatProjectMemory(row database.GetChatProjectMemoryByIDRow) codersdk.ChatProjectMemory {
+	return convertChatProjectMemory(row.ChatProjectMemory, row.CreatedByUsername)
+}
+
+func ChatProjectMemoryRows(rows []database.GetChatProjectMemoriesByProjectIDRow) []codersdk.ChatProjectMemory {
+	memories := make([]codersdk.ChatProjectMemory, len(rows))
+	for i, row := range rows {
+		memories[i] = convertChatProjectMemory(row.ChatProjectMemory, row.CreatedByUsername)
+	}
+	return memories
+}
+
+func convertChatProjectMemory(memory database.ChatProjectMemory, createdByUsername string) codersdk.ChatProjectMemory {
+	return codersdk.ChatProjectMemory{
+		ID:                memory.ID,
+		ProjectID:         memory.ProjectID,
+		OrganizationID:    memory.OrganizationID,
+		Name:              memory.Name,
+		Description:       memory.Description,
+		Body:              memory.Body,
+		CreatedBy:         memory.CreatedBy,
+		CreatedByUsername: createdByUsername,
+		CreatedAt:         memory.CreatedAt,
+	}
+}
+
 // Chat converts a database.Chat to a codersdk.Chat. It coalesces
 // nil slices and maps to empty values for JSON serialization and
 // derives RootChatID from the parent chain when not explicitly set.
@@ -1586,6 +1944,17 @@ func nullTimePtr(v sql.NullTime) *time.Time {
 // When files is non-empty the response includes file metadata;
 // pass nil to omit the files field (e.g. list endpoints).
 func Chat(c database.Chat, diffStatus *database.ChatDiffStatus, files []database.GetChatFileMetadataByChatIDRow) codersdk.Chat {
+	return ChatWithDiffStatuses(c, diffStatus, nil, files)
+}
+
+// ChatWithDiffStatuses converts a chat with its per-ref diff status
+// list. diffStatus is the primary shown in the diff_status field.
+func ChatWithDiffStatuses(
+	c database.Chat,
+	diffStatus *database.ChatDiffStatus,
+	diffStatuses []database.ChatDiffStatus,
+	files []database.GetChatFileMetadataByChatIDRow,
+) codersdk.Chat {
 	mcpServerIDs := c.MCPServerIDs
 	if mcpServerIDs == nil {
 		mcpServerIDs = []uuid.UUID{}
@@ -1594,23 +1963,39 @@ func Chat(c database.Chat, diffStatus *database.ChatDiffStatus, files []database
 	if labels == nil {
 		labels = map[string]string{}
 	}
+	lastError := decodeChatLastError(c.LastError)
 	chat := codersdk.Chat{
 		ID:                c.ID,
 		OrganizationID:    c.OrganizationID,
 		OwnerID:           c.OwnerID,
+		OwnerUsername:     c.OwnerUsername,
+		OwnerName:         c.OwnerName,
 		LastModelConfigID: c.LastModelConfigID,
 		Title:             c.Title,
+		TitleSource:       codersdk.ChatTitleSource(c.TitleSource),
+		TitleUpdatedAt:    c.TitleUpdatedAt,
 		Status:            codersdk.ChatStatus(c.Status),
 		Archived:          c.Archived,
+		Shared:            len(c.UserACL) > 0 || len(c.GroupACL) > 0,
 		PinOrder:          c.PinOrder,
 		CreatedAt:         c.CreatedAt,
 		UpdatedAt:         c.UpdatedAt,
 		MCPServerIDs:      mcpServerIDs,
 		Labels:            labels,
 		ClientType:        codersdk.ChatClientType(c.ClientType),
+		LastError:         lastError,
+
+		ManageAutomationsEnabled: c.ManageAutomationsEnabled,
 	}
-	if c.LastError.Valid {
-		chat.LastError = &c.LastError.String
+	if c.LastTurnSummary.Valid {
+		chat.LastTurnSummary = &c.LastTurnSummary.String
+	}
+	if c.Summary.Valid {
+		chat.Summary = &c.Summary.String
+	}
+	if c.LastReasoningEffort.Valid {
+		lastReasoningEffort := string(c.LastReasoningEffort.ChatReasoningEffort)
+		chat.LastReasoningEffort = &lastReasoningEffort
 	}
 	if c.PlanMode.Valid {
 		chat.PlanMode = codersdk.ChatPlanMode(c.PlanMode.ChatPlanMode)
@@ -1638,6 +2023,9 @@ func Chat(c database.Chat, diffStatus *database.ChatDiffStatus, files []database
 	if c.WorkspaceID.Valid {
 		chat.WorkspaceID = &c.WorkspaceID.UUID
 	}
+	if c.ProjectID.Valid {
+		chat.ProjectID = &c.ProjectID.UUID
+	}
 	if c.BuildID.Valid {
 		chat.BuildID = &c.BuildID.UUID
 	}
@@ -1648,6 +2036,12 @@ func Chat(c database.Chat, diffStatus *database.ChatDiffStatus, files []database
 		convertedDiffStatus := ChatDiffStatus(c.ID, diffStatus)
 		chat.DiffStatus = &convertedDiffStatus
 	}
+	if len(diffStatuses) > 0 {
+		chat.DiffStatuses = make([]codersdk.ChatDiffStatus, 0, len(diffStatuses))
+		for i := range diffStatuses {
+			chat.DiffStatuses = append(chat.DiffStatuses, ChatDiffStatus(c.ID, &diffStatuses[i]))
+		}
+	}
 	if len(files) > 0 {
 		chat.Files = make([]codersdk.ChatFileMetadata, 0, len(files))
 		for _, row := range files {
@@ -1657,20 +2051,23 @@ func Chat(c database.Chat, diffStatus *database.ChatDiffStatus, files []database
 				OrganizationID: row.OrganizationID,
 				Name:           row.Name,
 				MimeType:       row.Mimetype,
+				SizeBytes:      row.SizeBytes,
 				CreatedAt:      row.CreatedAt,
 			})
 		}
 	}
-	if c.LastInjectedContext.Valid {
-		var parts []codersdk.ChatMessagePart
-		// Internal fields are stripped at write time in
-		// chatd.updateLastInjectedContext, so no
-		// StripInternal call is needed here. Unmarshal
-		// errors are suppressed — the column is written by
-		// us with a known schema.
-		if err := json.Unmarshal(c.LastInjectedContext.RawMessage, &parts); err == nil {
-			chat.LastInjectedContext = parts
+	// Report pinned-context state when the chat is context-tracked
+	// (has a pinned hash), dirty, or carries a snapshot error.
+	if len(c.ContextAggregateHash) > 0 || c.ContextDirtySince.Valid || c.ContextError != "" {
+		chatContext := &codersdk.ChatContext{
+			Dirty: c.ContextDirtySince.Valid,
+			Error: c.ContextError,
 		}
+		if c.ContextDirtySince.Valid {
+			dirtySince := c.ContextDirtySince.Time
+			chatContext.DirtySince = &dirtySince
+		}
+		chat.Context = chatContext
 	}
 	return chat
 }
@@ -1728,6 +2125,35 @@ func nullRawJSONObject(raw pqtype.NullRawMessage) map[string]any {
 		return nil
 	}
 	return rawJSONObject(raw.RawMessage)
+}
+
+// InlineMCPServer converts a database.ChatMCPServer to its redacted
+// codersdk.InlineMCPServer view, which reports only whether headers are
+// set.
+func InlineMCPServer(row database.ChatMCPServer) (codersdk.InlineMCPServer, error) {
+	var headers map[string]string
+	if err := json.Unmarshal([]byte(row.Headers), &headers); err != nil {
+		return codersdk.InlineMCPServer{}, xerrors.Errorf("parse headers for chat MCP server %q: %w", row.Slug, err)
+	}
+	return codersdk.InlineMCPServer{
+		ID:                  row.ID,
+		Slug:                row.Slug,
+		URL:                 row.Url,
+		HasCustomHeaders:    len(headers) > 0,
+		ToolAllowList:       nonNilStrings(row.ToolAllowList),
+		ToolDenyList:        nonNilStrings(row.ToolDenyList),
+		AllowInSubagents:    row.AllowInSubagents,
+		ForwardCoderHeaders: row.ForwardCoderHeaders,
+		CreatedAt:           row.CreatedAt,
+		UpdatedAt:           row.UpdatedAt,
+	}, nil
+}
+
+func nonNilStrings(values []string) []string {
+	if values == nil {
+		return []string{}
+	}
+	return values
 }
 
 // ChatDebugRunSummary converts a database.ChatDebugRun to a
@@ -1803,13 +2229,13 @@ func ChatDebugRunDetail(r database.ChatDebugRun, steps []database.ChatDebugStep)
 // is non-nil, children without an entry receive an empty DiffStatus.
 func ChildChatRows(
 	children []database.GetChildChatsByParentIDsRow,
-	diffStatuses map[uuid.UUID]database.ChatDiffStatus,
+	diffStatuses map[uuid.UUID][]database.ChatDiffStatus,
 ) []codersdk.Chat {
 	result := make([]codersdk.Chat, len(children))
 	for i, row := range children {
-		diffStatus, ok := diffStatuses[row.Chat.ID]
+		statuses, ok := diffStatuses[row.Chat.ID]
 		if ok {
-			result[i] = Chat(row.Chat, &diffStatus, nil)
+			result[i] = ChatWithDiffStatuses(row.Chat, PrimaryChatDiffStatus(statuses), statuses, nil)
 		} else {
 			result[i] = Chat(row.Chat, nil, nil)
 			if diffStatuses != nil {
@@ -1828,7 +2254,7 @@ func ChildChatRows(
 func ChatRowsWithChildren(
 	roots []database.GetChatsRow,
 	children []database.GetChildChatsByParentIDsRow,
-	diffStatuses map[uuid.UUID]database.ChatDiffStatus,
+	diffStatuses map[uuid.UUID][]database.ChatDiffStatus,
 ) []codersdk.Chat {
 	// Group children by parent ID.
 	childrenByParent := make(map[uuid.UUID][]database.GetChildChatsByParentIDsRow, len(children))
@@ -1839,9 +2265,9 @@ func ChatRowsWithChildren(
 
 	result := make([]codersdk.Chat, len(roots))
 	for i, row := range roots {
-		diffStatus, ok := diffStatuses[row.Chat.ID]
+		statuses, ok := diffStatuses[row.Chat.ID]
 		if ok {
-			result[i] = Chat(row.Chat, &diffStatus, nil)
+			result[i] = ChatWithDiffStatuses(row.Chat, PrimaryChatDiffStatus(statuses), statuses, nil)
 		} else {
 			result[i] = Chat(row.Chat, nil, nil)
 			if diffStatuses != nil {
@@ -1871,6 +2297,14 @@ func ChatDiffStatus(chatID uuid.UUID, status *database.ChatDiffStatus) codersdk.
 	}
 
 	result.ChatID = status.ChatID
+	if status.GitRemoteOrigin != "" {
+		remoteOrigin := status.GitRemoteOrigin
+		result.RemoteOrigin = &remoteOrigin
+	}
+	if status.GitBranch != "" {
+		gitBranch := status.GitBranch
+		result.GitBranch = &gitBranch
+	}
 	if status.Url.Valid {
 		u := strings.TrimSpace(status.Url.String)
 		if u != "" {
@@ -1886,7 +2320,7 @@ func ChatDiffStatus(chatID uuid.UUID, status *database.ChatDiffStatus) codersdk.
 		// so branch URLs for GitHub Enterprise instances will
 		// be incorrect. To fix this, this function would need
 		// access to the external auth configs.
-		gp := gitprovider.New("github", "", nil)
+		gp, _ := gitprovider.New("github", "", nil)
 		if gp != nil {
 			if owner, repo, _, ok := gp.ParseRepositoryOrigin(status.GitRemoteOrigin); ok {
 				branchURL := gp.BuildBranchURL(owner, repo, status.GitBranch)
@@ -1942,6 +2376,24 @@ func ChatDiffStatus(chatID uuid.UUID, status *database.ChatDiffStatus) codersdk.
 	return result
 }
 
+// PrimaryChatDiffStatus returns the row with the most recent git
+// report, or nil when statuses is empty. Only a git report sets
+// updated_at. Ties go to the lowest origin, then the lowest branch.
+func PrimaryChatDiffStatus(statuses []database.ChatDiffStatus) *database.ChatDiffStatus {
+	if len(statuses) == 0 {
+		return nil
+	}
+
+	primary := slices.MinFunc(statuses, func(a, b database.ChatDiffStatus) int {
+		return cmp.Or(
+			b.UpdatedAt.Compare(a.UpdatedAt),
+			cmp.Compare(a.GitRemoteOrigin, b.GitRemoteOrigin),
+			cmp.Compare(a.GitBranch, b.GitBranch),
+		)
+	})
+	return &primary
+}
+
 // UserSecret converts a database ListUserSecretsRow (metadata only,
 // no value) to an SDK UserSecret.
 func UserSecret(secret database.ListUserSecretsRow) codersdk.UserSecret {
@@ -1951,6 +2403,7 @@ func UserSecret(secret database.ListUserSecretsRow) codersdk.UserSecret {
 		Description: secret.Description,
 		EnvName:     secret.EnvName,
 		FilePath:    secret.FilePath,
+		Enabled:     secret.Enabled,
 		CreatedAt:   secret.CreatedAt,
 		UpdatedAt:   secret.UpdatedAt,
 	}
@@ -1965,6 +2418,7 @@ func UserSecretFromFull(secret database.UserSecret) codersdk.UserSecret {
 		Description: secret.Description,
 		EnvName:     secret.EnvName,
 		FilePath:    secret.FilePath,
+		Enabled:     secret.Enabled,
 		CreatedAt:   secret.CreatedAt,
 		UpdatedAt:   secret.UpdatedAt,
 	}
@@ -1978,4 +2432,38 @@ func UserSecrets(secrets []database.ListUserSecretsRow) []codersdk.UserSecret {
 		result = append(result, UserSecret(s))
 	}
 	return result
+}
+
+// UserSkill converts a database UserSkill to an SDK UserSkill.
+func UserSkill(skill database.UserSkill) codersdk.UserSkill {
+	return codersdk.UserSkill{
+		UserSkillMetadata: codersdk.UserSkillMetadata{
+			ID:          skill.ID,
+			Name:        skill.Name,
+			Description: skill.Description,
+			CreatedAt:   skill.CreatedAt,
+			UpdatedAt:   skill.UpdatedAt,
+		},
+		Content: skill.Content,
+	}
+}
+
+// UserSkillMetadata converts database user skill metadata to an SDK UserSkillMetadata.
+func UserSkillMetadata(skill database.ListUserSkillMetadataByUserIDRow) codersdk.UserSkillMetadata {
+	return codersdk.UserSkillMetadata{
+		ID:          skill.ID,
+		Name:        skill.Name,
+		Description: skill.Description,
+		CreatedAt:   skill.CreatedAt,
+		UpdatedAt:   skill.UpdatedAt,
+	}
+}
+
+// UserSkillMetadataList converts database user skill metadata rows to SDK values.
+func UserSkillMetadataList(rows []database.ListUserSkillMetadataByUserIDRow) []codersdk.UserSkillMetadata {
+	metadata := make([]codersdk.UserSkillMetadata, 0, len(rows))
+	for _, row := range rows {
+		metadata = append(metadata, UserSkillMetadata(row))
+	}
+	return metadata
 }

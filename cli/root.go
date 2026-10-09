@@ -1,8 +1,6 @@
 package cli
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -15,12 +13,12 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
 	"runtime/trace"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -29,15 +27,20 @@ import (
 
 	"github.com/mattn/go-isatty"
 	"github.com/mitchellh/go-wordwrap"
+	"go.opentelemetry.io/otel/baggage"
+	"go.opentelemetry.io/otel/propagation"
 	"golang.org/x/mod/semver"
 	"golang.org/x/xerrors"
 
+	"cdr.dev/slog/v3"
+	"cdr.dev/slog/v3/sloggers/sloghuman"
 	"github.com/coder/coder/v2/buildinfo"
 	"github.com/coder/coder/v2/cli/cliui"
 	"github.com/coder/coder/v2/cli/config"
 	"github.com/coder/coder/v2/cli/gitauth"
 	"github.com/coder/coder/v2/cli/sessionstore"
 	"github.com/coder/coder/v2/cli/telemetry"
+	"github.com/coder/coder/v2/coderd/tracing"
 	"github.com/coder/coder/v2/codersdk"
 	"github.com/coder/coder/v2/codersdk/agentsdk"
 	"github.com/coder/pretty"
@@ -58,6 +61,8 @@ var (
 	// anything.
 	ErrSilent = xerrors.New("silent error")
 
+	ErrClientURLNotConfigured = xerrors.New("client URL is not configured")
+
 	errKeyringNotSupported = xerrors.New("keyring storage is not supported on this operating system; omit --use-keyring to use file-based storage")
 )
 
@@ -69,8 +74,10 @@ const (
 	varNoOpen                  = "no-open"
 	varNoVersionCheck          = "no-version-warning"
 	varNoFeatureWarning        = "no-feature-warning"
+	varAllowRedirects          = "allow-redirects"
 	varForceTty                = "force-tty"
 	varVerbose                 = "verbose"
+	varFlightRecorderSize      = "flight-recorder-size"
 	varDisableDirect           = "disable-direct-connections"
 	varDisableNetworkTelemetry = "disable-network-telemetry"
 	varUseKeyring              = "use-keyring"
@@ -82,6 +89,7 @@ const (
 
 	envNoVersionCheck    = "CODER_NO_VERSION_WARNING"
 	envNoFeatureWarning  = "CODER_NO_FEATURE_WARNING"
+	envAllowRedirects    = "CODER_ALLOW_REDIRECTS"
 	envSessionToken      = "CODER_SESSION_TOKEN"
 	envUseKeyring        = "CODER_USE_KEYRING"
 	envClientTLSCAFile   = "CODER_CLIENT_TLS_CA_FILE"
@@ -107,6 +115,7 @@ func (r *RootCmd) CoreSubcommands() []*serpent.Command {
 		r.logout(),
 		r.netcheck(),
 		r.notifications(),
+		r.oauth2Provider(),
 		r.organizations(),
 		r.portForward(),
 		r.publickey(),
@@ -114,7 +123,6 @@ func (r *RootCmd) CoreSubcommands() []*serpent.Command {
 		r.secrets(),
 		r.sharing(),
 		r.state(),
-		r.tasksCommand(),
 		r.templates(),
 		r.tokens(),
 		r.users(),
@@ -149,7 +157,7 @@ func (r *RootCmd) CoreSubcommands() []*serpent.Command {
 		r.support(),
 		r.vpnDaemon(),
 		r.vscodeSSH(),
-		workspaceAgent(),
+		r.workspaceAgent(),
 	}
 }
 
@@ -163,7 +171,8 @@ func (r *RootCmd) AGPLExperimental() []*serpent.Command {
 		r.promptExample(),
 		r.rptyCommand(),
 		r.syncCommand(),
-		r.agentsCommand(),
+		r.updateUserEmail(),
+		r.experimentRulesCommand(),
 	}
 }
 
@@ -344,10 +353,11 @@ func (r *RootCmd) Command(subcommands []*serpent.Command) (*serpent.Command, err
 					// support links.
 					return
 				}
-				if cmd.Name() == "boundary" {
-					// The boundary command is integrated from the boundary package
-					// and has YAML-only options (e.g., allowlist from config file)
-					// that don't have flags or env vars.
+				if cmd.Name() == "agent-firewall" || cmd.Name() == "boundary" {
+					// The agent-firewall command (and its "boundary" alias) is
+					// integrated from the boundary package and has YAML-only
+					// options (e.g., allowlist from config file) that don't
+					// have flags or env vars.
 					return
 				}
 				merr = errors.Join(
@@ -393,12 +403,14 @@ func (r *RootCmd) Command(subcommands []*serpent.Command) (*serpent.Command, err
 		}
 	})
 
-	// Add the PrintDeprecatedOptions middleware to all commands.
+	// Add the PrintDeprecatedOptions and client session ID middleware to all
+	// commands. clientSessionIDMiddleware runs first so the resolved ID is on
+	// the invocation context for every downstream middleware and handler.
 	cmd.Walk(func(cmd *serpent.Command) {
 		if cmd.Middleware == nil {
-			cmd.Middleware = PrintDeprecatedOptions()
+			cmd.Middleware = serpent.Chain(clientSessionIDMiddleware(), r.flightRecorderMiddleware(), PrintDeprecatedOptions())
 		} else {
-			cmd.Middleware = serpent.Chain(cmd.Middleware, PrintDeprecatedOptions())
+			cmd.Middleware = serpent.Chain(clientSessionIDMiddleware(), r.flightRecorderMiddleware(), cmd.Middleware, PrintDeprecatedOptions())
 		}
 	})
 
@@ -446,6 +458,13 @@ func (r *RootCmd) Command(subcommands []*serpent.Command) (*serpent.Command, err
 			Group:       globalGroup,
 		},
 		{
+			Flag:        varAllowRedirects,
+			Env:         envAllowRedirects,
+			Description: "Follow HTTP redirects from the server instead of returning an error. Following redirects may alter the request method and/or drop its body.",
+			Value:       serpent.BoolOf(&r.allowRedirects),
+			Group:       globalGroup,
+		},
+		{
 			Flag:        varHeader,
 			Env:         "CODER_HEADER",
 			Description: "Additional HTTP headers added to all requests. Provide as " + `key=value` + ". Can be specified multiple times.",
@@ -455,7 +474,7 @@ func (r *RootCmd) Command(subcommands []*serpent.Command) (*serpent.Command, err
 		{
 			Flag:        varHeaderCommand,
 			Env:         "CODER_HEADER_COMMAND",
-			Description: "An external command that outputs additional HTTP headers added to all requests. The command must output each header as `key=value` on its own line.",
+			Description: "An external command that outputs additional HTTP headers added to all requests. The command must output each header as `key=value` on its own line. If a header value is a JWT, it will be refreshed based on the value in its `exp` field.",
 			Value:       serpent.StringOf(&r.headerCommand),
 			Group:       globalGroup,
 		},
@@ -482,6 +501,15 @@ func (r *RootCmd) Command(subcommands []*serpent.Command) (*serpent.Command, err
 			Description:   "Enable verbose output.",
 			Value:         serpent.BoolOf(&r.verbose),
 			Group:         globalGroup,
+		},
+		{
+			Flag:    varFlightRecorderSize,
+			Env:     "CODER_FLIGHT_RECORDER_SIZE",
+			Default: strconv.Itoa(defaultCLIFlightRecorderSize),
+			Description: "Number of log entries below the current log level to keep " +
+				"in memory and emit on errors. Set to 0 to disable the flight recorder.",
+			Value: serpent.Int64Of(&r.flightRecorderSize),
+			Group: globalGroup,
 		},
 		{
 			Flag:        varDisableDirect,
@@ -568,22 +596,24 @@ type RootCmd struct {
 	header        []string
 	headerCommand string
 
-	forceTTY      bool
-	noOpen        bool
-	verbose       bool
-	versionFlag   bool
-	disableDirect bool
-	debugHTTP     bool
+	forceTTY           bool
+	noOpen             bool
+	verbose            bool
+	flightRecorderSize int64
+	versionFlag        bool
+	disableDirect      bool
+	debugHTTP          bool
 
 	disableNetworkTelemetry    bool
 	noVersionCheck             bool
 	noFeatureWarning           bool
+	allowRedirects             bool
 	useKeyring                 bool
 	keyringServiceName         string
 	useKeyringWithGlobalConfig bool
 
 	// clock is used for time-dependent operations. Initialized to
-	// quartz.NewReal() in Command() if not set via SetClock.
+	// quartz.NewReal() in Command() if unset.
 	clock quartz.Clock
 
 	// TLS configuration for custom CA or client certificates.
@@ -593,32 +623,61 @@ type RootCmd struct {
 	tlsConfig         *tls.Config
 }
 
-// SetClock sets the clock used for time-dependent operations.
-// Must be called before Command() to take effect.
-func (r *RootCmd) SetClock(clk quartz.Clock) {
-	r.clock = clk
-}
-
 // ensureClientURL loads the client URL from the config file if it
 // wasn't provided via --url or CODER_URL.
 func (r *RootCmd) ensureClientURL() error {
-	if r.clientURL != nil && r.clientURL.String() != "" {
-		return nil
-	}
-	rawURL, err := r.createConfig().URL().Read()
-	// If the configuration files are absent, the user is logged out.
-	if os.IsNotExist(err) {
-		binPath, err := os.Executable()
-		if err != nil {
+	u, err := r.resolveClientURL()
+
+	if errors.Is(err, ErrClientURLNotConfigured) {
+		binPath, execErr := os.Executable()
+		if execErr != nil {
 			binPath = "coder"
 		}
 		return xerrors.Errorf(notLoggedInMessage, binPath)
 	}
+
 	if err != nil {
 		return err
 	}
-	r.clientURL, err = url.Parse(strings.TrimSpace(rawURL))
-	return err
+
+	r.clientURL = u
+	return nil
+}
+
+func (r *RootCmd) resolveClientURL() (*url.URL, error) {
+	if r.clientURL != nil && r.clientURL.String() != "" {
+		return r.clientURL, nil
+	}
+
+	rawURL, err := r.createConfig().URL().Read()
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, ErrClientURLNotConfigured
+		}
+		return nil, xerrors.Errorf("read configured URL: %w", err)
+	}
+	parsedURL, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return nil, xerrors.Errorf("parse configured URL: %w", err)
+	}
+	return parsedURL, nil
+}
+
+// ResolveClientConnection resolves the deployment URL and client TLS transport
+// without reading or requiring a user session.
+func (r *RootCmd) ResolveClientConnection() (*url.URL, http.RoundTripper, error) {
+	serverURL, err := r.resolveClientURL()
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := r.ensureTLSConfig(); err != nil {
+		return nil, nil, xerrors.Errorf("load client TLS config: %w", err)
+	}
+	transport, err := newHTTPTransport(r.tlsConfig)
+	if err != nil {
+		return nil, nil, xerrors.Errorf("create HTTP transport: %w", err)
+	}
+	return serverURL, transport, nil
 }
 
 // ensureTLSConfig loads the TLS configuration from files if specified.
@@ -807,27 +866,26 @@ func (r *RootCmd) HeaderTransport(ctx context.Context, serverURL *url.URL) (*cod
 }
 
 func (r *RootCmd) createHTTPClient(ctx context.Context, serverURL *url.URL, inv *serpent.Invocation) (*http.Client, error) {
-	transport := http.DefaultTransport
-
-	// Apply custom TLS config if specified
-	if r.tlsConfig != nil {
-		// Clone the default transport and apply TLS config
-		defaultTransport, ok := http.DefaultTransport.(*http.Transport)
-		if !ok {
-			return nil, xerrors.New("cannot apply TLS config: http.DefaultTransport is not *http.Transport")
-		}
-		customTransport := defaultTransport.Clone()
-		customTransport.TLSClientConfig = r.tlsConfig
-		transport = customTransport
+	baseTransport, err := newHTTPTransport(r.tlsConfig)
+	if err != nil {
+		return nil, err
 	}
+	transport := baseTransport
 
 	transport = wrapTransportWithTelemetryHeader(transport, inv)
 	transport = wrapTransportWithUserAgentHeader(transport, inv)
+	if sessionID := clientSessionIDFromContext(inv.Context()); sessionID != "" {
+		transport = wrapTransportWithSessionIDHeader(transport, sessionID)
+	}
 	if !r.noVersionCheck {
+		buildInfoTransport, err := newHTTPTransport(r.tlsConfig)
+		if err != nil {
+			return nil, err
+		}
 		transport = wrapTransportWithVersionCheck(transport, inv, buildinfo.Version(), func(ctx context.Context) (codersdk.BuildInfoResponse, error) {
 			// Create a new client without any wrapped transport
 			// otherwise it creates an infinite loop!
-			basicClient := codersdk.New(serverURL)
+			basicClient := codersdk.New(serverURL, codersdk.WithHTTPClient(&http.Client{Transport: buildInfoTransport}))
 			return basicClient.BuildInfo(ctx)
 		})
 	}
@@ -842,9 +900,68 @@ func (r *RootCmd) createHTTPClient(ctx context.Context, serverURL *url.URL, inv 
 	// codersdk checks for the header transport to get headers
 	// to clone on the DERP client.
 	headerTransport.Transport = transport
-	return &http.Client{
+	httpClient := &http.Client{
 		Transport: headerTransport,
-	}, nil
+	}
+	if !r.allowRedirects {
+		httpClient.CheckRedirect = rejectRedirect
+	}
+	return httpClient, nil
+}
+
+// rejectRedirect is an http.Client CheckRedirect hook. Following a redirect
+// may alter the request method or drop its body, which silently changes the
+// API call being made.
+func rejectRedirect(req *http.Request, via []*http.Request) error {
+	err := &redirectError{to: req.URL}
+	if len(via) > 0 {
+		err.from = via[0].URL
+	}
+	return err
+}
+
+// redirectError is returned when the server redirects an API request.
+type redirectError struct {
+	from *url.URL
+	to   *url.URL
+}
+
+func (e *redirectError) Error() string {
+	if e.from == nil {
+		return fmt.Sprintf("server redirected request to %s", e.to)
+	}
+	return fmt.Sprintf("server redirected request from %s to %s", e.from, e.to)
+}
+
+// Helper returns a suggestion for resolving the redirect.
+func (e *redirectError) Helper() string {
+	if e.to == nil {
+		return ""
+	}
+	newBase := &url.URL{Scheme: e.to.Scheme, Host: e.to.Host}
+	if e.from != nil && e.from.Scheme == newBase.Scheme && e.from.Host == newBase.Host {
+		return fmt.Sprintf("The request was redirected within the same deployment. Check for a proxy or path rewrite in front of Coder, or pass --%s to follow redirects.", varAllowRedirects)
+	}
+	return fmt.Sprintf("The deployment URL may have changed. Run %q to log in against the new URL, or pass --%s to follow redirects.", "coder login "+newBase.String(), varAllowRedirects)
+}
+
+func newHTTPTransport(tlsConfig *tls.Config) (http.RoundTripper, error) {
+	defaultTransport, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		if tlsConfig != nil {
+			return nil, xerrors.New("cannot apply TLS config: http.DefaultTransport is not *http.Transport")
+		}
+		return http.DefaultTransport, nil
+	}
+
+	// Clone http.DefaultTransport for each CLI client. Parallel tests and
+	// embedded callers may close idle connections on their own clients, and
+	// sharing the process-global transport can interrupt in-flight requests.
+	transport := defaultTransport.Clone()
+	if tlsConfig != nil {
+		transport.TLSClientConfig = tlsConfig
+	}
+	return transport, nil
 }
 
 func (r *RootCmd) createUnauthenticatedClient(ctx context.Context, serverURL *url.URL, inv *serpent.Invocation) (*codersdk.Client, error) {
@@ -1275,6 +1392,12 @@ func (e *exitError) Unwrap() error {
 	return e.err
 }
 
+// ExitCode returns the OS exit code that the CLI will use when this error is
+// returned from a command handler.
+func (e *exitError) ExitCode() int {
+	return e.code
+}
+
 // ExitError returns an error that will cause the CLI to exit with the given
 // exit code. If err is non-nil, it will be wrapped by the returned error.
 func ExitError(code int, err error) error {
@@ -1346,6 +1469,10 @@ func cliHumanFormatError(from string, err error, opts *formatOpts) (string, bool
 	// Order does matter! We want to check for the most specific errors first.
 	if sdkError, ok := err.(*codersdk.Error); ok {
 		return formatCoderSDKError(from, sdkError, opts), true
+	}
+
+	if redirectErr, ok := err.(*redirectError); ok {
+		return formatRedirectError(from, redirectErr), true
 	}
 
 	if cmdErr, ok := err.(*serpent.RunCommandError); ok {
@@ -1446,7 +1573,7 @@ func formatCoderSDKError(from string, err *codersdk.Error, opts *formatOpts) str
 	if opts.Verbose {
 		// If all these fields are empty, then do not print this information.
 		// This can occur if the error is being used outside the api.
-		if !(err.Method() == "" && err.URL() == "" && err.StatusCode() == 0) {
+		if err.Method() != "" || err.URL() != "" || err.StatusCode() != 0 {
 			_, _ = str.WriteString(pretty.Sprint(headLineStyle(), fmt.Sprintf("API request error to \"%s:%s\". Status code %d", err.Method(), err.URL(), err.StatusCode())))
 			_, _ = str.WriteString("\n")
 		}
@@ -1479,6 +1606,21 @@ func formatCoderSDKError(from string, err *codersdk.Error, opts *formatOpts) str
 	if opts.Verbose || (err.Helper == "" && err.Detail != "") {
 		_, _ = str.WriteString("\n")
 		_, _ = str.WriteString(pretty.Sprint(tailLineStyle(), err.Detail))
+	}
+	return str.String()
+}
+
+// formatRedirectError formats a redirectError for CLI output.
+func formatRedirectError(from string, err *redirectError) string {
+	var str strings.Builder
+	if from != "" {
+		_, _ = str.WriteString(pretty.Sprint(headLineStyle(), fmt.Sprintf("Trace=[%s]", from)))
+		_, _ = str.WriteString("\n")
+	}
+	_, _ = str.WriteString(pretty.Sprint(headLineStyle(), err.Error()))
+	if helper := err.Helper(); helper != "" {
+		_, _ = str.WriteString("\n")
+		_, _ = str.WriteString(pretty.Sprintf(tailLineStyle(), "Suggestion: %s", helper))
 	}
 	return str.String()
 }
@@ -1533,7 +1675,7 @@ func defaultUpgradeMessage(version string) string {
 	if runtime.GOOS == "windows" {
 		return fmt.Sprintf("download the server version from: https://github.com/coder/coder/releases/v%s", version)
 	}
-	return fmt.Sprintf("download the server version with: 'curl -L https://coder.com/install.sh | sh -s -- --version %s'", version)
+	return fmt.Sprintf("download the server version with: 'curl -fsSL https://coder.com/install.sh | sh -s -- --version %s'", version)
 }
 
 // serverVersionMessage returns a warning message if the server version
@@ -1675,53 +1817,143 @@ func wrapTransportWithUserAgentHeader(transport http.RoundTripper, inv *serpent.
 	})
 }
 
+// clientSessionIDEnv is the environment variable a spawning client (Toolbox,
+// the VS Code plugin) can set so the CLI it launches reuses an existing client
+// session ID instead of generating a new one.
+const clientSessionIDEnv = "CODER_TRACE_SESSION_ID"
+
+// annotationClientSessionID marks commands that establish a client session and
+// should resolve a client_session_id. clientSessionIDMiddleware only resolves
+// and attaches the ID for commands that opt in with this annotation, so
+// long-running daemon commands (server, agent, provisionerd, and so on) never
+// carry a meaningless session ID in their logs, request baggage, or telemetry.
+const annotationClientSessionID = "client_session_id"
+
+// annotationFlightRecorder marks commands whose diagnostic logs should be kept
+// in memory by a flight recorder and emitted to stderr only when the command
+// returns an error. flightRecorderMiddleware installs the recorder for these
+// commands. Commands that manage their own logger destination (for example ssh,
+// which writes to a file to avoid corrupting its stdio stream) should not opt in.
+const annotationFlightRecorder = "flight_recorder"
+
+// flightRecorderMiddleware installs a stderr logger backed by a flight recorder
+// for commands that opt in with annotationFlightRecorder. Entries below the
+// display level (Info, or Debug under --verbose) are kept in a bounded in-memory
+// ring and emitted only when the command returns an error, so successful runs
+// stay quiet while the detail leading up to a failure is still available. The
+// recorder is shared with any logger derived from the invocation logger (such as
+// the codersdk client logger), so flushing here also emits their recorded
+// entries.
+func (r *RootCmd) flightRecorderMiddleware() serpent.MiddlewareFunc {
+	return func(next serpent.HandlerFunc) serpent.HandlerFunc {
+		return func(inv *serpent.Invocation) error {
+			if inv.IsCompletionMode() || inv.Command == nil ||
+				!inv.Command.Annotations.IsSet(annotationFlightRecorder) {
+				return next(inv)
+			}
+			logger := r.flightRecorder(inv.Logger, sloghuman.Sink(inv.Stderr), r.flightRecorderSize)
+			inv.Logger = logger
+			err := next(inv)
+			if err != nil {
+				// Replay the recorded diagnostic history to stderr. Flush does not
+				// add a duplicate error line; the returned error is rendered by the
+				// top-level formatter.
+				logger.Flush(inv.Context())
+			}
+			return err
+		}
+	}
+}
+
+type clientSessionIDContextKey struct{}
+
+// withClientSessionID returns a copy of ctx carrying the client session ID so
+// non-log consumers (HTTP baggage, tailnet telemetry) can read it back.
+func withClientSessionID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, clientSessionIDContextKey{}, id)
+}
+
+// clientSessionIDFromContext returns the client session ID stored on ctx, or
+// the empty string if none was resolved for this invocation.
+func clientSessionIDFromContext(ctx context.Context) string {
+	id, _ := ctx.Value(clientSessionIDContextKey{}).(string)
+	return id
+}
+
+// resolveClientSessionID returns the client session ID for this invocation.
+// When CODER_TRACE_SESSION_ID is set it is used verbatim so a spawning client
+// can correlate the CLI it launches. A warning is logged if the value is not
+// the canonical 32-character lowercase hex form, since coderd and agent
+// middleware drop non-canonical values. Otherwise a new session ID is
+// generated.
+func resolveClientSessionID(inv *serpent.Invocation) (string, error) {
+	if id, ok := inv.Environ.Lookup(clientSessionIDEnv); ok && id != "" {
+		if !tracing.ValidSessionID(id) {
+			cliui.Warnf(inv.Stderr,
+				"%s is not a 32-character lowercase hexadecimal string; it will not correlate in coderd and agent logs.",
+				clientSessionIDEnv)
+		}
+		return id, nil
+	}
+	id, err := tracing.NewSessionID()
+	if err != nil {
+		return "", xerrors.Errorf("generate client session ID: %w", err)
+	}
+	return id, nil
+}
+
+// clientSessionIDMiddleware resolves a single client session ID per invocation
+// and stores it on the invocation context for commands that opt in with the
+// annotationClientSessionID annotation. It attaches the ID as a slog field so
+// any log written with the invocation context (or a descendant) carries
+// client_session_id regardless of which logger emits it, and stores the raw ID
+// so createHTTPClient can attach it as W3C baggage and ssh can forward it as
+// tailnet telemetry. Commands that do not opt in (and completion mode) are
+// skipped so daemon logs stay free of an irrelevant session ID.
+func clientSessionIDMiddleware() serpent.MiddlewareFunc {
+	return func(next serpent.HandlerFunc) serpent.HandlerFunc {
+		return func(inv *serpent.Invocation) error {
+			if inv.IsCompletionMode() || inv.Command == nil ||
+				!inv.Command.Annotations.IsSet(annotationClientSessionID) {
+				return next(inv)
+			}
+			id, err := resolveClientSessionID(inv)
+			if err != nil {
+				return err
+			}
+			ctx := slog.With(inv.Context(), slog.F("client_session_id", id))
+			ctx = withClientSessionID(ctx, id)
+			return next(inv.WithContext(ctx))
+		}
+	}
+}
+
+// wrapTransportWithSessionIDHeader attaches the client session ID to every
+// request as W3C baggage under the client_session_id key, so coderd and agent
+// middleware can correlate logs, spans, and telemetry by session. It is set
+// regardless of whether tracing is enabled, and merges with any baggage
+// already present on the request rather than overwriting it.
+func wrapTransportWithSessionIDHeader(transport http.RoundTripper, sessionID string) http.RoundTripper {
+	member, err := baggage.NewMemberRaw(tracing.SessionIDBaggageKey, sessionID)
+	if err != nil {
+		// An invalid session ID should never reach here. If it somehow does,
+		// skip attaching baggage rather than failing every request.
+		return transport
+	}
+	return roundTripper(func(req *http.Request) (*http.Response, error) {
+		ctx := propagation.Baggage{}.Extract(req.Context(), propagation.HeaderCarrier(req.Header))
+		if bag, err := baggage.FromContext(ctx).SetMember(member); err == nil {
+			ctx = baggage.ContextWithBaggage(ctx, bag)
+			propagation.Baggage{}.Inject(ctx, propagation.HeaderCarrier(req.Header))
+		}
+		return transport.RoundTrip(req)
+	})
+}
+
 type roundTripper func(req *http.Request) (*http.Response, error)
 
 func (r roundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	return r(req)
-}
-
-// HeaderTransport creates a new transport that executes `--header-command`
-// if it is set to add headers for all outbound requests.
-func headerTransport(ctx context.Context, serverURL *url.URL, header []string, headerCommand string) (*codersdk.HeaderTransport, error) {
-	transport := &codersdk.HeaderTransport{
-		Transport: http.DefaultTransport,
-		Header:    http.Header{},
-	}
-	headers := header
-	if headerCommand != "" {
-		shell := "sh"
-		caller := "-c"
-		if runtime.GOOS == "windows" {
-			shell = "cmd.exe"
-			caller = "/c"
-		}
-		var outBuf bytes.Buffer
-		// #nosec
-		cmd := exec.CommandContext(ctx, shell, caller, headerCommand)
-		cmd.Env = append(os.Environ(), "CODER_URL="+serverURL.String())
-		cmd.Stdout = &outBuf
-		cmd.Stderr = io.Discard
-		err := cmd.Run()
-		if err != nil {
-			return nil, xerrors.Errorf("failed to run %v: %w", cmd.Args, err)
-		}
-		scanner := bufio.NewScanner(&outBuf)
-		for scanner.Scan() {
-			headers = append(headers, scanner.Text())
-		}
-		if err := scanner.Err(); err != nil {
-			return nil, xerrors.Errorf("scan %v: %w", cmd.Args, err)
-		}
-	}
-	for _, header := range headers {
-		parts := strings.SplitN(header, "=", 2)
-		if len(parts) < 2 {
-			return nil, xerrors.Errorf("split header %q had less than two parts", header)
-		}
-		transport.Header.Add(parts[0], parts[1])
-	}
-	return transport, nil
 }
 
 // PrintDeprecatedOptions loops through all command options, and

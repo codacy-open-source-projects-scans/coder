@@ -1,4 +1,5 @@
 import { cva } from "class-variance-authority";
+import { cn } from "cn";
 import {
 	CircleAlertIcon,
 	CircleCheckIcon,
@@ -6,9 +7,8 @@ import {
 	TriangleAlertIcon,
 	XIcon,
 } from "lucide-react";
-import { type FC, type ReactNode, useState } from "react";
+import { useState } from "react";
 import { Button } from "#/components/Button/Button";
-import { cn } from "#/utils/cn";
 
 const alertVariants = cva(
 	"relative w-full rounded-lg border border-solid p-4 text-left",
@@ -28,7 +28,7 @@ const alertVariants = cva(
 		compoundVariants: [
 			{
 				prominent: false,
-				className: "border-border-default bg-surface-secondary",
+				className: "border-border bg-surface-secondary",
 			},
 			{
 				severity: "success",
@@ -63,16 +63,16 @@ const severityIcons = {
 export type AlertColor = "info" | "success" | "warning" | "error";
 
 export type AlertProps = {
-	actions?: ReactNode;
+	actions?: React.ReactNode;
 	dismissible?: boolean;
 	onDismiss?: () => void;
 	severity?: AlertColor;
 	prominent?: boolean;
-	children?: ReactNode;
+	children?: React.ReactNode;
 	className?: string;
 };
 
-export const Alert: FC<AlertProps> = ({
+export const Alert: React.FC<AlertProps> = ({
 	children,
 	actions,
 	dismissible,
@@ -116,7 +116,7 @@ export const Alert: FC<AlertProps> = ({
 				<Button
 					variant="subtle"
 					size="icon"
-					className="size-8 !min-w-0 !p-0 absolute top-3 right-3"
+					className="size-8 min-w-0! p-0! absolute top-3 right-3"
 					onClick={() => {
 						setOpen(false);
 						onDismiss?.();
@@ -124,26 +124,31 @@ export const Alert: FC<AlertProps> = ({
 					data-testid="dismiss-banner-btn"
 					aria-label="Dismiss"
 				>
-					<XIcon className="!p-0 size-icon-lg" />
+					<XIcon className="p-0! size-icon-lg" />
 				</Button>
 			)}
 		</div>
 	);
 };
 
-export const AlertDescription: React.FC<React.PropsWithChildren> = ({
-	children,
-}) => {
+export const AlertDescription: React.FC<
+	React.PropsWithChildren<{ className?: string }>
+> = ({ children, className }) => {
 	return (
-		<span className="m-0 text-sm" data-chromatic="ignore">
+		<span className={cn("m-0 text-sm", className)} data-pixel="ignore">
 			{children}
 		</span>
 	);
 };
 
-export const AlertTitle: React.FC<React.ComponentPropsWithRef<"h2">> = ({
+export const AlertTitle: React.FC<React.ComponentProps<"h2">> = ({
 	className,
+	children,
 	...props
 }) => {
-	return <h2 className={cn("m-0 text-sm", className)} {...props} />;
+	return (
+		<h2 className={cn("m-0 text-sm", className)} {...props}>
+			{children}
+		</h2>
+	);
 };

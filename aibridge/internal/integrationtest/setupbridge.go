@@ -3,11 +3,13 @@ package integrationtest
 import (
 	"bytes"
 	"context"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/sjson"
 	"go.opentelemetry.io/otel"
@@ -15,6 +17,7 @@ import (
 
 	"cdr.dev/slog/v3"
 	"github.com/coder/coder/v2/aibridge"
+	"github.com/coder/coder/v2/aibridge/aibridgetest"
 	"github.com/coder/coder/v2/aibridge/config"
 	aibcontext "github.com/coder/coder/v2/aibridge/context"
 	"github.com/coder/coder/v2/aibridge/fixtures"
@@ -37,20 +40,38 @@ const (
 	providerBedrock = "bedrock"
 
 	// defaults
-	apiKey         = "api-key"
-	defaultActorID = "ae235cc1-9f8f-417d-a636-a7b170bac62e"
+	apiKey          = "api-key"
+	defaultActorID  = "ae235cc1-9f8f-417d-a636-a7b170bac62e"
+	defaultAPIKeyID = "integration-test-api-key-id"
 )
 
-var defaultTracer = otel.Tracer("integrationtest")
+var (
+	defaultTracer = otel.Tracer("integrationtest")
+	// defaultActorUUID is defaultActorID parsed for the request actor; records
+	// and labels compare against the string form.
+	defaultActorUUID = uuid.MustParse(defaultActorID)
+)
 
 type bridgeConfig struct {
-	providerBuilders []func(upstreamURL string) aibridge.Provider
+	providerBuilders []func(t *testing.T, upstreamURL string) aibridge.Provider
 	metrics          *metrics.Metrics
 	tracer           trace.Tracer
 	mcpProxy         mcp.ServerProxier
-	userID           string
-	metadata         recorder.Metadata
-	logger           slog.Logger
+	// noMCPProxy leaves the proxier nil instead of falling back to
+	// NoopMCPManager, which is non-nil and reports zero tools.
+	noMCPProxy    bool
+	actorID       uuid.UUID
+	actorUsername string
+	logger        slog.Logger
+	// apiKeyID is stamped on the request actor. Recorders require it, so
+	// [newBridgeTestServer] defaults it to defaultAPIKeyID.
+	apiKeyID string
+	// structuredLogging makes the bridge emit AI Gateway interception
+	// records in the format described by [recorder.InterceptionLogMarker].
+	structuredLogging bool
+	// recorderMiddleware is inserted below the logging middleware, as the
+	// bridge pool does for deployment record policy.
+	recorderMiddleware []recorder.Middleware
 }
 
 // bridgeTestServer wraps an httptest.Server running a RequestBridge.
@@ -86,8 +107,8 @@ type bridgeOption func(*bridgeConfig)
 // When any provider option is used, the default "all providers" set is not created.
 func withProvider(providerType string) bridgeOption {
 	return func(c *bridgeConfig) {
-		c.providerBuilders = append(c.providerBuilders, func(addr string) aibridge.Provider {
-			return newDefaultProvider(providerType, addr)
+		c.providerBuilders = append(c.providerBuilders, func(t *testing.T, addr string) aibridge.Provider {
+			return newDefaultProvider(t, providerType, addr)
 		})
 	}
 }
@@ -97,7 +118,7 @@ func withProvider(providerType string) bridgeOption {
 // When any provider option is used, the default "all providers" set is not created.
 func withCustomProvider(p aibridge.Provider) bridgeOption {
 	return func(c *bridgeConfig) {
-		c.providerBuilders = append(c.providerBuilders, func(string) aibridge.Provider {
+		c.providerBuilders = append(c.providerBuilders, func(*testing.T, string) aibridge.Provider {
 			return p
 		})
 	}
@@ -118,9 +139,9 @@ func withMCP(p mcp.ServerProxier) bridgeOption {
 	return func(c *bridgeConfig) { c.mcpProxy = p }
 }
 
-// withActor sets the actor ID and metadata for the BaseContext.
-func withActor(id string, md recorder.Metadata) bridgeOption {
-	return func(c *bridgeConfig) { c.userID = id; c.metadata = md }
+// withActor sets the actor ID and username for the BaseContext.
+func withActor(id uuid.UUID, username string) bridgeOption {
+	return func(c *bridgeConfig) { c.actorID = id; c.actorUsername = username }
 }
 
 // newBridgeTestServer creates a fully configured test server running
@@ -129,7 +150,8 @@ func withActor(id string, md recorder.Metadata) bridgeOption {
 //   - NoopMCPManager (unless withMCP)
 //   - slogtest debug logger
 //   - defaultTracer (unless withTracer)
-//   - defaultActorID (unless withActor)
+//   - defaultActorID with no username (unless withActor)
+//   - defaultAPIKeyID (unless apiKeyID is set)
 func newBridgeTestServer(
 	ctx context.Context,
 	t *testing.T,
@@ -139,16 +161,19 @@ func newBridgeTestServer(
 	t.Helper()
 
 	cfg := &bridgeConfig{
-		userID: defaultActorID,
+		actorID: defaultActorUUID,
 	}
 	for _, o := range opts {
 		o(cfg)
+	}
+	if cfg.apiKeyID == "" {
+		cfg.apiKeyID = defaultAPIKeyID
 	}
 	if cfg.tracer == nil {
 		cfg.tracer = defaultTracer
 	}
 	cfg.logger = newLogger(t)
-	if cfg.mcpProxy == nil {
+	if cfg.mcpProxy == nil && !cfg.noMCPProxy {
 		cfg.mcpProxy = newNoopMCPManager()
 	}
 
@@ -157,19 +182,17 @@ func newBridgeTestServer(
 	var providers []aibridge.Provider
 	if len(cfg.providerBuilders) > 0 {
 		for _, b := range cfg.providerBuilders {
-			providers = append(providers, b(upstreamURL))
+			providers = append(providers, b(t, upstreamURL))
 		}
 	} else {
 		providers = []aibridge.Provider{
-			newDefaultProvider(config.ProviderAnthropic, upstreamURL),
-			newDefaultProvider(config.ProviderOpenAI, upstreamURL),
+			newDefaultProvider(t, config.ProviderAnthropic, upstreamURL),
+			newDefaultProvider(t, config.ProviderOpenAI, upstreamURL),
 		}
 	}
 
 	mockRec := &testutil.MockRecorder{}
-	rec := aibridge.NewRecorder(cfg.logger, cfg.tracer, func() (aibridge.Recorder, error) {
-		return mockRec, nil
-	})
+	rec := aibridge.NewRecorder(cfg.logger, cfg.tracer, cfg.structuredLogging, mockRec, cfg.recorderMiddleware...)
 
 	bridge, err := aibridge.NewRequestBridge(
 		ctx, providers, rec, cfg.mcpProxy,
@@ -177,10 +200,14 @@ func newBridgeTestServer(
 	)
 	require.NoError(t, err)
 
-	actorID, md := cfg.userID, cfg.metadata
+	actor := aibcontext.Actor{
+		ID:       cfg.actorID,
+		APIKeyID: cfg.apiKeyID,
+		Username: cfg.actorUsername,
+	}
 	srv := httptest.NewUnstartedServer(bridge)
 	srv.Config.BaseContext = func(_ net.Listener) context.Context {
-		return aibcontext.AsActor(ctx, actorID, md)
+		return aibcontext.AsActor(ctx, actor)
 	}
 	srv.Start()
 	t.Cleanup(srv.Close)
@@ -215,17 +242,17 @@ func setupInjectedToolTest(
 	// Setup mock server for multi-turn interaction.
 	// First request → tool call response
 	// Second request → final response.
-	firstResp := newFixtureResponse(fix)
-	toolResp := newFixtureToolResponse(fix)
+	firstResp := testutil.NewFixtureResponse(fix)
+	toolResp := testutil.NewFixtureToolResponse(fix)
 	toolResp.OnRequest = toolRequestValidatorFn
-	upstream := newMockUpstream(ctx, t, firstResp, toolResp)
+	upstream := testutil.NewMockUpstream(ctx, t, firstResp, toolResp)
 
 	mockMCP := setupMCPForTest(t, tracer)
 
 	allOpts := []bridgeOption{
 		withMCP(mockMCP),
 		withTracer(tracer),
-		withActor(defaultActorID, nil),
+		withActor(defaultActorUUID, ""),
 	}
 	allOpts = append(allOpts, opts...)
 	bridgeServer := newBridgeTestServer(ctx, t, upstream.URL, allOpts...)
@@ -238,23 +265,25 @@ func setupInjectedToolTest(
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 
-	// Wait both requests (initial + tool call result)
-	require.Eventually(t, func() bool {
-		return upstream.Calls.Load() == 2
-	}, testutil.WaitMedium, testutil.IntervalFast)
+	// Drain the body so the bridge handler returns and asyncRecorder.Wait()
+	// flushes pending recordings (see aibridge/bridge.go:newInterceptionProcessor).
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+	resp.Body = io.NopCloser(bytes.NewReader(body))
 
 	return bridgeServer, mockMCP, resp
 }
 
 // newDefaultProvider creates a Provider with default test configuration.
-func newDefaultProvider(providerType string, addr string) aibridge.Provider {
+func newDefaultProvider(t *testing.T, providerType string, addr string) aibridge.Provider {
 	switch providerType {
 	case config.ProviderAnthropic:
-		return provider.NewAnthropic(anthropicCfg(addr, apiKey), nil)
+		return aibridgetest.NewAnthropicProvider(t, anthropicCfg(addr, apiKey), nil)
 	case config.ProviderOpenAI:
 		return provider.NewOpenAI(openAICfg(addr, apiKey))
 	case providerBedrock:
-		return provider.NewAnthropic(anthropicCfg(addr, apiKey), bedrockCfg(addr))
+		return aibridgetest.NewAnthropicProvider(t, anthropicCfg(addr, apiKey), bedrockCfg(addr))
 	default:
 		panic("unknown provider type: " + providerType)
 	}

@@ -1,13 +1,18 @@
-import type { FC } from "react";
 import type { UseMutateFunction } from "react-query";
 import type * as TypesGen from "#/api/typesGenerated";
 import { ChatFullWidthSettings } from "./components/ChatFullWidthSettings";
+import { ChatSendShortcutSettings } from "./components/ChatSendShortcutSettings";
+import { CollapseAssistantStepsSettings } from "./components/CollapseAssistantStepsSettings";
+import {
+	CodeDiffDisplaySettings,
+	ShellToolDisplaySettings,
+	ThinkingDisplaySettings,
+} from "./components/DisplayModeSettings";
 import { PersonalInstructionsSettings } from "./components/PersonalInstructionsSettings";
 import { SectionHeader } from "./components/SectionHeader";
-import { ThinkingDisplaySettings } from "./components/ThinkingDisplaySettings";
 import { UserChatDebugLoggingSettings } from "./components/UserChatDebugLoggingSettings";
 
-export interface AgentSettingsGeneralPageViewProps {
+export type AgentSettingsGeneralPageViewProps = {
 	userPromptData: TypesGen.UserChatCustomPrompt | undefined;
 	onSaveUserPrompt: UseMutateFunction<
 		TypesGen.UserChatCustomPrompt,
@@ -26,9 +31,9 @@ export interface AgentSettingsGeneralPageViewProps {
 	>;
 	isSavingUserDebugLogging: boolean;
 	isSaveUserDebugLoggingError: boolean;
-}
+};
 
-export const AgentSettingsGeneralPageView: FC<
+export const AgentSettingsGeneralPageView: React.FC<
 	AgentSettingsGeneralPageViewProps
 > = ({
 	userPromptData,
@@ -54,7 +59,11 @@ export const AgentSettingsGeneralPageView: FC<
 				isAnyPromptSaving={isSavingUserPrompt}
 			/>
 			<ChatFullWidthSettings />
+			<ChatSendShortcutSettings />
 			<ThinkingDisplaySettings />
+			<ShellToolDisplaySettings />
+			<CodeDiffDisplaySettings />
+			<CollapseAssistantStepsSettings />
 			<UserChatDebugLoggingSettings
 				userSettings={userDebugLoggingData}
 				onSaveUserSetting={onSaveUserDebugLogging}

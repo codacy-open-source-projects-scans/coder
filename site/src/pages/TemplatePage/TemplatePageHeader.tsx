@@ -7,7 +7,6 @@ import {
 	SettingsIcon,
 	TrashIcon,
 } from "lucide-react";
-import type { FC } from "react";
 import { useQuery } from "react-query";
 import { Link as RouterLink, useNavigate } from "react-router";
 import { toast } from "sonner";
@@ -20,9 +19,10 @@ import type {
 	TemplateVersion,
 } from "#/api/typesGenerated";
 import { Avatar } from "#/components/Avatar/Avatar";
+import { DeprecatedBadge } from "#/components/Badge/PresetBadges";
 import { Button, Button as ShadcnButton } from "#/components/Button/Button";
-import { ConfirmDialog } from "#/components/Dialogs/ConfirmDialog/ConfirmDialog";
-import { DeleteDialog } from "#/components/Dialogs/DeleteDialog/DeleteDialog";
+import { ConfirmDialog } from "#/components/Dialog/ConfirmDialog/ConfirmDialog";
+import { DeleteDialog } from "#/components/Dialog/DeleteDialog/DeleteDialog";
 import {
 	DropdownMenu,
 	DropdownMenuContent,
@@ -37,7 +37,6 @@ import {
 	PageHeaderSubtitle,
 	PageHeaderTitle,
 } from "#/components/PageHeader/PageHeader";
-import { Pill } from "#/components/Pill/Pill";
 import { linkToTemplate, useLinks } from "#/modules/navigation";
 import type { WorkspacePermissions } from "#/modules/permissions/workspaces";
 import { TemplateStats } from "./TemplateStats";
@@ -52,7 +51,7 @@ type TemplateMenuProps = {
 	onDelete: () => void;
 };
 
-const TemplateMenu: FC<TemplateMenuProps> = ({
+const TemplateMenu: React.FC<TemplateMenuProps> = ({
 	organizationName,
 	templateName,
 	templateVersion,
@@ -67,7 +66,7 @@ const TemplateMenu: FC<TemplateMenuProps> = ({
 	);
 	const navigate = useNavigate();
 	const getLink = useLinks();
-	const queryText = `template:${templateName}`;
+	const queryText = `organization:${organizationName} template:${templateName}`;
 	const workspaceCountQuery = useQuery({
 		...workspaces({ q: queryText }),
 		select: (res) => res.count,
@@ -106,29 +105,25 @@ const TemplateMenu: FC<TemplateMenuProps> = ({
 					</ShadcnButton>
 				</DropdownMenuTrigger>
 				<DropdownMenuContent align="end">
-					<DropdownMenuItem
-						onClick={() => navigate(`${templateLink}/settings`)}
-					>
-						<SettingsIcon className="size-icon-sm" />
-						Settings
+					<DropdownMenuItem asChild>
+						<RouterLink to={`${templateLink}/settings`}>
+							<SettingsIcon className="size-icon-sm" />
+							Settings
+						</RouterLink>
 					</DropdownMenuItem>
 
-					<DropdownMenuItem
-						onClick={() =>
-							navigate(`${templateLink}/versions/${templateVersion}/edit`)
-						}
-					>
-						<EditIcon />
-						Edit files
+					<DropdownMenuItem asChild>
+						<RouterLink to={`${templateLink}/versions/${templateVersion}/edit`}>
+							<EditIcon />
+							Edit files
+						</RouterLink>
 					</DropdownMenuItem>
 
-					<DropdownMenuItem
-						onClick={() =>
-							navigate(`/templates/new?fromTemplate=${templateId}`)
-						}
-					>
-						<CopyIcon className="size-icon-sm" />
-						Duplicate&hellip;
+					<DropdownMenuItem asChild>
+						<RouterLink to={`/templates/new?fromTemplate=${templateId}`}>
+							<CopyIcon className="size-icon-sm" />
+							Duplicate&hellip;
+						</RouterLink>
 					</DropdownMenuItem>
 
 					<DropdownMenuItem onClick={() => handleExport()}>
@@ -209,7 +204,7 @@ type TemplatePageHeaderProps = {
 	onDeleteTemplate: () => void;
 };
 
-export const TemplatePageHeader: FC<TemplatePageHeaderProps> = ({
+export const TemplatePageHeader: React.FC<TemplatePageHeaderProps> = ({
 	template,
 	activeVersion,
 	permissions,
@@ -263,20 +258,18 @@ export const TemplatePageHeader: FC<TemplatePageHeaderProps> = ({
 									? template.display_name
 									: template.name}
 							</PageHeaderTitle>
-							{template.deprecated && <Pill type="warning">Deprecated</Pill>}
+							{template.deprecated && <DeprecatedBadge />}
 						</div>
 
 						{template.deprecation_message !== "" ? (
-							<PageHeaderSubtitle condensed>
+							<PageHeaderSubtitle>
 								<MemoizedInlineMarkdown>
 									{template.deprecation_message}
 								</MemoizedInlineMarkdown>
 							</PageHeaderSubtitle>
 						) : (
 							template.description !== "" && (
-								<PageHeaderSubtitle condensed>
-									{template.description}
-								</PageHeaderSubtitle>
+								<PageHeaderSubtitle>{template.description}</PageHeaderSubtitle>
 							)
 						)}
 					</div>

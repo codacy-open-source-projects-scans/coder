@@ -1,4 +1,3 @@
-import type { FC } from "react";
 import { useQueries } from "react-query";
 import {
 	customNotificationTemplates,
@@ -38,7 +37,7 @@ function isNotificationTab(
 	return (NOTIFICATION_TABS as readonly string[]).includes(value);
 }
 
-const NotificationsPage: FC = () => {
+const NotificationsPage: React.FC = () => {
 	const { permissions } = useAuthenticated();
 	const { deploymentConfig } = useDeploymentConfig();
 	const canEditDeploymentConfig = permissions.editDeploymentConfig;
@@ -78,16 +77,14 @@ const NotificationsPage: FC = () => {
 		<>
 			<title>{pageTitle("Notifications Settings")}</title>
 
-			<SettingsHeader
-				actions={
-					<SettingsHeaderDocsLink
-						href={docs("/admin/monitoring/notifications")}
-					/>
-				}
-			>
+			<SettingsHeader>
 				<SettingsHeaderTitle>Notifications</SettingsHeaderTitle>
 				<SettingsHeaderDescription>
-					Control delivery methods for notifications on this deployment.
+					Control delivery methods for notifications on this deployment.{" "}
+					<SettingsHeaderDocsLink
+						href={docs("/admin/monitoring/notifications")}
+						context="about notifications"
+					/>
 				</SettingsHeaderDescription>
 			</SettingsHeader>
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -30,7 +31,7 @@ import (
 // @Param request body codersdk.CustomRoleRequest true "Insert role request"
 // @Tags Members
 // @Success 200 {array} codersdk.Role
-// @Router /organizations/{organization}/members/roles [post]
+// @Router /api/v2/organizations/{organization}/members/roles [post]
 func (api *API) postOrgRoles(rw http.ResponseWriter, r *http.Request) {
 	var (
 		ctx               = r.Context()
@@ -97,7 +98,7 @@ func (api *API) postOrgRoles(rw http.ResponseWriter, r *http.Request) {
 // @Param request body codersdk.CustomRoleRequest true "Update role request"
 // @Tags Members
 // @Success 200 {array} codersdk.Role
-// @Router /organizations/{organization}/members/roles [put]
+// @Router /api/v2/organizations/{organization}/members/roles [put]
 func (api *API) putOrgRoles(rw http.ResponseWriter, r *http.Request) {
 	var (
 		ctx               = r.Context()
@@ -187,7 +188,7 @@ func (api *API) putOrgRoles(rw http.ResponseWriter, r *http.Request) {
 // @Param roleName path string true "Role name"
 // @Tags Members
 // @Success 200 {array} codersdk.Role
-// @Router /organizations/{organization}/members/roles/{roleName} [delete]
+// @Router /api/v2/organizations/{organization}/members/roles/{roleName} [delete]
 func (api *API) deleteOrgRole(rw http.ResponseWriter, r *http.Request) {
 	var (
 		ctx               = r.Context()
@@ -291,8 +292,8 @@ func sdkPermissionToDB(p codersdk.Permission) database.CustomRolePermission {
 
 func validOrganizationRoleRequest(ctx context.Context, req codersdk.CustomRoleRequest, rw http.ResponseWriter) bool {
 	// This check is not ideal, but we cannot enforce a unique role name in the db against
-	// the built-in role names.
-	if rbac.ReservedRoleName(req.Name) {
+	// the built-in role names. Custom role names are stored lowercase.
+	if rbac.ReservedRoleName(strings.ToLower(req.Name)) {
 		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
 			Message: "Reserved role name",
 			Detail:  fmt.Sprintf("%q is a reserved role name, and not allowed to be used", req.Name),

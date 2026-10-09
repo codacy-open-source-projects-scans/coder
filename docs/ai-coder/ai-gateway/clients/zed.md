@@ -1,4 +1,10 @@
-# Zed
+---
+title: Zed
+---
+
+> [!NOTE]
+> AI Gateway is part of [AI Governance](../../ai-governance.md), which is
+> included with a Premium license.
 
 Zed IDE supports AI Gateway via its `language_models` configuration in `settings.json`.
 
@@ -12,10 +18,10 @@ You can configure both Anthropic and OpenAI providers to point to AI Gateway.
 {
   "language_models": {
     "anthropic": {
-      "api_url": "https://coder.example.com/api/v2/aibridge/anthropic",
+      "api_url": "https://coder.example.com/api/v2/ai-gateway/anthropic",
     },
     "openai": {
-      "api_url": "https://coder.example.com/api/v2/aibridge/openai/v1",
+      "api_url": "https://coder.example.com/api/v2/ai-gateway/openai/v1",
     },
   },
   // optional settings to set favorite models for the AI
@@ -50,7 +56,7 @@ You can set this in two ways:
 ### Zed UI
 
 1. Open the **Assistant Panel** (right sidebar).
-1. Click **Configuration** or the settings icon.
+1. Select **Configuration** or the settings icon.
 1. Select your provider ("Anthropic" or "OpenAI").
 1. Paste your **[Coder API token](../../../admin/users/sessions-tokens.md#generate-a-long-lived-api-token-on-behalf-of-yourself)** for the API Key.
 

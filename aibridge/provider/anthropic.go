@@ -1,11 +1,11 @@
 package provider
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"os"
-	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
@@ -13,27 +13,25 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/xerrors"
 
+	"cdr.dev/slog/v3"
 	"github.com/coder/coder/v2/aibridge/circuitbreaker"
 	"github.com/coder/coder/v2/aibridge/config"
+	"github.com/coder/coder/v2/aibridge/credential"
+	aibheaders "github.com/coder/coder/v2/aibridge/headers"
 	"github.com/coder/coder/v2/aibridge/intercept"
 	"github.com/coder/coder/v2/aibridge/intercept/messages"
+	"github.com/coder/coder/v2/aibridge/keypool"
+	"github.com/coder/coder/v2/aibridge/recorder"
 	"github.com/coder/coder/v2/aibridge/tracing"
-	"github.com/coder/coder/v2/aibridge/utils"
 )
-
-// anthropicForwardHeaders lists headers from incoming requests that should be
-// forwarded to the Anthropic API.
-// TODO(ssncferreira): remove as part of https://github.com/coder/aibridge/issues/192
-var anthropicForwardHeaders = []string{
-	"Anthropic-Beta",
-}
 
 var _ Provider = &Anthropic{}
 
 // Anthropic allows for interactions with the Anthropic API.
 type Anthropic struct {
-	cfg        config.Anthropic
-	bedrockCfg *config.AWSBedrock
+	cfg            config.Anthropic
+	bedrock        *messages.BedrockRuntime
+	claudePlatform *claudePlatformTransport
 }
 
 const routeMessages = "/v1/messages" // https://docs.anthropic.com/en/api/messages
@@ -42,43 +40,81 @@ var anthropicOpenErrorResponse = func() []byte {
 	return []byte(`{"type":"error","error":{"type":"overloaded_error","message":"circuit breaker is open"}}`)
 }
 
+// statusOverloaded is the non-standard HTTP status Anthropic returns when its
+// API is overloaded. The net/http package does not define a constant for it.
+// https://platform.claude.com/docs/en/api/errors
+const statusOverloaded = 529
+
 var anthropicIsFailure = func(statusCode int) bool {
-	// https://platform.claude.com/docs/en/api/errors
-	if statusCode == 529 {
+	if statusCode == statusOverloaded {
 		return true
 	}
 	return circuitbreaker.DefaultIsFailure(statusCode)
 }
 
-func NewAnthropic(cfg config.Anthropic, bedrockCfg *config.AWSBedrock) *Anthropic {
+func NewAnthropic(ctx context.Context, cfg config.Anthropic, bedrockCfg *config.AWSBedrock, claudePlatformCfg *config.AWSClaudePlatform) (*Anthropic, error) {
 	if cfg.Name == "" {
 		cfg.Name = config.ProviderAnthropic
 	}
 	if cfg.BaseURL == "" {
 		cfg.BaseURL = "https://api.anthropic.com/"
 	}
-	if cfg.Key == "" {
-		cfg.Key = os.Getenv("ANTHROPIC_API_KEY")
-	}
-	if cfg.APIDumpDir == "" {
-		cfg.APIDumpDir = os.Getenv("BRIDGE_DUMP_DIR")
-	}
-	if cfg.MaxRetries == nil {
-		if v := os.Getenv("ANTHROPIC_MAX_RETRIES"); v != "" {
-			if n, err := strconv.Atoi(v); err == nil {
-				cfg.MaxRetries = &n
-			}
-		}
-	}
 	if cfg.CircuitBreaker != nil {
 		cfg.CircuitBreaker.IsFailure = anthropicIsFailure
 		cfg.CircuitBreaker.OpenErrorResponse = anthropicOpenErrorResponse
 	}
+	if bedrockCfg != nil && claudePlatformCfg != nil {
+		return nil, xerrors.New("bedrock and claude platform configuration are mutually exclusive")
+	}
+
+	// Resolve the AWS credentials provider once and bundle it with the config.
+	// This performs no network call (the base identity and any AssumeRole
+	// resolve lazily on first retrieval); it only wires up the provider chain,
+	// so it is cheap to run at construction.
+	var bedrock *messages.BedrockRuntime
+	var claudePlatform *claudePlatformTransport
+	if bedrockCfg != nil {
+		awsCfg, err := buildBedrockCredentials(ctx, *bedrockCfg)
+		if err != nil {
+			return nil, xerrors.Errorf("build bedrock credentials: %w", err)
+		}
+		runtimeCfg := *bedrockCfg
+		// awsCfg.Region is bedrockCfg.Region if provided;
+		// otherwise, it is resolved from the environment via awsconfig.LoadDefaultConfig
+		if runtimeCfg.Region == "" {
+			runtimeCfg.Region = awsCfg.Region
+		}
+		if err := runtimeCfg.Validate(); err != nil {
+			return nil, xerrors.Errorf("bedrock config: %w", err)
+		}
+
+		bedrock = messages.NewBedrockRuntime(runtimeCfg, awsCfg.Credentials)
+	}
+
+	if claudePlatformCfg != nil {
+		runtimeCfg := *claudePlatformCfg
+		// Unlike Bedrock, the region is never inferred from the AWS environment:
+		// it selects the upstream host and the signing scope, so an implicit
+		// value would silently route traffic to the wrong region.
+		if err := runtimeCfg.Validate(); err != nil {
+			return nil, xerrors.Errorf("claude platform config: %w", err)
+		}
+
+		runtime := &claudePlatformTransport{
+			logger: cfg.Logger,
+			cfg:    runtimeCfg,
+			inner:  http.DefaultTransport,
+			creds:  newLazyAWSCredentials(runtimeCfg.Region),
+		}
+		claudePlatform = runtime
+		cfg.BaseURL = runtimeCfg.ResolvedBaseURL()
+	}
 
 	return &Anthropic{
-		cfg:        cfg,
-		bedrockCfg: bedrockCfg,
-	}
+		cfg:            cfg,
+		bedrock:        bedrock,
+		claudePlatform: claudePlatform,
+	}, nil
 }
 
 func (*Anthropic) Type() string {
@@ -88,6 +124,8 @@ func (*Anthropic) Type() string {
 func (p *Anthropic) Name() string {
 	return p.cfg.Name
 }
+
+func (*Anthropic) Enabled() bool { return true }
 
 func (p *Anthropic) RoutePrefix() string {
 	return fmt.Sprintf("/%s", p.Name())
@@ -127,70 +165,107 @@ func (p *Anthropic) CreateInterceptor(_ http.ResponseWriter, r *http.Request, tr
 		return nil, xerrors.Errorf("unmarshal request body: %w", err)
 	}
 
-	cfg := p.cfg
-	cfg.ExtraHeaders = extractAnthropicHeaders(r)
-
-	// At this point the request contains only LLM provider headers.
-	// Any Coder-specific authentication has already been stripped.
-	//
-	// In centralized mode neither Authorization nor X-Api-Key is
-	// present, so cfg keeps the centralized key unchanged.
-	//
-	// In BYOK mode the user's LLM credentials survive intact.
-	// If X-Api-Key is present the user has a personal API key;
-	// overwrite the centralized key with it. If Authorization is
-	// present the user authenticated directly with provider;
-	// set BYOKBearerToken and clear the centralized key.
-	// When both are present, X-Api-Key takes priority to match
-	// claude-code behavior.
-	credKind := intercept.CredentialKindCentralized
-	credSecret := cfg.Key
-	authHeaderName := p.AuthHeader()
-	if apiKey := r.Header.Get("X-Api-Key"); apiKey != "" {
-		cfg.Key = apiKey
-		authHeaderName = "X-Api-Key"
-		credKind = intercept.CredentialKindBYOK
-		credSecret = apiKey
-	} else if token := utils.ExtractBearerToken(r.Header.Get("Authorization")); token != "" {
-		cfg.BYOKBearerToken = token
-		cfg.Key = ""
-		authHeaderName = "Authorization"
-		credKind = intercept.CredentialKindBYOK
-		credSecret = token
+	cfg := intercept.Config{
+		ProviderName:     p.Name(),
+		BaseURL:          p.BaseURL(),
+		APIDumpDir:       p.cfg.APIDumpDir,
+		ActorHeaderNames: p.cfg.ActorHeaderNames,
 	}
-
-	cred := intercept.NewCredentialInfo(credKind, credSecret)
+	if p.claudePlatform != nil {
+		cfg.HTTPClient = &http.Client{Transport: p.claudePlatform}
+	}
+	cred, err := p.ResolveCredential(r)
+	if err != nil {
+		span.SetStatus(codes.Error, err.Error())
+		return nil, xerrors.Errorf("resolve credential: %w", err)
+	}
 
 	var interceptor intercept.Interceptor
 	if reqPayload.Stream() {
-		interceptor = messages.NewStreamingInterceptor(id, reqPayload, p.Name(), cfg, p.bedrockCfg, r.Header, authHeaderName, tracer, cred)
+		interceptor = messages.NewStreamingInterceptor(id, reqPayload, cfg, cred, p.bedrock, r.Header, tracer)
 	} else {
-		interceptor = messages.NewBlockingInterceptor(id, reqPayload, p.Name(), cfg, p.bedrockCfg, r.Header, authHeaderName, tracer, cred)
+		interceptor = messages.NewBlockingInterceptor(id, reqPayload, cfg, cred, p.bedrock, r.Header, tracer)
 	}
 	span.SetAttributes(interceptor.TraceAttributes(r)...)
 	return interceptor, nil
 }
 
+// ResolveCredential determines the upstream credential for a request.
+// Coder authentication credentials must already have been removed from it.
+// Remaining provider authentication headers are interpreted as BYOK credentials.
+//
+//   - X-Api-Key present: BYOK with a personal API key.
+//   - Authorization present: BYOK with an access token.
+//   - Neither present: centralized, using the provider's key pool with
+//     failover.
+//
+// When both BYOK headers are present, X-Api-Key takes priority to match
+// claude-code behavior. Centralized requests require a key pool, except for
+// AWS-signed providers (Bedrock and Claude Platform), which
+// authenticate via request signing rather than a pool.
+func (p *Anthropic) ResolveCredential(r *http.Request) (credential.Credential, error) {
+	if apiKey := r.Header.Get(aibheaders.AuthHeaderXAPIKey); apiKey != "" {
+		return credential.BYOK{Secret: apiKey, Header: aibheaders.AuthHeaderXAPIKey}, nil
+	}
+	if token := aibheaders.ExtractBearerToken(r.Header.Get(aibheaders.AuthHeaderAuthorization)); token != "" {
+		return credential.BYOK{Secret: token, Header: aibheaders.AuthHeaderAuthorization}, nil
+	}
+	if p.cfg.KeyPool != nil {
+		return &credential.CentralizedPool{Pool: p.cfg.KeyPool, Header: p.AuthHeader()}, nil
+	}
+	if p.bedrock != nil {
+		return credential.AWSSigV4{AccessKey: p.bedrock.Cfg.AccessKey}, nil
+	}
+	if p.claudePlatform != nil {
+		return credential.AWSSigV4{}, nil
+	}
+	return nil, ErrNoCredential
+}
+
+// BaseURL returns the provider's upstream base URL. Claude Platform for AWS
+// derives it from the configured region unless explicitly overridden, so its
+// passthrough routes reach the same host as bridged requests.
 func (p *Anthropic) BaseURL() string {
 	return p.cfg.BaseURL
 }
 
-func (*Anthropic) AuthHeader() string {
-	return "X-Api-Key"
+// WrapPassthroughTransport authenticates passthrough routes for providers whose
+// credential is not a static header value. Passthrough auth is otherwise
+// key-pool driven, which leaves an IAM-mode Claude Platform provider sending
+// unsigned requests to /v1/models and friends.
+//
+// It is installed beneath the key failover transport, so a BYOK or centralized
+// key still wins; this only fills the gap where neither is present.
+func (p *Anthropic) WrapPassthroughTransport(inner http.RoundTripper) http.RoundTripper {
+	cp := p.claudePlatform
+	if cp == nil {
+		return inner
+	}
+	return &claudePlatformTransport{inner: inner, cfg: cp.cfg, creds: cp.creds, logger: cp.logger}
 }
 
-func (p *Anthropic) InjectAuthHeader(headers *http.Header) {
-	if headers == nil {
-		headers = &http.Header{}
-	}
+func (*Anthropic) AuthHeader() string {
+	return aibheaders.AuthHeaderXAPIKey
+}
 
-	// BYOK: if the request already carries user-supplied credentials,
-	// do not overwrite them with the centralized key.
-	if headers.Get("X-Api-Key") != "" || headers.Get("Authorization") != "" {
-		return
-	}
+func (p *Anthropic) KeyPool() *keypool.Pool {
+	return p.cfg.KeyPool
+}
 
-	headers.Set(p.AuthHeader(), p.cfg.Key)
+func (p *Anthropic) KeyFailoverConfig(logger slog.Logger) keypool.KeyFailoverConfig {
+	return keypool.KeyFailoverConfig{
+		Pool:   p.cfg.KeyPool,
+		Logger: logger,
+		IsBYOK: func(r *http.Request) bool {
+			return r.Header.Get(aibheaders.AuthHeaderXAPIKey) != "" || r.Header.Get(aibheaders.AuthHeaderAuthorization) != ""
+		},
+		InjectAuthKey: func(h *http.Header, key string) {
+			h.Set(aibheaders.AuthHeaderXAPIKey, key)
+		},
+		BuildKeyPoolResponse: func(keyPoolErr *keypool.Error) *http.Response {
+			return messages.ResponseErrorFromKeyPool(keyPoolErr).ToResponse()
+		},
+	}
 }
 
 func (p *Anthropic) CircuitBreakerConfig() *config.CircuitBreaker {
@@ -201,15 +276,28 @@ func (p *Anthropic) APIDumpDir() string {
 	return p.cfg.APIDumpDir
 }
 
-// extractAnthropicHeaders extracts headers required by the Anthropic API from
-// the incoming request.
-// TODO(ssncferreira): remove as part of https://github.com/coder/aibridge/issues/192
-func extractAnthropicHeaders(r *http.Request) map[string]string {
-	headers := make(map[string]string, len(anthropicForwardHeaders))
-	for _, h := range anthropicForwardHeaders {
-		if v := r.Header.Get(h); v != "" {
-			headers[h] = v
+func (*Anthropic) CategorizeError(err error) *recorder.ErrorType {
+	return categorizeAnthropicError(err)
+}
+
+// categorizeAnthropicError categorizes a terminal error from an Anthropic
+// (messages) provider. It returns nil when err is not an Anthropic-shaped error.
+func categorizeAnthropicError(err error) *recorder.ErrorType {
+	var status int
+	var envErr *messages.ResponseError
+	switch {
+	case errors.As(err, &envErr):
+		status = envErr.StatusCode
+	default:
+		apiErr := messages.ResponseErrorFromAPIError(err)
+		if apiErr == nil {
+			return nil
 		}
+		status = apiErr.StatusCode
 	}
-	return headers
+	t := recorder.ErrorTypeFromStatus(status)
+	if status == statusOverloaded {
+		t = recorder.ErrorTypeOverloaded
+	}
+	return &t
 }

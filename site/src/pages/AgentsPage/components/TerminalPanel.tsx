@@ -1,4 +1,4 @@
-import { type FC, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
 import { useQuery } from "react-query";
 import { deploymentConfig } from "#/api/queries/deployment";
 import { appearanceSettings } from "#/api/queries/users";
@@ -14,27 +14,98 @@ import {
 } from "#/modules/terminal/WorkspaceTerminal";
 import { WorkspaceTerminalAlerts } from "#/modules/terminal/WorkspaceTerminalAlerts";
 import { openMaybePortForwardedURL } from "#/utils/portForward";
+import { useTerminalClientSessionId } from "../context/TerminalClientSessionContext";
 
-interface TerminalPanelProps {
-	/** Used as the reconnection token so the PTY session survives
-	 * navigation and page reloads. */
+/** Promote a freshly created terminal tab after this delay if no output has painted. */
+const READY_FALLBACK_MS = 100;
+
+/** Keeps a recently hidden terminal attached long enough for quick tab toggles. */
+const TERMINAL_IDLE_DETACH_MS = 30_000;
+
+type TerminalPanelProps = {
 	chatId: string;
-	isVisible?: boolean;
-	workspace?: TypesGen.Workspace;
-	workspaceAgent?: TypesGen.WorkspaceAgent;
-}
+	reconnectionToken?: string;
+	/** Command run when the PTY session is first created, such as a command app. */
+	initialCommand?: string;
+	/** Whether this terminal should hold live xterm and WebSocket resources. */
+	isHot: boolean;
+	/**
+	 * Gate on active-tab status, not just connect, so a tab connecting off screen
+	 * does not steal focus from the user.
+	 */
+	autoFocus: boolean;
+	/**
+	 * Fires once the terminal is ready to be shown: the first output has
+	 * painted, the connection dropped, or a brief fallback timeout elapsed.
+	 */
+	onReady: () => void;
+	workspace: TypesGen.Workspace;
+	workspaceAgent: TypesGen.WorkspaceAgent;
+};
 
-export const TerminalPanel: FC<TerminalPanelProps> = ({
+export const TerminalPanel: React.FC<TerminalPanelProps> = ({
 	chatId,
-	isVisible,
+	reconnectionToken = chatId,
+	initialCommand,
+	isHot,
+	autoFocus,
+	onReady,
 	workspace,
 	workspaceAgent,
 }) => {
 	const { proxy } = useProxy();
 	const { metadata } = useEmbeddedMetadata();
 	const terminalRef = useRef<WorkspaceTerminalHandle>(null);
+	// Shared by every terminal in this chat and stable across remounts, so
+	// reattaching to a live PTY keeps the same session ID while a reload or
+	// switching chats starts a new one.
+	const sessionId = useTerminalClientSessionId();
+	const [isWarm, setIsWarm] = useState(isHot);
 	const [connectionStatus, setConnectionStatus] =
 		useState<ConnectionStatus>("initializing");
+	const detachTerminal = useEffectEvent(() => {
+		setIsWarm(false);
+		setConnectionStatus("initializing");
+	});
+
+	useEffect(() => {
+		if (isHot) {
+			setIsWarm(true);
+			return;
+		}
+		if (!isWarm) {
+			return;
+		}
+
+		const timer = setTimeout(detachTerminal, TERMINAL_IDLE_DETACH_MS);
+		return () => clearTimeout(timer);
+	}, [isHot, isWarm]);
+
+	const shouldMountTerminal = isHot || isWarm;
+	const hasSignaledReadyRef = useRef(false);
+	const signalReady = () => {
+		if (hasSignaledReadyRef.current) {
+			return;
+		}
+		hasSignaledReadyRef.current = true;
+		onReady();
+	};
+	const handleStatusChange = (status: ConnectionStatus) => {
+		setConnectionStatus(status);
+		// A dropped connection produces no output, so signal readiness to surface
+		// the terminal alerts instead of waiting on the fallback timer.
+		if (status === "disconnected") {
+			signalReady();
+		}
+	};
+	useEffect(() => {
+		if (!shouldMountTerminal) {
+			return;
+		}
+
+		const timer = setTimeout(signalReady, READY_FALLBACK_MS);
+		return () => clearTimeout(timer);
+	}, [shouldMountTerminal]);
 	const config = useQuery(deploymentConfig());
 	const appearanceSettingsQuery = useQuery(
 		appearanceSettings(metadata.userAppearance),
@@ -49,8 +120,8 @@ export const TerminalPanel: FC<TerminalPanelProps> = ({
 		workspaceUsage({
 			usageApp: "reconnecting-pty",
 			connectionStatus,
-			workspaceId: workspace?.id,
-			agentId: workspaceAgent?.id,
+			workspaceId: shouldMountTerminal ? workspace.id : undefined,
+			agentId: shouldMountTerminal ? workspaceAgent.id : undefined,
 		}),
 	);
 
@@ -58,9 +129,9 @@ export const TerminalPanel: FC<TerminalPanelProps> = ({
 		openMaybePortForwardedURL(
 			uri,
 			proxy.preferredWildcardHostname,
-			workspaceAgent?.name,
-			workspace?.name,
-			workspace?.owner_name,
+			workspaceAgent.name,
+			workspace.name,
+			workspace.owner_name,
 		);
 	};
 
@@ -72,16 +143,6 @@ export const TerminalPanel: FC<TerminalPanelProps> = ({
 		terminalRef.current?.refit();
 	};
 
-	if (!workspaceAgent) {
-		return (
-			<div className="flex h-full min-h-0 flex-col">
-				<div className="flex min-h-0 flex-1 items-center justify-center px-6 text-center text-xs text-content-secondary">
-					Terminal will be available once the workspace agent is ready.
-				</div>
-			</div>
-		);
-	}
-
 	return (
 		<div className="flex h-full min-h-0 flex-col">
 			<WorkspaceTerminalAlerts
@@ -90,21 +151,27 @@ export const TerminalPanel: FC<TerminalPanelProps> = ({
 				onAlertChange={handleAlertChange}
 			/>
 			<div className="min-h-0 flex-1">
-				<WorkspaceTerminal
-					ref={terminalRef}
-					agentId={workspaceAgent.id}
-					operatingSystem={workspaceAgent.operating_system}
-					isVisible={isVisible}
-					onStatusChange={setConnectionStatus}
-					onError={handleTerminalError}
-					reconnectionToken={chatId}
-					baseUrl={terminalConfig.baseUrl}
-					terminalFontFamily={terminalConfig.fontFamily}
-					renderer={terminalConfig.renderer}
-					onOpenLink={handleOpenLink}
-					loading={config.isLoading || appearanceSettingsQuery.isLoading}
-					testId="agents-sidebar-terminal"
-				/>
+				{shouldMountTerminal && (
+					<WorkspaceTerminal
+						ref={terminalRef}
+						agentId={workspaceAgent.id}
+						operatingSystem={workspaceAgent.operating_system}
+						isVisible={shouldMountTerminal}
+						autoFocus={isHot && autoFocus}
+						onStatusChange={handleStatusChange}
+						onContentReady={signalReady}
+						onError={handleTerminalError}
+						reconnectionToken={reconnectionToken}
+						sessionId={sessionId}
+						initialCommand={initialCommand}
+						baseUrl={terminalConfig.baseUrl}
+						terminalFontFamily={terminalConfig.fontFamily}
+						renderer={terminalConfig.renderer}
+						onOpenLink={handleOpenLink}
+						loading={config.isLoading || appearanceSettingsQuery.isLoading}
+						testId="agents-sidebar-terminal"
+					/>
+				)}
 			</div>
 		</div>
 	);

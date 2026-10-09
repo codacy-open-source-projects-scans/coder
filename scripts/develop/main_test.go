@@ -101,13 +101,11 @@ func TestLogWriter(t *testing.T) {
 
 		var wg sync.WaitGroup
 		for range 10 {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			wg.Go(func() {
 				for range 50 {
 					_, _ = w.Write([]byte("x\n"))
 				}
-			}()
+			})
 		}
 		wg.Wait()
 
@@ -146,6 +144,127 @@ func TestShellBool(t *testing.T) {
 	assert.Equal(t, "0", shellBool(false))
 }
 
+func TestPortOffset(t *testing.T) {
+	t.Parallel()
+
+	root := "/tmp/coder/worktree-a"
+	offset := portOffset(root)
+	assert.Equal(t, offset, portOffset(root))
+	assert.GreaterOrEqual(t, offset, 0)
+	assert.Less(t, offset, 1000)
+	assert.Equal(t, 0, offset%10)
+
+	var foundDifferent bool
+	for _, otherRoot := range []string{
+		"/tmp/coder/worktree-b",
+		"/tmp/coder/worktree-c",
+		"/tmp/coder/worktree-d",
+	} {
+		if portOffset(otherRoot) != offset {
+			foundDifferent = true
+			break
+		}
+	}
+	assert.True(t, foundDifferent, "expected typical worktree paths to use different offsets")
+}
+
+func TestApplyPortOffsetSkipsExplicitPorts(t *testing.T) {
+	t.Parallel()
+
+	projectRoot := "/tmp/coder/worktree-offset"
+	for i := range 100 {
+		candidate := fmt.Sprintf("/tmp/coder/worktree-offset-%d", i)
+		if portOffset(candidate) != 0 {
+			projectRoot = candidate
+			break
+		}
+	}
+	offset := portOffset(projectRoot)
+	require.NotZero(t, offset)
+
+	cfg := &devConfig{
+		apiPort:           3000,
+		webPort:           8080,
+		proxyPort:         3010,
+		coderMetricsPort:  2114,
+		portOffsetEnabled: true,
+		projectRoot:       projectRoot,
+		portExplicit: portExplicit{
+			web:     true,
+			metrics: true,
+		},
+	}
+	cfg.applyPortOffset()
+
+	assert.Equal(t, int64(3000+offset), cfg.apiPort)
+	assert.Equal(t, int64(8080), cfg.webPort)
+	assert.Equal(t, int64(3010+offset), cfg.proxyPort)
+	assert.Equal(t, int64(2114), cfg.coderMetricsPort)
+	assert.Equal(t, portSourceOffset, cfg.apiPortSource)
+	assert.Equal(t, portSourceExplicit, cfg.webPortSource)
+	assert.Equal(t, portSourceOffset, cfg.proxyPortSource)
+	assert.Equal(t, portSourceExplicit, cfg.metricsPortSource)
+}
+
+func TestApplyPortOffsetDisabledUsesDefaultPorts(t *testing.T) {
+	t.Parallel()
+
+	projectRoot := "/tmp/coder/worktree-offset"
+	for i := range 100 {
+		candidate := fmt.Sprintf("/tmp/coder/worktree-offset-disabled-%d", i)
+		if portOffset(candidate) != 0 {
+			projectRoot = candidate
+			break
+		}
+	}
+	require.NotZero(t, portOffset(projectRoot))
+
+	cfg := &devConfig{
+		apiPort:          3000,
+		webPort:          8080,
+		proxyPort:        3010,
+		coderMetricsPort: 2114,
+		projectRoot:      projectRoot,
+	}
+	cfg.applyPortOffset()
+
+	assert.Equal(t, int64(3000), cfg.apiPort)
+	assert.Equal(t, int64(8080), cfg.webPort)
+	assert.Equal(t, int64(3010), cfg.proxyPort)
+	assert.Equal(t, int64(2114), cfg.coderMetricsPort)
+	assert.Zero(t, cfg.portOffset)
+	assert.Empty(t, cfg.apiPortSource)
+	assert.Empty(t, cfg.webPortSource)
+	assert.Empty(t, cfg.proxyPortSource)
+	assert.Empty(t, cfg.metricsPortSource)
+	assert.Equal(t, "API: 3000", portBannerLine("API", cfg.apiPort, cfg.apiPortSource, cfg.portOffset))
+}
+
+func TestPortOffsetDefaultPortsDoNotOverlap(t *testing.T) {
+	t.Parallel()
+
+	ports := []struct {
+		name string
+		base int
+	}{
+		{name: "API", base: 3000},
+		{name: "Web UI", base: 8080},
+		{name: "Proxy", base: 3010},
+		{name: "Coder metrics", base: 2114},
+	}
+	seen := make(map[int]string)
+	for bucket := range portOffsetBuckets {
+		offset := bucket * portOffsetStep
+		for _, port := range ports {
+			effective := port.base + offset
+			if other, ok := seen[effective]; ok {
+				t.Fatalf("%s collides with %s on port %d", port.name, other, effective)
+			}
+			seen[effective] = fmt.Sprintf("%s with offset %d", port.name, offset)
+		}
+	}
+}
+
 func TestDevelopInCoder(t *testing.T) {
 	t.Run("DEVELOP_IN_CODER", func(t *testing.T) {
 		t.Setenv("DEVELOP_IN_CODER", "1")
@@ -179,267 +298,217 @@ func TestDevConfigValidate(t *testing.T) {
 		}
 	}
 
-	t.Run("Valid", func(t *testing.T) {
-		t.Parallel()
-		assert.NoError(t, base().validate())
-	})
-
-	t.Run("AgplAndProxy", func(t *testing.T) {
-		t.Parallel()
-		cfg := base()
-		cfg.agpl = true
-		cfg.useProxy = true
-		err := cfg.validate()
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "--agpl and --use-proxy")
-	})
-
-	t.Run("AgplAndMultiOrg", func(t *testing.T) {
-		t.Parallel()
-		cfg := base()
-		cfg.agpl = true
-		cfg.multiOrg = true
-		err := cfg.validate()
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "--agpl and --multi-organization")
-	})
-
-	t.Run("PortTooLow", func(t *testing.T) {
-		t.Parallel()
-		cfg := base()
-		cfg.apiPort = 0
-		err := cfg.validate()
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "--port must be between 1 and 65535")
-	})
-
-	t.Run("PortTooHigh", func(t *testing.T) {
-		t.Parallel()
-		cfg := base()
-		cfg.apiPort = 70000
-		err := cfg.validate()
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "--port must be between 1 and 65535")
-	})
-
-	t.Run("PortConflictWithWeb", func(t *testing.T) {
-		t.Parallel()
-		cfg := base()
-		cfg.apiPort = 8080
-		err := cfg.validate()
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "conflicts with frontend dev server")
-	})
-
-	t.Run("PortConflictWithProxy", func(t *testing.T) {
-		t.Parallel()
-		cfg := base()
-		cfg.apiPort = 3010
-		cfg.useProxy = true
-		err := cfg.validate()
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "conflicts with workspace proxy")
-	})
-
-	t.Run("ProxyPortOKWithoutFlag", func(t *testing.T) {
-		t.Parallel()
-		cfg := base()
-		cfg.apiPort = 3010
-		assert.NoError(t, cfg.validate())
-	})
-
-	t.Run("WebPortTooLow", func(t *testing.T) {
-		t.Parallel()
-		cfg := base()
-		cfg.webPort = 0
-		err := cfg.validate()
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "--web-port must be between 1 and 65535")
-	})
-
-	t.Run("ProxyPortTooHigh", func(t *testing.T) {
-		t.Parallel()
-		cfg := base()
-		cfg.proxyPort = 70000
-		err := cfg.validate()
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "--proxy-port must be between 1 and 65535")
-	})
-
-	t.Run("WebProxyPortConflict", func(t *testing.T) {
-		t.Parallel()
-		cfg := base()
-		cfg.webPort = 9000
-		cfg.proxyPort = 9000
-		cfg.useProxy = true
-		err := cfg.validate()
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "--web-port 9000 conflicts with --proxy-port")
-	})
-
-	t.Run("WebProxyPortConflictOKWithoutProxy", func(t *testing.T) {
-		t.Parallel()
-		cfg := base()
-		cfg.webPort = 9000
-		cfg.proxyPort = 9000
-		assert.NoError(t, cfg.validate())
-	})
-
-	t.Run("PrometheusPortConflictWithAPI", func(t *testing.T) {
-		t.Parallel()
-		cfg := base()
-		cfg.coderMetricsPort = 3000
-		err := cfg.validate()
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "--prometheus-port 3000 conflicts with")
-	})
-
-	t.Run("PrometheusPortConflictWithWeb", func(t *testing.T) {
-		t.Parallel()
-		cfg := base()
-		cfg.coderMetricsPort = 8080
-		err := cfg.validate()
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "--prometheus-port 8080 conflicts with")
-	})
-
-	t.Run("PrometheusPortConflictWithProxy", func(t *testing.T) {
-		t.Parallel()
-		cfg := base()
-		cfg.coderMetricsPort = 3010
-		cfg.useProxy = true
-		err := cfg.validate()
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "--prometheus-port 3010 conflicts with")
-	})
-
-	t.Run("PrometheusPortZeroDisabled", func(t *testing.T) {
-		t.Parallel()
-		cfg := base()
-		cfg.coderMetricsPort = 0
-		assert.NoError(t, cfg.validate())
-	})
-
-	t.Run("PrometheusPortValid", func(t *testing.T) {
-		t.Parallel()
-		cfg := base()
-		cfg.coderMetricsPort = 9090
-		assert.NoError(t, cfg.validate())
-	})
-
-	t.Run("PrometheusPortTooHigh", func(t *testing.T) {
-		t.Parallel()
-		cfg := base()
-		cfg.coderMetricsPort = 70000
-		err := cfg.validate()
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "--prometheus-port must be 0 (disabled) or between 1 and 65535")
-	})
-
-	t.Run("PrometheusPortNegative", func(t *testing.T) {
-		t.Parallel()
-		cfg := base()
-		cfg.coderMetricsPort = -1
-		err := cfg.validate()
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "--prometheus-port must be 0 (disabled) or between 1 and 65535")
-	})
-
-	t.Run("PrometheusProxyProxyConflictIgnoredWithoutProxy", func(t *testing.T) {
-		t.Parallel()
-		cfg := base()
-		cfg.coderMetricsPort = 3010
-		assert.NoError(t, cfg.validate())
-	})
-
-	t.Run("PrometheusServerRequiresMetrics", func(t *testing.T) {
-		t.Parallel()
-		cfg := base()
-		cfg.prometheusServer = true
-		cfg.coderMetricsPort = 0
-		err := cfg.validate()
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "--prometheus-server requires prometheus to be enabled")
-	})
-
-	t.Run("PrometheusServerValid", func(t *testing.T) {
-		t.Parallel()
-		cfg := base()
-		cfg.prometheusServer = true
-		cfg.coderMetricsPort = 2114
-		assert.NoError(t, cfg.validate())
-	})
-
-	t.Run("PrometheusServerPortConflictWithAPI", func(t *testing.T) {
-		t.Parallel()
-		cfg := base()
-		cfg.prometheusServer = true
-		cfg.apiPort = prometheusServerPort
-		cfg.coderMetricsPort = 2114
-		err := cfg.validate()
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "--port")
-		assert.Contains(t, err.Error(), "conflicts with prometheus server")
-	})
-
-	t.Run("PrometheusServerPortConflictWithWeb", func(t *testing.T) {
-		t.Parallel()
-		cfg := base()
-		cfg.prometheusServer = true
-		cfg.webPort = prometheusServerPort
-		cfg.coderMetricsPort = 2114
-		err := cfg.validate()
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "--web-port")
-		assert.Contains(t, err.Error(), "conflicts with prometheus server")
-	})
-
-	t.Run("PrometheusServerPortConflictWithProxy", func(t *testing.T) {
-		t.Parallel()
-		cfg := base()
-		cfg.prometheusServer = true
-		cfg.useProxy = true
-		cfg.proxyPort = prometheusServerPort
-		err := cfg.validate()
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "--proxy-port")
-		assert.Contains(t, err.Error(), "conflicts with prometheus server")
-	})
-
-	t.Run("PrometheusServerPortNoProxyConflictWithoutFlag", func(t *testing.T) {
-		t.Parallel()
-		cfg := base()
-		cfg.prometheusServer = true
-		cfg.proxyPort = prometheusServerPort
-		// useProxy is false, so no conflict.
-		assert.NoError(t, cfg.validate())
-	})
-
-	t.Run("PrometheusServerPortConflictWithMetrics", func(t *testing.T) {
-		t.Parallel()
-		cfg := base()
-		cfg.prometheusServer = true
-		cfg.coderMetricsPort = prometheusServerPort
-		err := cfg.validate()
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "--prometheus-port")
-		assert.Contains(t, err.Error(), "conflicts with prometheus server")
-	})
+	cases := []struct {
+		name     string
+		mutate   func(cfg *devConfig)
+		wantErrs []string
+	}{
+		{
+			name: "Valid",
+		},
+		{
+			name: "AgplAndProxy",
+			mutate: func(cfg *devConfig) {
+				cfg.agpl = true
+				cfg.useProxy = true
+			},
+			wantErrs: []string{"--agpl and --use-proxy"},
+		},
+		{
+			name: "AgplAndMultiOrg",
+			mutate: func(cfg *devConfig) {
+				cfg.agpl = true
+				cfg.multiOrg = true
+			},
+			wantErrs: []string{"--agpl and --multi-organization"},
+		},
+		{
+			name:     "PortTooLow",
+			mutate:   func(cfg *devConfig) { cfg.apiPort = 0 },
+			wantErrs: []string{"--port must be between 1 and 65535"},
+		},
+		{
+			name:     "PortTooHigh",
+			mutate:   func(cfg *devConfig) { cfg.apiPort = 70000 },
+			wantErrs: []string{"--port must be between 1 and 65535"},
+		},
+		{
+			name:     "PortConflictWithWeb",
+			mutate:   func(cfg *devConfig) { cfg.apiPort = 8080 },
+			wantErrs: []string{"conflicts with frontend dev server"},
+		},
+		{
+			name: "PortConflictWithProxy",
+			mutate: func(cfg *devConfig) {
+				cfg.apiPort = 3010
+				cfg.useProxy = true
+			},
+			wantErrs: []string{"conflicts with workspace proxy"},
+		},
+		{
+			name:   "ProxyPortOKWithoutFlag",
+			mutate: func(cfg *devConfig) { cfg.apiPort = 3010 },
+		},
+		{
+			name:     "WebPortTooLow",
+			mutate:   func(cfg *devConfig) { cfg.webPort = 0 },
+			wantErrs: []string{"--web-port must be between 1 and 65535"},
+		},
+		{
+			name:     "ProxyPortTooHigh",
+			mutate:   func(cfg *devConfig) { cfg.proxyPort = 70000 },
+			wantErrs: []string{"--proxy-port must be between 1 and 65535"},
+		},
+		{
+			name: "WebProxyPortConflict",
+			mutate: func(cfg *devConfig) {
+				cfg.webPort = 9000
+				cfg.proxyPort = 9000
+				cfg.useProxy = true
+			},
+			wantErrs: []string{"--web-port 9000 conflicts with --proxy-port"},
+		},
+		{
+			name: "WebProxyPortConflictOKWithoutProxy",
+			mutate: func(cfg *devConfig) {
+				cfg.webPort = 9000
+				cfg.proxyPort = 9000
+			},
+		},
+		{
+			name:     "PrometheusPortConflictWithAPI",
+			mutate:   func(cfg *devConfig) { cfg.coderMetricsPort = 3000 },
+			wantErrs: []string{"--prometheus-port 3000 conflicts with"},
+		},
+		{
+			name:     "PrometheusPortConflictWithWeb",
+			mutate:   func(cfg *devConfig) { cfg.coderMetricsPort = 8080 },
+			wantErrs: []string{"--prometheus-port 8080 conflicts with"},
+		},
+		{
+			name: "PrometheusPortConflictWithProxy",
+			mutate: func(cfg *devConfig) {
+				cfg.coderMetricsPort = 3010
+				cfg.useProxy = true
+			},
+			wantErrs: []string{"--prometheus-port 3010 conflicts with"},
+		},
+		{
+			name:   "PrometheusPortZeroDisabled",
+			mutate: func(cfg *devConfig) { cfg.coderMetricsPort = 0 },
+		},
+		{
+			name:   "PrometheusPortValid",
+			mutate: func(cfg *devConfig) { cfg.coderMetricsPort = 9090 },
+		},
+		{
+			name:     "PrometheusPortTooHigh",
+			mutate:   func(cfg *devConfig) { cfg.coderMetricsPort = 70000 },
+			wantErrs: []string{"--prometheus-port must be 0 (disabled) or between 1 and 65535"},
+		},
+		{
+			name:     "PrometheusPortNegative",
+			mutate:   func(cfg *devConfig) { cfg.coderMetricsPort = -1 },
+			wantErrs: []string{"--prometheus-port must be 0 (disabled) or between 1 and 65535"},
+		},
+		{
+			name:   "PrometheusProxyProxyConflictIgnoredWithoutProxy",
+			mutate: func(cfg *devConfig) { cfg.coderMetricsPort = 3010 },
+		},
+		{
+			name: "PrometheusServerRequiresMetrics",
+			mutate: func(cfg *devConfig) {
+				cfg.prometheusServer = true
+				cfg.coderMetricsPort = 0
+			},
+			wantErrs: []string{"--prometheus-server requires prometheus to be enabled"},
+		},
+		{
+			name: "PrometheusServerValid",
+			mutate: func(cfg *devConfig) {
+				cfg.prometheusServer = true
+				cfg.coderMetricsPort = 2114
+			},
+		},
+		{
+			name: "PrometheusServerPortConflictWithAPI",
+			mutate: func(cfg *devConfig) {
+				cfg.prometheusServer = true
+				cfg.apiPort = prometheusServerPort
+				cfg.coderMetricsPort = 2114
+			},
+			wantErrs: []string{"--port", "conflicts with prometheus server"},
+		},
+		{
+			name: "PrometheusServerPortConflictWithWeb",
+			mutate: func(cfg *devConfig) {
+				cfg.prometheusServer = true
+				cfg.webPort = prometheusServerPort
+				cfg.coderMetricsPort = 2114
+			},
+			wantErrs: []string{"--web-port", "conflicts with prometheus server"},
+		},
+		{
+			name: "PrometheusServerPortConflictWithProxy",
+			mutate: func(cfg *devConfig) {
+				cfg.prometheusServer = true
+				cfg.useProxy = true
+				cfg.proxyPort = prometheusServerPort
+			},
+			wantErrs: []string{"--proxy-port", "conflicts with prometheus server"},
+		},
+		{
+			// useProxy is false, so no conflict.
+			name: "PrometheusServerPortNoProxyConflictWithoutFlag",
+			mutate: func(cfg *devConfig) {
+				cfg.prometheusServer = true
+				cfg.proxyPort = prometheusServerPort
+			},
+		},
+		{
+			name: "PrometheusServerPortConflictWithMetrics",
+			mutate: func(cfg *devConfig) {
+				cfg.prometheusServer = true
+				cfg.coderMetricsPort = prometheusServerPort
+			},
+			wantErrs: []string{"--prometheus-port", "conflicts with prometheus server"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := base()
+			if tc.mutate != nil {
+				tc.mutate(cfg)
+			}
+			err := cfg.validate()
+			if len(tc.wantErrs) == 0 {
+				assert.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			for _, want := range tc.wantErrs {
+				assert.Contains(t, err.Error(), want)
+			}
+		})
+	}
 }
 
 func TestDevConfigResolveEnv(t *testing.T) {
 	t.Setenv("CODER_SESSION_TOKEN", "leaked")
 	t.Setenv("CODER_URL", "https://leaked.example.com")
 
+	wd, _ := os.Getwd()
 	cfg := &devConfig{apiPort: 3000, accessURL: defaultAccessURL}
 	require.NoError(t, cfg.resolveEnv())
 
-	wd, _ := os.Getwd()
 	assert.Equal(t, wd, cfg.projectRoot)
 	assert.Equal(t, filepath.Join(wd, "build",
 		fmt.Sprintf("coder_%s_%s", runtime.GOOS, runtime.GOARCH)), cfg.binaryPath)
 	assert.Equal(t, filepath.Join(wd, ".coderv2"), cfg.configDir)
 	assert.Equal(t, "http://127.0.0.1:3000", cfg.accessURL)
+	assert.Equal(t, int64(3000), cfg.apiPort)
+	assert.Zero(t, cfg.portOffset)
 
 	// Should have unset leaked env vars.
 	assert.Empty(t, os.Getenv("CODER_SESSION_TOKEN"))
@@ -454,11 +523,92 @@ func TestDevConfigResolveEnv(t *testing.T) {
 	}
 }
 
+func TestDevConfigResolveEnvUsesDefaultPortsWithoutPortOffset(t *testing.T) {
+	t.Setenv("CODER_SESSION_TOKEN", "")
+	t.Setenv("CODER_URL", "")
+
+	baseRoot := t.TempDir()
+	projectRoot := filepath.Join(baseRoot, "worktree")
+	for i := range 100 {
+		candidate := filepath.Join(baseRoot, fmt.Sprintf("worktree-default-%d", i))
+		if portOffset(candidate) != 0 {
+			projectRoot = candidate
+			break
+		}
+	}
+	require.NotZero(t, portOffset(projectRoot))
+	require.NoError(t, os.MkdirAll(projectRoot, 0o755))
+	t.Chdir(projectRoot)
+
+	cfg := &devConfig{
+		apiPort:          3000,
+		webPort:          8080,
+		proxyPort:        3010,
+		coderMetricsPort: 2114,
+		accessURL:        defaultAccessURL,
+	}
+	require.NoError(t, cfg.resolveEnv())
+
+	assert.Equal(t, projectRoot, cfg.projectRoot)
+	assert.Equal(t, int64(3000), cfg.apiPort)
+	assert.Equal(t, int64(8080), cfg.webPort)
+	assert.Equal(t, int64(3010), cfg.proxyPort)
+	assert.Equal(t, int64(2114), cfg.coderMetricsPort)
+	assert.Zero(t, cfg.portOffset)
+	assert.Empty(t, cfg.apiPortSource)
+	assert.Empty(t, cfg.webPortSource)
+	assert.Empty(t, cfg.proxyPortSource)
+	assert.Empty(t, cfg.metricsPortSource)
+	assert.Equal(t, "http://127.0.0.1:3000", cfg.accessURL)
+}
+
+func TestDevConfigResolveEnvAppliesPortOffsetWhenEnabled(t *testing.T) {
+	t.Setenv("CODER_SESSION_TOKEN", "")
+	t.Setenv("CODER_URL", "")
+
+	baseRoot := t.TempDir()
+	projectRoot := filepath.Join(baseRoot, "worktree")
+	for i := range 100 {
+		candidate := filepath.Join(baseRoot, fmt.Sprintf("worktree-%d", i))
+		if portOffset(candidate) != 0 {
+			projectRoot = candidate
+			break
+		}
+	}
+	require.NotZero(t, portOffset(projectRoot))
+	require.NoError(t, os.MkdirAll(projectRoot, 0o755))
+	t.Chdir(projectRoot)
+
+	cfg := &devConfig{
+		apiPort:           3000,
+		webPort:           8080,
+		proxyPort:         3010,
+		coderMetricsPort:  2114,
+		portOffsetEnabled: true,
+		accessURL:         defaultAccessURL,
+	}
+	require.NoError(t, cfg.resolveEnv())
+
+	offset := portOffset(projectRoot)
+	assert.Equal(t, projectRoot, cfg.projectRoot)
+	assert.Equal(t, int64(3000+offset), cfg.apiPort)
+	assert.Equal(t, int64(8080+offset), cfg.webPort)
+	assert.Equal(t, int64(3010+offset), cfg.proxyPort)
+	assert.Equal(t, int64(2114+offset), cfg.coderMetricsPort)
+	assert.Equal(t, offset, cfg.portOffset)
+	assert.Equal(t, portSourceOffset, cfg.apiPortSource)
+	assert.Equal(t, fmt.Sprintf("http://127.0.0.1:%d", 3000+offset), cfg.accessURL)
+}
+
 func TestDevConfigResolveEnvExplicitAccessURL(t *testing.T) {
 	t.Setenv("CODER_SESSION_TOKEN", "")
 	t.Setenv("CODER_URL", "")
 
-	cfg := &devConfig{apiPort: 5000, accessURL: "http://myhost:5000"}
+	cfg := &devConfig{
+		apiPort:      5000,
+		accessURL:    "http://myhost:5000",
+		portExplicit: portExplicit{api: true},
+	}
 	require.NoError(t, cfg.resolveEnv())
 	assert.Equal(t, "http://myhost:5000", cfg.accessURL)
 }
@@ -650,4 +800,135 @@ func TestPrometheusBannerEntry(t *testing.T) {
 			assert.Equal(t, tc.wantPort, port)
 		})
 	}
+}
+
+//nolint:paralleltest // loadEnvFile mutates process-global environment.
+func TestLoadEnvFile(t *testing.T) {
+	t.Run("LoadsVariablesFromFile", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		envFile := filepath.Join(tmpDir, ".env")
+		err := os.WriteFile(envFile, []byte(strings.Join([]string{
+			"# Comment line",
+			"",
+			"FOO_TEST_VAR=bar",
+			"export BAZ_TEST_VAR=qux",
+			`QUOTED_TEST_VAR="hello world"`,
+			"SINGLE_QUOTED_TEST_VAR='single quoted'",
+		}, "\n")), 0o600)
+		require.NoError(t, err)
+
+		// Ensure none are set beforehand.
+		t.Setenv("FOO_TEST_VAR", "")
+		os.Unsetenv("FOO_TEST_VAR")
+		t.Setenv("BAZ_TEST_VAR", "")
+		os.Unsetenv("BAZ_TEST_VAR")
+		t.Setenv("QUOTED_TEST_VAR", "")
+		os.Unsetenv("QUOTED_TEST_VAR")
+		t.Setenv("SINGLE_QUOTED_TEST_VAR", "")
+		os.Unsetenv("SINGLE_QUOTED_TEST_VAR")
+
+		n, err := loadEnvFile(envFile)
+		require.NoError(t, err)
+		assert.Equal(t, 4, n)
+		assert.Equal(t, "bar", os.Getenv("FOO_TEST_VAR"))
+		assert.Equal(t, "qux", os.Getenv("BAZ_TEST_VAR"))
+		assert.Equal(t, "hello world", os.Getenv("QUOTED_TEST_VAR"))
+		assert.Equal(t, "single quoted", os.Getenv("SINGLE_QUOTED_TEST_VAR"))
+	})
+
+	t.Run("DoesNotOverrideExisting", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		envFile := filepath.Join(tmpDir, ".env")
+		err := os.WriteFile(envFile, []byte("EXISTING_TEST_VAR=new\n"), 0o600)
+		require.NoError(t, err)
+
+		t.Setenv("EXISTING_TEST_VAR", "original")
+
+		n, err := loadEnvFile(envFile)
+		require.NoError(t, err)
+		assert.Equal(t, 0, n)
+		assert.Equal(t, "original", os.Getenv("EXISTING_TEST_VAR"))
+	})
+
+	t.Run("ErrorsOnMissingFile", func(t *testing.T) {
+		_, err := loadEnvFile("/nonexistent/path/.env")
+		require.Error(t, err)
+	})
+
+	t.Run("ErrorsOnEmptyPath", func(t *testing.T) {
+		// This tests the caller logic (main), but we verify loadEnvFile
+		// would error on empty path since godotenv.Read("") fails.
+		_, err := loadEnvFile("")
+		require.Error(t, err)
+	})
+}
+
+//nolint:paralleltest // parseEnvFileFlag mutates process-global os.Args.
+func TestParseEnvFileFlag(t *testing.T) {
+	t.Run("FlagWithSpace", func(t *testing.T) {
+		orig := os.Args
+		t.Cleanup(func() { os.Args = orig })
+		os.Args = []string{"develop", "--env-file", "/tmp/test.env", "--port", "3000"}
+
+		result, err := parseEnvFileFlag()
+		require.NoError(t, err)
+		assert.Equal(t, "/tmp/test.env", result)
+	})
+
+	t.Run("FlagWithEquals", func(t *testing.T) {
+		orig := os.Args
+		t.Cleanup(func() { os.Args = orig })
+		os.Args = []string{"develop", "--env-file=/tmp/test.env", "--port", "3000"}
+
+		result, err := parseEnvFileFlag()
+		require.NoError(t, err)
+		assert.Equal(t, "/tmp/test.env", result)
+	})
+
+	t.Run("FallsBackToEnvVar", func(t *testing.T) {
+		orig := os.Args
+		t.Cleanup(func() { os.Args = orig })
+		os.Args = []string{"develop", "--port", "3000"}
+
+		t.Setenv("CODER_DEV_ENV_FILE", "/tmp/from-env.env")
+
+		result, err := parseEnvFileFlag()
+		require.NoError(t, err)
+		assert.Equal(t, "/tmp/from-env.env", result)
+	})
+
+	t.Run("FlagTakesPrecedenceOverEnvVar", func(t *testing.T) {
+		orig := os.Args
+		t.Cleanup(func() { os.Args = orig })
+		os.Args = []string{"develop", "--env-file", "/tmp/from-flag.env"}
+
+		t.Setenv("CODER_DEV_ENV_FILE", "/tmp/from-env.env")
+
+		result, err := parseEnvFileFlag()
+		require.NoError(t, err)
+		assert.Equal(t, "/tmp/from-flag.env", result)
+	})
+
+	t.Run("ReturnsEmptyWhenUnset", func(t *testing.T) {
+		orig := os.Args
+		t.Cleanup(func() { os.Args = orig })
+		os.Args = []string{"develop", "--port", "3000"}
+
+		t.Setenv("CODER_DEV_ENV_FILE", "")
+		os.Unsetenv("CODER_DEV_ENV_FILE")
+
+		result, err := parseEnvFileFlag()
+		require.NoError(t, err)
+		assert.Equal(t, "", result)
+	})
+
+	t.Run("ErrorsWhenValueMissing", func(t *testing.T) {
+		orig := os.Args
+		t.Cleanup(func() { os.Args = orig })
+		os.Args = []string{"develop", "--env-file"}
+
+		_, err := parseEnvFileFlag()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "--env-file requires a value")
+	})
 }

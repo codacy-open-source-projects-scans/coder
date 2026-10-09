@@ -2,6 +2,8 @@ package messages
 
 import (
 	"context"
+	"encoding/base64"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -9,17 +11,17 @@ import (
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/google/uuid"
-	mcplib "github.com/mark3labs/mcp-go/mcp"
+	mcplib "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/tidwall/sjson"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/xerrors"
 
 	"cdr.dev/slog/v3"
-	"github.com/coder/coder/v2/aibridge/config"
-	aibcontext "github.com/coder/coder/v2/aibridge/context"
+	"github.com/coder/coder/v2/aibridge/credential"
 	"github.com/coder/coder/v2/aibridge/intercept"
 	"github.com/coder/coder/v2/aibridge/intercept/eventstream"
+	"github.com/coder/coder/v2/aibridge/keypool"
 	"github.com/coder/coder/v2/aibridge/mcp"
 	"github.com/coder/coder/v2/aibridge/recorder"
 	"github.com/coder/coder/v2/aibridge/tracing"
@@ -32,24 +34,21 @@ type BlockingInterception struct {
 func NewBlockingInterceptor(
 	id uuid.UUID,
 	reqPayload RequestPayload,
-	providerName string,
-	cfg config.Anthropic,
-	bedrockCfg *config.AWSBedrock,
+	cfg intercept.Config,
+	cred credential.Credential,
+	bedrock *BedrockRuntime,
 	clientHeaders http.Header,
-	authHeaderName string,
 	tracer trace.Tracer,
-	cred intercept.CredentialInfo,
 ) *BlockingInterception {
 	return &BlockingInterception{interceptionBase: interceptionBase{
-		id:             id,
-		providerName:   providerName,
-		reqPayload:     reqPayload,
-		cfg:            cfg,
-		bedrockCfg:     bedrockCfg,
-		clientHeaders:  clientHeaders,
-		authHeaderName: authHeaderName,
-		tracer:         tracer,
-		credential:     cred,
+		id:               id,
+		reqPayload:       reqPayload,
+		cfg:              cfg,
+		cred:             cred,
+		bedrock:          bedrock,
+		clientHeaders:    clientHeaders,
+		tracer:           tracer,
+		isSmallFastModel: isSmallFastModel(reqPayload.model()),
 	}}
 }
 
@@ -58,7 +57,7 @@ func (i *BlockingInterception) Setup(logger slog.Logger, rec recorder.Recorder, 
 }
 
 func (i *BlockingInterception) TraceAttributes(r *http.Request) []attribute.KeyValue {
-	return i.interceptionBase.baseTraceAttributes(r, false)
+	return i.baseTraceAttributes(r, false)
 }
 
 func (*BlockingInterception) Streaming() bool {
@@ -83,12 +82,7 @@ func (i *BlockingInterception) ProcessRequest(w http.ResponseWriter, r *http.Req
 		prompt = &promptText
 	}
 
-	// TODO(ssncferreira): inject actor headers directly in the client-header
-	//   middleware instead of using SDK options.
 	opts := []option.RequestOption{option.WithRequestTimeout(time.Second * 600)}
-	if actor := aibcontext.ActorFromContext(r.Context()); actor != nil && i.cfg.SendActorHeaders {
-		opts = append(opts, intercept.ActorHeadersAsAnthropicOpts(actor)...)
-	}
 
 	svc, err := i.newMessagesService(ctx, opts...)
 	if err != nil {
@@ -103,16 +97,41 @@ func (i *BlockingInterception) ProcessRequest(w http.ResponseWriter, r *http.Req
 	// Accumulate usage across the entire streaming interaction (including tool reinvocations).
 	var cumulativeUsage anthropic.Usage
 
+	// Sum the key attempts across all iterations and record once when the
+	// interception completes.
+	var totalKeyAttempts int
+	if cp, ok := credential.AsCentralizedPool(i.cred); ok {
+		defer func() {
+			cp.Pool.RecordAttempts(totalKeyAttempts)
+		}()
+	}
+
 	for {
 		// TODO add outer loop span (https://github.com/coder/aibridge/issues/67)
-		resp, err = i.newMessage(ctx, svc)
+
+		// Rebuilt per iteration: i.reqPayload mutates when an agentic
+		// continuation appends tool results, so withBody must reflect
+		// the latest payload on every upstream call.
+		callOpts := []option.RequestOption{i.withBody()}
+
+		var keyAttempts int
+		resp, keyAttempts, err = i.newMessage(ctx, svc, callOpts)
+		totalKeyAttempts += keyAttempts
 		if err != nil {
 			if eventstream.IsConnError(err) {
 				// Can't write a response, just error out.
 				return xerrors.Errorf("upstream connection closed: %w", err)
 			}
 
-			if antErr := getErrorResponse(err); antErr != nil {
+			// The failover loop may return a keypool exhaustion
+			// error. Check before the SDK-error path.
+			var keyPoolErr *keypool.Error
+			if errors.As(err, &keyPoolErr) {
+				i.writeUpstreamError(w, ResponseErrorFromKeyPool(keyPoolErr))
+				return xerrors.Errorf("key pool exhausted: %w", err)
+			}
+
+			if antErr := ResponseErrorFromAPIError(err); antErr != nil {
 				i.writeUpstreamError(w, antErr)
 				return xerrors.Errorf("anthropic API error: %w", err)
 			}
@@ -123,6 +142,7 @@ func (i *BlockingInterception) ProcessRequest(w http.ResponseWriter, r *http.Req
 
 		if prompt != nil {
 			_ = i.recorder.RecordPromptUsage(ctx, &recorder.PromptUsageRecord{
+				CreatedAt:      time.Now().UTC(),
 				InterceptionID: i.ID().String(),
 				MsgID:          resp.ID,
 				Prompt:         *prompt,
@@ -130,27 +150,14 @@ func (i *BlockingInterception) ProcessRequest(w http.ResponseWriter, r *http.Req
 			prompt = nil
 		}
 
-		_ = i.recorder.RecordTokenUsage(ctx, &recorder.TokenUsageRecord{
-			InterceptionID:        i.ID().String(),
-			MsgID:                 resp.ID,
-			Input:                 resp.Usage.InputTokens,
-			Output:                resp.Usage.OutputTokens,
-			CacheReadInputTokens:  resp.Usage.CacheReadInputTokens,
-			CacheWriteInputTokens: resp.Usage.CacheCreationInputTokens,
-			ExtraTokenTypes: map[string]int64{
-				"web_search_requests":      resp.Usage.ServerToolUse.WebSearchRequests,
-				"cache_creation_input":     resp.Usage.CacheCreationInputTokens, // TODO: remove from ExtraTokenTypes (https://github.com/coder/aibridge/issues/243)
-				"cache_read_input":         resp.Usage.CacheReadInputTokens,     // TODO: remove from ExtraTokenTypes (https://github.com/coder/aibridge/issues/243)
-				"cache_ephemeral_1h_input": resp.Usage.CacheCreation.Ephemeral1hInputTokens,
-				"cache_ephemeral_5m_input": resp.Usage.CacheCreation.Ephemeral5mInputTokens,
-			},
-		})
+		i.recordTokenUsage(ctx, resp.ID, resp.Model, resp.Usage)
 
 		accumulateUsage(&cumulativeUsage, resp.Usage)
 
 		// Capture any thinking blocks that were returned.
 		for _, t := range i.extractModelThoughts(resp) {
 			_ = i.recorder.RecordModelThought(ctx, &recorder.ModelThoughtRecord{
+				CreatedAt:      time.Now().UTC(),
 				InterceptionID: i.ID().String(),
 				Content:        t.Content,
 				Metadata:       t.Metadata,
@@ -172,6 +179,7 @@ func (i *BlockingInterception) ProcessRequest(w http.ResponseWriter, r *http.Req
 
 			// If tool is not injected, track it since the client will be handling it.
 			_ = i.recorder.RecordToolUsage(ctx, &recorder.ToolUsageRecord{
+				CreatedAt:      time.Now().UTC(),
 				InterceptionID: i.ID().String(),
 				MsgID:          resp.ID,
 				ToolCallID:     toolUse.ID,
@@ -208,6 +216,7 @@ func (i *BlockingInterception) ProcessRequest(w http.ResponseWriter, r *http.Req
 			res, err := tool.Call(ctx, tc.Input, i.tracer)
 
 			_ = i.recorder.RecordToolUsage(ctx, &recorder.ToolUsageRecord{
+				CreatedAt:       time.Now().UTC(),
 				InterceptionID:  i.ID().String(),
 				MsgID:           resp.ID,
 				ToolCallID:      tc.ID,
@@ -237,7 +246,7 @@ func (i *BlockingInterception) ProcessRequest(w http.ResponseWriter, r *http.Req
 			var hasValidResult bool
 			for _, content := range res.Content {
 				switch cb := content.(type) {
-				case mcplib.TextContent:
+				case *mcplib.TextContent:
 					toolResult.OfToolResult.Content = append(toolResult.OfToolResult.Content, anthropic.ToolResultBlockParamContentUnion{
 						OfText: &anthropic.TextBlockParam{
 							Text: cb.Text,
@@ -245,20 +254,23 @@ func (i *BlockingInterception) ProcessRequest(w http.ResponseWriter, r *http.Req
 					})
 					hasValidResult = true
 				// TODO: is there a more correct way of handling these non-text content responses?
-				case mcplib.EmbeddedResource:
-					switch resource := cb.Resource.(type) {
-					case mcplib.TextResourceContents:
-						val := fmt.Sprintf("Binary resource (MIME: %s, URI: %s): %s",
-							resource.MIMEType, resource.URI, resource.Text)
+				case *mcplib.EmbeddedResource:
+					resource := cb.Resource
+					switch {
+					case resource == nil:
+						i.logger.Warn(ctx, "embedded resource with no contents")
 						toolResult.OfToolResult.Content = append(toolResult.OfToolResult.Content, anthropic.ToolResultBlockParamContentUnion{
 							OfText: &anthropic.TextBlockParam{
-								Text: val,
+								Text: "Error: embedded resource with no contents",
 							},
 						})
+						toolResult.OfToolResult.IsError = anthropic.Bool(true)
 						hasValidResult = true
-					case mcplib.BlobResourceContents:
+					case resource.Blob != nil:
+						// The SDK decodes base64 during unmarshal; re-encode
+						// the bytes for model-facing text.
 						val := fmt.Sprintf("Binary resource (MIME: %s, URI: %s): %s",
-							resource.MIMEType, resource.URI, resource.Blob)
+							resource.MIMEType, resource.URI, base64.StdEncoding.EncodeToString(resource.Blob))
 						toolResult.OfToolResult.Content = append(toolResult.OfToolResult.Content, anthropic.ToolResultBlockParamContentUnion{
 							OfText: &anthropic.TextBlockParam{
 								Text: val,
@@ -266,13 +278,13 @@ func (i *BlockingInterception) ProcessRequest(w http.ResponseWriter, r *http.Req
 						})
 						hasValidResult = true
 					default:
-						i.logger.Warn(ctx, "unknown embedded resource type", slog.F("type", fmt.Sprintf("%T", resource)))
+						val := fmt.Sprintf("Binary resource (MIME: %s, URI: %s): %s",
+							resource.MIMEType, resource.URI, resource.Text)
 						toolResult.OfToolResult.Content = append(toolResult.OfToolResult.Content, anthropic.ToolResultBlockParamContentUnion{
 							OfText: &anthropic.TextBlockParam{
-								Text: "Error: unknown embedded resource type",
+								Text: val,
 							},
 						})
-						toolResult.OfToolResult.IsError = anthropic.Bool(true)
 						hasValidResult = true
 					}
 				default:
@@ -334,9 +346,55 @@ func (i *BlockingInterception) ProcessRequest(w http.ResponseWriter, r *http.Req
 	return nil
 }
 
-func (i *BlockingInterception) newMessage(ctx context.Context, svc anthropic.MessageService) (_ *anthropic.Message, outErr error) {
-	ctx, span := i.tracer.Start(ctx, "Intercept.ProcessRequest.Upstream", trace.WithAttributes(tracing.InterceptionAttributesFromContext(ctx)...))
+// newMessage routes by credential type, returning the upstream message, the
+// number of key attempts made for this call, and any error. A centralized key
+// pool fails over across keys, while BYOK and Bedrock authenticate with a
+// single, fixed credential baked into svc, so they make one attempt.
+func (i *BlockingInterception) newMessage(ctx context.Context, svc anthropic.MessageService, opts []option.RequestOption) (*anthropic.Message, int, error) {
+	if cp, ok := credential.AsCentralizedPool(i.cred); ok {
+		return i.newMessageWithKeyFailover(ctx, svc, cp, opts)
+	}
+	msg, err := i.newMessageWithKey(credential.WithCredentialInfo(ctx, i.cred), svc, opts...)
+	return msg, 0, err
+}
+
+// newMessageWithKey performs a single upstream call.
+func (i *BlockingInterception) newMessageWithKey(ctx context.Context, svc anthropic.MessageService, opts ...option.RequestOption) (_ *anthropic.Message, outErr error) {
+	_, span := i.tracer.Start(ctx, "Intercept.ProcessRequest.Upstream", trace.WithAttributes(tracing.InterceptionAttributesFromContext(ctx)...))
 	defer tracing.EndSpanErr(span, &outErr)
 
-	return svc.New(ctx, anthropic.MessageNewParams{}, i.withBody())
+	return svc.New(ctx, anthropic.MessageNewParams{}, opts...)
+}
+
+// newMessageWithKeyFailover walks the centralized key pool, trying each key
+// until one succeeds or the pool is exhausted. Keys are marked temporary on
+// 429 and permanent on 401/403. Errors that aren't key-specific don't trigger
+// failover and are returned to the caller. It returns the upstream message,
+// the number of key attempts made for this call, and any error.
+func (i *BlockingInterception) newMessageWithKeyFailover(ctx context.Context, svc anthropic.MessageService, cp *credential.CentralizedPool, opts []option.RequestOption) (*anthropic.Message, int, error) {
+	walker := cp.Pool.Walker()
+	for {
+		key, keyPoolErr := cp.NextKey(walker)
+		if keyPoolErr != nil {
+			return nil, walker.Attempts(), keyPoolErr
+		}
+
+		ctx = credential.WithCredentialInfo(ctx, i.cred)
+		i.logger.Debug(ctx, "using centralized api key")
+		requestOpts := append([]option.RequestOption{}, opts...)
+		requestOpts = append(requestOpts,
+			option.WithAPIKey(key.Value()),
+			// Disable SDK retries because the failover loop
+			// handles retries via key rotation.
+			option.WithMaxRetries(0),
+		)
+		msg, err := i.newMessageWithKey(ctx, svc, requestOpts...)
+		// Key-specific failure: try the next key.
+		if i.markKeyOnError(ctx, key, err) {
+			continue
+		}
+		// Either success (msg, nil) or a non-key error (nil, err):
+		// nothing to retry, return as-is.
+		return msg, walker.Attempts(), err
+	}
 }

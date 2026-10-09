@@ -34,6 +34,7 @@ import (
 	"github.com/coder/coder/v2/coderd/database/db2sdk"
 	"github.com/coder/coder/v2/coderd/database/dbauthz"
 	"github.com/coder/coder/v2/coderd/entitlements"
+	"github.com/coder/coder/v2/coderd/experiments"
 	"github.com/coder/coder/v2/coderd/httpapi"
 	"github.com/coder/coder/v2/coderd/httpmw"
 	"github.com/coder/coder/v2/coderd/rbac"
@@ -71,24 +72,28 @@ func init() {
 }
 
 type Options struct {
-	CacheDir          string
-	Database          database.Store
-	Authorizer        rbac.Authorizer
-	SiteFS            fs.FS
-	OAuth2Configs     *httpmw.OAuth2Configs
-	DocsURL           string
-	BuildInfo         codersdk.BuildInfoResponse
-	AppearanceFetcher *atomic.Pointer[appearance.Fetcher]
-	Entitlements      *entitlements.Set
-	Telemetry         telemetry.Reporter
-	Logger            slog.Logger
-	HideAITasks       bool
+	CacheDir                  string
+	Database                  database.Store
+	Authorizer                rbac.Authorizer
+	SiteFS                    fs.FS
+	OAuth2Configs             *httpmw.OAuth2Configs
+	DocsURL                   string
+	BuildInfo                 codersdk.BuildInfoResponse
+	AppearanceFetcher         *atomic.Pointer[appearance.Fetcher]
+	Entitlements              *entitlements.Set
+	Telemetry                 telemetry.Reporter
+	Logger                    slog.Logger
+	AIGatewayEnabled          bool
+	UserSecretFilePathEnabled bool
+	// ExperimentEvaluator decides the experiments embedded for the
+	// signed-in user. When nil, no experiments are embedded.
+	ExperimentEvaluator *experiments.Evaluator
 }
 
 func New(opts *Options) (*Handler, error) {
 	if opts.AppearanceFetcher == nil {
 		daf := atomic.Pointer[appearance.Fetcher]{}
-		f := appearance.NewDefaultFetcher(opts.DocsURL)
+		f := appearance.NewDefaultFetcher(opts.Database, opts.DocsURL)
 		daf.Store(&f)
 		opts.AppearanceFetcher = &daf
 	}
@@ -151,7 +156,6 @@ type Handler struct {
 	RegionsFetcher func(ctx context.Context) (any, error)
 
 	Entitlements *entitlements.Set
-	Experiments  atomic.Pointer[codersdk.Experiments]
 
 	telemetryHTMLServedOnce sync.Once
 }
@@ -266,10 +270,10 @@ type htmlState struct {
 	Regions        string
 	DocsURL        string
 
-	TasksTabVisible  string
-	AgentsTabVisible string
-	Permissions      string
-	Organizations    string
+	AIGatewayEnabled          string
+	UserSecretFilePathEnabled string
+	Permissions               string
+	Organizations             string
 }
 
 type csrfState struct {
@@ -343,7 +347,12 @@ func (h *Handler) serveHTML(resp http.ResponseWriter, request *http.Request, req
 		h.telemetryHTMLServedOnce.Do(func() {
 			go h.reportHTMLFirstServedAt()
 		})
-		http.ServeContent(resp, request, reqPath, time.Time{}, bytes.NewReader(data))
+		// Rendered HTML embeds the CSRF token and the signed-in user's
+		// state, including per-user experiments, so it must not be
+		// cached.
+		httpmw.NoStore(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+			http.ServeContent(rw, r, reqPath, time.Time{}, bytes.NewReader(data))
+		})).ServeHTTP(resp, request)
 		return true
 	}
 	return false
@@ -353,6 +362,16 @@ func execTmpl(tmpl *template.Template, state htmlState) ([]byte, error) {
 	var buf bytes.Buffer
 	err := tmpl.Execute(&buf, state)
 	return buf.Bytes(), err
+}
+
+func userAppearanceSettingsFromRow(settings database.GetUserAppearanceSettingsRow) codersdk.UserAppearanceSettings {
+	return codersdk.UserAppearanceSettings{
+		ThemePreference: settings.ThemePreference,
+		ThemeMode:       codersdk.ThemeMode(settings.ThemeMode),
+		ThemeLight:      settings.ThemeLight,
+		ThemeDark:       settings.ThemeDark,
+		TerminalFont:    codersdk.TerminalFontName(settings.TerminalFont),
+	}
 }
 
 // renderWithState will render the file using the given nonce if the file exists
@@ -388,8 +407,8 @@ func (h *Handler) renderHTMLWithState(r *http.Request, filePath string, state ht
 		// nolint:gocritic // User is not expected to be signed in.
 		ctx := dbauthz.AsSystemRestricted(r.Context())
 		cfg, _ = af.Fetch(ctx)
-		state.ApplicationName = applicationNameOrDefault(cfg)
-		state.LogoURL = cfg.LogoURL
+		state.ApplicationName = html.EscapeString(applicationNameOrDefault(cfg))
+		state.LogoURL = html.EscapeString(cfg.LogoURL)
 		return execTmpl(tmpl, state)
 	}
 
@@ -397,8 +416,7 @@ func (h *Handler) renderHTMLWithState(r *http.Request, filePath string, state ht
 
 	var eg errgroup.Group
 	var user database.User
-	var themePreference string
-	var terminalFont string
+	var userAppearance codersdk.UserAppearanceSettings
 	orgIDs := []uuid.UUID{}
 	var userOrgs []database.Organization
 	eg.Go(func() error {
@@ -407,22 +425,12 @@ func (h *Handler) renderHTMLWithState(r *http.Request, filePath string, state ht
 		return err
 	})
 	eg.Go(func() error {
-		var err error
-		themePreference, err = h.opts.Database.GetUserThemePreference(ctx, apiKey.UserID)
-		if errors.Is(err, sql.ErrNoRows) {
-			themePreference = ""
-			return nil
+		settings, err := h.opts.Database.GetUserAppearanceSettings(ctx, apiKey.UserID)
+		if err != nil {
+			return err
 		}
-		return err
-	})
-	eg.Go(func() error {
-		var err error
-		terminalFont, err = h.opts.Database.GetUserTerminalFont(ctx, apiKey.UserID)
-		if errors.Is(err, sql.ErrNoRows) {
-			terminalFont = ""
-			return nil
-		}
-		return err
+		userAppearance = userAppearanceSettingsFromRow(settings)
+		return nil
 	})
 	eg.Go(func() error {
 		memberIDs, err := h.opts.Database.GetOrganizationIDsByMemberIDs(ctx, []uuid.UUID{apiKey.UserID})
@@ -436,9 +444,10 @@ func (h *Handler) renderHTMLWithState(r *http.Request, filePath string, state ht
 		return err
 	})
 	eg.Go(func() error {
-		orgs, err := h.opts.Database.GetOrganizationsByUserID(ctx, database.GetOrganizationsByUserIDParams{
-			UserID: apiKey.UserID,
-		})
+		// Match the /api/v2/organizations endpoint: RBAC-filtered and
+		// excluding deleted organizations. Membership-scoped queries would
+		// hide organizations that roles like owner can view.
+		orgs, err := h.opts.Database.GetOrganizations(ctx, database.GetOrganizationsParams{})
 		if err == nil {
 			userOrgs = orgs
 		}
@@ -447,7 +456,7 @@ func (h *Handler) renderHTMLWithState(r *http.Request, filePath string, state ht
 	})
 	err := eg.Wait()
 	if err == nil {
-		h.populateHTMLState(ctx, &state, af, actor, user, orgIDs, userOrgs, themePreference, terminalFont)
+		h.populateHTMLState(ctx, &state, af, actor, user, orgIDs, userOrgs, userAppearance)
 	}
 
 	return execTmpl(tmpl, state)
@@ -464,8 +473,7 @@ func (h *Handler) populateHTMLState(
 	user database.User,
 	orgIDs []uuid.UUID,
 	userOrgs []database.Organization,
-	themePreference string,
-	terminalFont string,
+	userAppearance codersdk.UserAppearanceSettings,
 ) {
 	var wg sync.WaitGroup
 	wg.Go(func() {
@@ -475,10 +483,7 @@ func (h *Handler) populateHTMLState(
 		}
 	})
 	wg.Go(func() {
-		data, err := json.Marshal(codersdk.UserAppearanceSettings{
-			ThemePreference: themePreference,
-			TerminalFont:    codersdk.TerminalFontName(terminalFont),
-		})
+		data, err := json.Marshal(userAppearance)
 		if err == nil {
 			state.UserAppearance = html.EscapeString(string(data))
 		}
@@ -494,8 +499,8 @@ func (h *Handler) populateHTMLState(
 			appr, err := json.Marshal(cfg)
 			if err == nil {
 				state.Appearance = html.EscapeString(string(appr))
-				state.ApplicationName = applicationNameOrDefault(cfg)
-				state.LogoURL = cfg.LogoURL
+				state.ApplicationName = html.EscapeString(applicationNameOrDefault(cfg))
+				state.LogoURL = html.EscapeString(cfg.LogoURL)
 			}
 		}
 	})
@@ -510,29 +515,24 @@ func (h *Handler) populateHTMLState(
 			}
 		})
 	}
-	experiments := h.Experiments.Load()
-	if experiments != nil {
+	if h.opts.ExperimentEvaluator != nil {
 		wg.Go(func() {
-			data, err := json.Marshal(experiments)
+			data, err := json.Marshal(h.opts.ExperimentEvaluator.EnabledExperiments(ctx, user.ID))
 			if err == nil {
 				state.Experiments = html.EscapeString(string(data))
 			}
 		})
 	}
 	wg.Go(func() {
-		data, err := json.Marshal(!h.opts.HideAITasks)
+		data, err := json.Marshal(h.opts.AIGatewayEnabled)
 		if err == nil {
-			state.TasksTabVisible = html.EscapeString(string(data))
+			state.AIGatewayEnabled = html.EscapeString(string(data))
 		}
 	})
 	wg.Go(func() {
-		agentsTabVisible := false
-		if experiments != nil {
-			agentsTabVisible = experiments.Enabled(codersdk.ExperimentAgents)
-		}
-		data, err := json.Marshal(agentsTabVisible)
+		data, err := json.Marshal(h.opts.UserSecretFilePathEnabled)
 		if err == nil {
-			state.AgentsTabVisible = html.EscapeString(string(data))
+			state.UserSecretFilePathEnabled = html.EscapeString(string(data))
 		}
 	})
 	wg.Go(func() {
@@ -805,6 +805,12 @@ type RenderOAuthAllowData struct {
 	DashboardURL string
 	CSRFToken    string
 	Username     string
+	// Scopes are the permissions listed for the user to approve.
+	Scopes []string
+	// Unrestricted states full account access, which the page says in prose
+	// rather than by name. A field of its own because an empty Scopes is the
+	// opposite grant: deciding by list length would call it full access.
+	Unrestricted bool
 }
 
 // RenderOAuthAllowPage renders the static page for a user to "Allow" an create
@@ -814,6 +820,25 @@ type RenderOAuthAllowData struct {
 // This has to be done statically because Golang has to handle the full request.
 // It cannot defer to the FE typescript easily.
 func RenderOAuthAllowPage(rw http.ResponseWriter, r *http.Request, data RenderOAuthAllowData) {
+	// The page would otherwise promise "these permissions" above an empty list.
+	// Guarded here rather than in the template, which branches on Unrestricted
+	// alone. No caller produces this today.
+	if !data.Unrestricted && len(data.Scopes) == 0 {
+		RenderStaticErrorPage(rw, r, ErrorPageData{
+			Status:      http.StatusInternalServerError,
+			HideStatus:  false,
+			Title:       "Internal Server Error",
+			Description: "The authorization request carries no permissions to approve.",
+			Actions: []Action{
+				{
+					URL:  data.DashboardURL,
+					Text: "Back to site",
+				},
+			},
+		})
+		return
+	}
+
 	rw.Header().Set("Content-Type", "text/html; charset=utf-8")
 
 	// Prevent the consent page from being framed to mitigate

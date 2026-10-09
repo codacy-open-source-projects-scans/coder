@@ -1,4 +1,4 @@
-export interface NormalizedAttempt {
+export type NormalizedAttempt = {
 	attempt_number: number;
 	status: string;
 	method?: string;
@@ -11,7 +11,7 @@ export interface NormalizedAttempt {
 	started_at?: string;
 	finished_at?: string;
 	response_status?: number;
-}
+};
 
 const RUN_KIND_LABELS: Record<string, string> = {
 	chat_turn: "Chat Turn",
@@ -436,7 +436,15 @@ export const compactDuration = (ms: number): string => {
 // View-model types for coerced debug payloads.
 // ---------------------------------------------------------------------------
 
-interface RunSummaryViewModel {
+type MCPConnectSummaryViewModel = {
+	slug: string;
+	outcome: string;
+	durationMs: number | undefined;
+	toolCount: number | undefined;
+	error: string | undefined;
+};
+
+type RunSummaryViewModel = {
 	primaryLabel: string;
 	endpointLabel: string | undefined;
 	model: string | undefined;
@@ -444,10 +452,12 @@ interface RunSummaryViewModel {
 	stepCount: number | undefined;
 	totalInputTokens: number | undefined;
 	totalOutputTokens: number | undefined;
+	mcpConnect: MCPConnectSummaryViewModel[];
+	mcpConnectDropped: number;
 	warnings: string[];
-}
+};
 
-export interface MessagePart {
+export type MessagePart = {
 	role: string;
 	content: string;
 	toolCallId?: string;
@@ -455,36 +465,36 @@ export interface MessagePart {
 	kind?: "tool-call" | "tool-result";
 	arguments?: string;
 	result?: string;
-}
+};
 
-interface ToolDef {
+type ToolDef = {
 	name: string;
 	description?: string;
 	inputSchema?: string;
-}
+};
 
-interface ToolCallPart {
+type ToolCallPart = {
 	id?: string;
 	name: string;
 	arguments?: string;
-}
+};
 
-interface StepRequestViewModel {
+type StepRequestViewModel = {
 	model?: string;
 	messages: MessagePart[];
 	tools: ToolDef[];
 	options: Record<string, unknown>;
 	policy: Record<string, unknown>;
-}
+};
 
-interface StepResponseViewModel {
+type StepResponseViewModel = {
 	content: string;
 	toolCalls: ToolCallPart[];
 	finishReason?: string;
 	usage: Record<string, number>;
 	warnings: string[];
 	model?: string;
-}
+};
 
 // ---------------------------------------------------------------------------
 // Internal helpers for coercion.
@@ -571,14 +581,14 @@ const isToolResultPartType = (partType: string): boolean => {
 	return partType === "tool-result" || partType === "tool_result";
 };
 
-interface NormalizedMessagePartViewModel {
+type NormalizedMessagePartViewModel = {
 	rendered: string;
 	kind?: NonNullable<MessagePart["kind"]>;
 	toolCallId?: string;
 	toolName?: string;
 	arguments?: string;
 	result?: string;
-}
+};
 
 // ---------------------------------------------------------------------------
 // Message coercion -- handles both plain objects and stringified entries.
@@ -868,6 +878,32 @@ const extractKnownFields = (
 // Public coercion: run summary.
 // ---------------------------------------------------------------------------
 
+const coerceMCPConnectSummaries = (
+	value: unknown,
+): MCPConnectSummaryViewModel[] => {
+	if (!Array.isArray(value)) {
+		return [];
+	}
+	const result: MCPConnectSummaryViewModel[] = [];
+	for (const entry of value) {
+		if (!isRecord(entry)) {
+			continue;
+		}
+		const slug = toOptionalString(entry.slug);
+		if (!slug) {
+			continue;
+		}
+		result.push({
+			slug,
+			outcome: toOptionalString(entry.outcome) ?? "unknown",
+			durationMs: toFiniteNumber(entry.duration_ms),
+			toolCount: toFiniteNumber(entry.tool_count),
+			error: toOptionalString(entry.error),
+		});
+	}
+	return result;
+};
+
 export const coerceRunSummary = (data: unknown): RunSummaryViewModel => {
 	const defaults: RunSummaryViewModel = {
 		primaryLabel: "",
@@ -877,6 +913,8 @@ export const coerceRunSummary = (data: unknown): RunSummaryViewModel => {
 		stepCount: undefined,
 		totalInputTokens: undefined,
 		totalOutputTokens: undefined,
+		mcpConnect: [],
+		mcpConnectDropped: 0,
 		warnings: [],
 	};
 	const parsed = deepParse(data);
@@ -891,6 +929,9 @@ export const coerceRunSummary = (data: unknown): RunSummaryViewModel => {
 			"primary_label",
 			"primaryLabel",
 		),
+	);
+	const mcpConnectDropped = toFiniteNumber(
+		pickField(parsed, "mcp_connect_dropped", "mcpConnectDropped"),
 	);
 	return {
 		primaryLabel: firstMessage ?? "",
@@ -924,6 +965,13 @@ export const coerceRunSummary = (data: unknown): RunSummaryViewModel => {
 				"completionTokens",
 			),
 		),
+		mcpConnect: coerceMCPConnectSummaries(
+			pickField(parsed, "mcp_connect", "mcpConnect"),
+		),
+		mcpConnectDropped:
+			mcpConnectDropped !== undefined && mcpConnectDropped > 0
+				? Math.floor(mcpConnectDropped)
+				: 0,
 		warnings: [],
 	};
 };

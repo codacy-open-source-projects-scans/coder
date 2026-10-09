@@ -1,5 +1,6 @@
+import { cn } from "cn";
 import { ChevronRightIcon, TriangleAlertIcon } from "lucide-react";
-import { type FC, useState } from "react";
+import { useState } from "react";
 import { Link as RouterLink } from "react-router";
 import type { ProvisionerJob } from "#/api/typesGenerated";
 import { Avatar } from "#/components/Avatar/Avatar";
@@ -12,7 +13,6 @@ import {
 	ProvisionerTags,
 	ProvisionerTruncateTags,
 } from "#/modules/provisioners/ProvisionerTags";
-import { cn } from "#/utils/cn";
 import { relativeTime } from "#/utils/time";
 import { CancelJobButton } from "./CancelJobButton";
 
@@ -21,7 +21,10 @@ type JobRowProps = {
 	defaultIsOpen: boolean;
 };
 
-export const JobRow: FC<JobRowProps> = ({ job, defaultIsOpen = false }) => {
+export const JobRow: React.FC<JobRowProps> = ({
+	job,
+	defaultIsOpen = false,
+}) => {
 	const metadata = job.metadata;
 	const [isOpen, setIsOpen] = useState(defaultIsOpen);
 	const queue = {
@@ -54,7 +57,7 @@ export const JobRow: FC<JobRowProps> = ({ job, defaultIsOpen = false }) => {
 					</Button>
 				</TableCell>
 				<TableCell>
-					<Badge size="sm">{job.type}</Badge>
+					<Badge>{job.type}</Badge>
 				</TableCell>
 				<TableCell>
 					{job.metadata.template_name !== "" ? (
@@ -89,7 +92,7 @@ export const JobRow: FC<JobRowProps> = ({ job, defaultIsOpen = false }) => {
 						{job.status === "failed" && (
 							<div
 								className={cn([
-									"inline-flex items-center gap-2 rounded border border-solid border-boder p-2",
+									"inline-flex items-center gap-2 rounded border border-solid border-border p-2",
 									"text-content-primary bg-surface-secondary mb-4",
 								])}
 							>
@@ -136,7 +139,7 @@ export const JobRow: FC<JobRowProps> = ({ job, defaultIsOpen = false }) => {
 							<dd>{job.metadata.workspace_name ?? "null"}</dd>
 
 							<dt>Creation time:</dt>
-							<dd data-chromatic="ignore">{job.created_at}</dd>
+							<dd data-pixel="ignore">{job.created_at}</dd>
 
 							{job.queue_position > 0 && (
 								<>

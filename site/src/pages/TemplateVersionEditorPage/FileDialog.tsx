@@ -1,17 +1,17 @@
-import TextField from "@mui/material/TextField";
-import { type ChangeEvent, type FC, useState } from "react";
-import { ConfirmDialog } from "#/components/Dialogs/ConfirmDialog/ConfirmDialog";
+import { useState } from "react";
+import { ConfirmDialog } from "#/components/Dialog/ConfirmDialog/ConfirmDialog";
+import { FormField } from "#/components/FormField/FormField";
 import { type FileTree, isFolder, validatePath } from "#/utils/filetree";
 
-interface CreateFileDialogProps {
+type CreateFileDialogProps = {
 	onClose: () => void;
 	checkExists: (path: string) => boolean;
 	onConfirm: (path: string) => void;
 	open: boolean;
 	fileTree: FileTree;
-}
+};
 
-export const CreateFileDialog: FC<CreateFileDialogProps> = ({
+export const CreateFileDialog: React.FC<CreateFileDialogProps> = ({
 	checkExists,
 	onClose,
 	onConfirm,
@@ -20,7 +20,7 @@ export const CreateFileDialog: FC<CreateFileDialogProps> = ({
 }) => {
 	const [pathValue, setPathValue] = useState("");
 	const [error, setError] = useState<string>();
-	const handleChange = (event: ChangeEvent<HTMLInputElement>) => {
+	const handleChange = (event: React.ChangeEvent<HTMLInputElement>) => {
 		setPathValue(event.target.value);
 	};
 	const handleConfirm = () => {
@@ -63,22 +63,25 @@ export const CreateFileDialog: FC<CreateFileDialogProps> = ({
 						Specify the path to a file to be created. This path can contain
 						slashes too.
 					</p>
-					<TextField
+					<FormField
 						autoFocus
 						onKeyDown={(event) => {
 							if (event.key === "Enter") {
 								handleConfirm();
 							}
 						}}
-						error={Boolean(error)}
-						helperText={error}
-						name="file-path"
-						autoComplete="off"
-						id="file-path"
-						placeholder="example.tf"
-						value={pathValue}
-						onChange={handleChange}
+						field={{
+							name: "file-path",
+							id: "file-path",
+							value: pathValue,
+							onChange: handleChange,
+							onBlur: () => {},
+							error: Boolean(error),
+							helperText: error,
+						}}
 						label="File Path"
+						autoComplete="off"
+						placeholder="example.tf"
 					/>
 				</div>
 			}
@@ -86,14 +89,14 @@ export const CreateFileDialog: FC<CreateFileDialogProps> = ({
 	);
 };
 
-interface DeleteFileDialogProps {
+type DeleteFileDialogProps = {
 	onClose: () => void;
 	onConfirm: () => void;
 	open: boolean;
 	filename: string;
-}
+};
 
-export const DeleteFileDialog: FC<DeleteFileDialogProps> = ({
+export const DeleteFileDialog: React.FC<DeleteFileDialogProps> = ({
 	onClose,
 	onConfirm,
 	open,
@@ -116,16 +119,16 @@ export const DeleteFileDialog: FC<DeleteFileDialogProps> = ({
 	);
 };
 
-interface RenameFileDialogProps {
+type RenameFileDialogProps = {
 	onClose: () => void;
 	onConfirm: (filename: string) => void;
 	checkExists: (path: string) => boolean;
 	open: boolean;
 	filename: string;
 	fileTree: FileTree;
-}
+};
 
-export const RenameFileDialog: FC<RenameFileDialogProps> = ({
+export const RenameFileDialog: React.FC<RenameFileDialogProps> = ({
 	checkExists,
 	onClose,
 	onConfirm,
@@ -135,7 +138,7 @@ export const RenameFileDialog: FC<RenameFileDialogProps> = ({
 }) => {
 	const [pathValue, setPathValue] = useState(filename);
 	const [error, setError] = useState<string>();
-	const handleChange = (event: ChangeEvent<HTMLInputElement>) => {
+	const handleChange = (event: React.ChangeEvent<HTMLInputElement>) => {
 		setPathValue(event.target.value);
 	};
 	const handleConfirm = () => {
@@ -184,22 +187,25 @@ export const RenameFileDialog: FC<RenameFileDialogProps> = ({
 						Rename <strong>{filename}</strong> to something else. This path can
 						contain slashes too!
 					</p>
-					<TextField
+					<FormField
 						autoFocus
 						onKeyDown={(event) => {
 							if (event.key === "Enter") {
 								handleConfirm();
 							}
 						}}
-						error={Boolean(error)}
-						helperText={error}
-						name="file-path"
-						autoComplete="off"
-						id="file-path"
-						placeholder={filename}
-						value={pathValue}
-						onChange={handleChange}
+						field={{
+							name: "file-path",
+							id: "file-path",
+							value: pathValue,
+							onChange: handleChange,
+							onBlur: () => {},
+							error: Boolean(error),
+							helperText: error,
+						}}
 						label="File Path"
+						autoComplete="off"
+						placeholder={filename}
 					/>
 				</div>
 			}

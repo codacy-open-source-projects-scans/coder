@@ -10,7 +10,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"time"
 
 	"golang.org/x/xerrors"
 
@@ -19,8 +18,6 @@ import (
 
 const (
 	defaultGitHubAPIBaseURL = "https://api.github.com"
-	// Adding padding to our retry times to guard against over-consumption of request quotas.
-	RateLimitPadding = 5 * time.Minute
 )
 
 type githubProvider struct {
@@ -29,13 +26,18 @@ type githubProvider struct {
 	httpClient *http.Client
 	clock      quartz.Clock
 
+	// cache stores ETags and response bodies so JSON reads can be
+	// issued as conditional requests, letting unchanged pull
+	// requests return 304 Not Modified instead of a full body.
+	cache *responseCache
+
 	// Compiled per-instance to support GitHub Enterprise hosts.
 	pullRequestPathPattern   *regexp.Regexp
 	repositoryHTTPSPattern   *regexp.Regexp
 	repositorySSHPathPattern *regexp.Regexp
 }
 
-func newGitHub(apiBaseURL string, httpClient *http.Client, clock quartz.Clock) *githubProvider {
+func newGitHub(apiBaseURL string, httpClient *http.Client, clock quartz.Clock) (Provider, error) {
 	if apiBaseURL == "" {
 		apiBaseURL = defaultGitHubAPIBaseURL
 	}
@@ -60,6 +62,7 @@ func newGitHub(apiBaseURL string, httpClient *http.Client, clock quartz.Clock) *
 		webBaseURL: webBaseURL,
 		httpClient: httpClient,
 		clock:      clock,
+		cache:      newResponseCache(defaultResponseCacheEntries),
 		pullRequestPathPattern: regexp.MustCompile(
 			`^https://` + escapedHost + `/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/pull/([0-9]+)(?:[/?#].*)?$`,
 		),
@@ -69,7 +72,7 @@ func newGitHub(apiBaseURL string, httpClient *http.Client, clock quartz.Clock) *
 		repositorySSHPathPattern: regexp.MustCompile(
 			`^(?:ssh://)?git@` + escapedHost + `[:/]([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?/?$`,
 		),
-	}
+	}, nil
 }
 
 // deriveWebBaseURL converts a GitHub API base URL to the
@@ -148,7 +151,7 @@ func (g *githubProvider) ParsePullRequestURL(raw string) (PRRef, bool) {
 func (g *githubProvider) NormalizePullRequestURL(raw string) string {
 	ref, ok := g.ParsePullRequestURL(strings.TrimRight(
 		strings.TrimSpace(raw),
-		"),.;",
+		trailingPunctuation,
 	))
 	if !ok {
 		return ""
@@ -404,19 +407,37 @@ func (g *githubProvider) decodeJSON(
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 
+	// Issue a conditional request when we have a cached ETag for this
+	// URL + auth scope. GitHub replies 304 Not Modified when nothing
+	// changed, which is cheaper than a full body and does not count
+	// against the primary REST rate limit.
+	cacheKey := responseCacheKey(requestURL, token)
+	var (
+		cachedBody []byte
+		haveCached bool
+	)
+	if etag, body, ok := g.cache.load(cacheKey); ok {
+		req.Header.Set("If-None-Match", etag)
+		cachedBody, haveCached = body, true
+	}
+
 	resp, err := g.httpClient.Do(req)
 	if err != nil {
 		return xerrors.Errorf("execute github request: %w", err)
 	}
 	defer resp.Body.Close()
 
+	// Nothing changed since the cached response: reuse the stored body.
+	if resp.StatusCode == http.StatusNotModified && haveCached {
+		if err := json.Unmarshal(cachedBody, dest); err != nil {
+			return xerrors.Errorf("decode cached github response: %w", err)
+		}
+		return nil
+	}
+
 	if resp.StatusCode != http.StatusOK {
-		if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
-			retryAfter := ParseRetryAfter(resp.Header, g.clock)
-			if retryAfter > 0 {
-				return &RateLimitError{RetryAfter: g.clock.Now().Add(retryAfter + RateLimitPadding)}
-			}
-			// No rate-limit headers — fall through to generic error.
+		if rlErr := checkRateLimitError(resp, g.clock, "X-Ratelimit-Reset"); rlErr != nil {
+			return rlErr
 		}
 		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 8192))
 		if readErr != nil {
@@ -432,9 +453,18 @@ func (g *githubProvider) decodeJSON(
 		)
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(dest); err != nil {
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return xerrors.Errorf("read github response: %w", err)
+	}
+
+	if err := json.Unmarshal(body, dest); err != nil {
 		return xerrors.Errorf("decode github response: %w", err)
 	}
+
+	// Only cache bodies we could successfully decode, so a malformed
+	// response does not poison the cache.
+	g.cache.store(cacheKey, resp.Header.Get("ETag"), body)
 	return nil
 }
 
@@ -461,11 +491,8 @@ func (g *githubProvider) fetchDiff(
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
-			retryAfter := ParseRetryAfter(resp.Header, g.clock)
-			if retryAfter > 0 {
-				return "", &RateLimitError{RetryAfter: g.clock.Now().Add(retryAfter + RateLimitPadding)}
-			}
+		if rlErr := checkRateLimitError(resp, g.clock, "X-Ratelimit-Reset"); rlErr != nil {
+			return "", rlErr
 		}
 		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 8192))
 		if readErr != nil {
@@ -489,30 +516,6 @@ func (g *githubProvider) fetchDiff(
 		return "", ErrDiffTooLarge
 	}
 	return string(buf), nil
-}
-
-// ParseRetryAfter extracts a retry-after time from GitHub
-// rate-limit headers. Returns zero value if no recognizable header is
-// present.
-func ParseRetryAfter(h http.Header, clk quartz.Clock) time.Duration {
-	if clk == nil {
-		clk = quartz.NewReal()
-	}
-	// Retry-After header: seconds until retry.
-	if ra := h.Get("Retry-After"); ra != "" {
-		if secs, err := strconv.Atoi(ra); err == nil {
-			return time.Duration(secs) * time.Second
-		}
-	}
-	// X-Ratelimit-Reset header: unix timestamp. We compute the
-	// duration from now according to the caller's clock.
-	if reset := h.Get("X-Ratelimit-Reset"); reset != "" {
-		if ts, err := strconv.ParseInt(reset, 10, 64); err == nil {
-			d := time.Unix(ts, 0).Sub(clk.Now())
-			return d
-		}
-	}
-	return 0
 }
 
 // reviewStats holds aggregated review statistics for a PR.

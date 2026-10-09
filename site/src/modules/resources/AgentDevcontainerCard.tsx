@@ -1,5 +1,5 @@
+import { cn } from "cn";
 import { ContainerIcon, ExternalLinkIcon } from "lucide-react";
-import type { FC } from "react";
 import { useMutation, useQueryClient } from "react-query";
 import { toast } from "sonner";
 import { API } from "#/api/api";
@@ -35,7 +35,6 @@ import {
 import { useProxy } from "#/contexts/ProxyContext";
 import { useFeatureVisibility } from "#/modules/dashboard/useFeatureVisibility";
 import { AppStatuses } from "#/pages/WorkspacePage/AppStatuses";
-import { cn } from "#/utils/cn";
 import { portForwardURL } from "#/utils/portForward";
 import { AgentApps, organizeAgentApps } from "./AgentApps/AgentApps";
 import { AgentButton } from "./AgentButton";
@@ -57,7 +56,7 @@ type AgentDevcontainerCardProps = {
 	wildcardHostname: string;
 };
 
-export const AgentDevcontainerCard: FC<AgentDevcontainerCardProps> = ({
+export const AgentDevcontainerCard: React.FC<AgentDevcontainerCardProps> = ({
 	parentAgent,
 	subAgents,
 	devcontainer,
@@ -204,18 +203,17 @@ export const AgentDevcontainerCard: FC<AgentDevcontainerCardProps> = ({
 				gap-6 px-4 pl-8 leading-6
 				md:gap-4"
 			>
-				<div className="flex items-center gap-6 text-xs text-content-secondary">
-					<div className="flex items-center gap-4 md:w-full">
+				<div className="min-w-[284px] flex items-center gap-6 text-xs text-content-secondary">
+					<div className="flex items-center gap-4 w-full">
 						<DevcontainerStatus
 							devcontainer={devcontainer}
 							parentAgent={parentAgent}
 							agent={subAgent}
 						/>
 						<span
-							className="max-w-xs shrink-0
+							className="flex-1 shrink-0
 							overflow-hidden text-ellipsis whitespace-nowrap
-							text-sm font-semibold text-content-primary
-							md:overflow-visible"
+							text-sm font-semibold text-content-primary"
 						>
 							{subAgent?.name ??
 								(devcontainer.name || devcontainer.config_path)}
@@ -406,11 +404,9 @@ type DevcontainerDeleteErrorDialogProps = {
 	onClose: () => void;
 };
 
-const DevcontainerDeleteErrorDialog: FC<DevcontainerDeleteErrorDialogProps> = ({
-	open,
-	error,
-	onClose,
-}) => {
+const DevcontainerDeleteErrorDialog: React.FC<
+	DevcontainerDeleteErrorDialogProps
+> = ({ open, error, onClose }) => {
 	const errorDetail = getErrorDetail(error);
 	const errorMessage = getErrorMessage(
 		error,
@@ -436,10 +432,7 @@ const DevcontainerDeleteErrorDialog: FC<DevcontainerDeleteErrorDialogProps> = ({
 					{errorDetail && (
 						<DialogDescription className="flex flex-row gap-9">
 							<strong className="text-content-primary">Detail</strong>{" "}
-							{/* TODO(DanielleMaywood): `[overflow-wrap:anywhere]` should be replaced with `wrap-anywhere` when we hit tailwind v4 */}
-							<span className="[overflow-wrap:anywhere] break-normal">
-								{errorDetail}
-							</span>
+							<span className="wrap-anywhere break-normal">{errorDetail}</span>
 						</DialogDescription>
 					)}
 				</DialogHeader>

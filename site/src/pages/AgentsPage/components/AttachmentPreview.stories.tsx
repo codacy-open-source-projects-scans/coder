@@ -1,28 +1,20 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, fn, userEvent, within } from "storybook/test";
+import { createMockFile } from "#/testHelpers/files";
 import { AttachmentPreview, type UploadState } from "./AttachmentPreview";
 
 // Tiny 1x1 transparent PNG as data URI for previews.
 const TINY_PNG =
 	"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
 
-const createMockFile = (name: string, type: string, size = 9) =>
-	new File([new Uint8Array(size)], name, { type });
-
 const meta: Meta<typeof AttachmentPreview> = {
 	title: "pages/AgentsPage/AttachmentPreview",
 	component: AttachmentPreview,
-	decorators: [
-		(Story) => (
-			<div className="max-w-xl rounded-lg border border-solid border-border-default bg-surface-primary p-4">
-				<Story />
-			</div>
-		),
-	],
 	args: {
 		onRemove: fn(),
 		onPreview: fn(),
 		onTextPreview: fn(),
+		onInlineText: fn(),
 	},
 };
 
@@ -77,10 +69,6 @@ export const Uploading: Story = {
 			previewUrls: new Map<File, string>([[file, TINY_PNG]]),
 		};
 	})(),
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		expect(await canvas.findByTitle("Loading spinner")).toBeInTheDocument();
-	},
 };
 
 export const PendingUpload: Story = {
@@ -92,10 +80,6 @@ export const PendingUpload: Story = {
 			previewUrls: new Map<File, string>([[file, TINY_PNG]]),
 		};
 	})(),
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		expect(await canvas.findByTitle("Loading spinner")).toBeInTheDocument();
-	},
 };
 
 export const DraftWarning: Story = {
@@ -110,12 +94,6 @@ export const DraftWarning: Story = {
 			]),
 		};
 	})(),
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		expect(
-			await canvas.findByText(/could not be saved as a draft/i),
-		).toBeInTheDocument();
-	},
 };
 
 export const UploadError: Story = {
@@ -132,14 +110,7 @@ export const UploadError: Story = {
 	play: async ({ canvasElement }) => {
 		const canvas = within(canvasElement);
 		const overlay = canvas.getByLabelText("Upload error");
-		expect(overlay).toBeInTheDocument();
 		await userEvent.hover(overlay);
-		// After hover, the tooltip renders the error message. Use
-		// getAllByText because the text appears in both the tooltip
-		// trigger overlay and the tooltip content popover.
-		const body = within(canvasElement.ownerDocument.body);
-		const matches = await body.findAllByText(/Upload failed: server error/i);
-		expect(matches.length).toBeGreaterThanOrEqual(1);
 	},
 };
 
@@ -153,7 +124,7 @@ export const FileTooLarge: Story = {
 					file,
 					{
 						status: "error",
-						error: "File too large (12.4 MB). Maximum is 10 MB.",
+						error: "File too large (12.4 MiB). Maximum is 10 MiB.",
 					},
 				],
 			]),
@@ -206,6 +177,7 @@ export const TextAttachment: Story = {
 		expect(args.onTextPreview).toHaveBeenCalledWith(
 			"This is the pasted text content.\nIt has multiple lines.\nAnd should be displayed in a readable card format.",
 			"clipboard.txt",
+			"text/plain",
 		);
 	},
 };
@@ -239,17 +211,6 @@ export const ThreeTextAttachments: Story = {
 			]),
 		};
 	})(),
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		expect(
-			await canvas.findAllByRole("button", { name: /View paste-[1-3]\.txt/ }),
-		).toHaveLength(3);
-		expect(
-			canvas.getByText(
-				/First pasted document with several lines of content\./i,
-			),
-		).toBeInTheDocument();
-	},
 };
 
 export const ThreeMixedAttachments: Story = {
@@ -298,15 +259,6 @@ export const MixedImageAndText: Story = {
 			]),
 		};
 	})(),
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		expect(
-			await canvas.findByRole("img", { name: "photo.png" }),
-		).toBeInTheDocument();
-		expect(
-			canvas.getByRole("button", { name: "View clipboard.txt" }),
-		).toBeInTheDocument();
-	},
 };
 
 export const TextAttachmentUploading: Story = {

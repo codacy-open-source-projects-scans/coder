@@ -1,12 +1,6 @@
+import { cn } from "cn";
 import { ExternalLinkIcon, SlidersHorizontalIcon } from "lucide-react";
-import {
-	type ComponentProps,
-	type FC,
-	type ReactNode,
-	useEffect,
-	useRef,
-	useState,
-} from "react";
+import { useEffect, useRef, useState } from "react";
 import {
 	getValidationErrorMessage,
 	hasError,
@@ -25,14 +19,16 @@ import {
 import { SearchField } from "#/components/SearchField/SearchField";
 import { Skeleton, type SkeletonProps } from "#/components/Skeleton/Skeleton";
 import { useDebouncedFunction } from "#/hooks/debounce";
-import { cn } from "#/utils/cn";
+import {
+	type FilterValues,
+	parseFilterQuery,
+	stringifyFilter,
+} from "./filterQuery";
 
 type PresetFilter = {
 	name: string;
 	query: string;
 };
-
-type FilterValues = Record<string, string | undefined>;
 
 type UseFilterConfig = {
 	/**
@@ -102,40 +98,10 @@ export const useFilter = ({
 	};
 };
 
-const parseFilterQuery = (filterQuery: string): FilterValues => {
-	if (filterQuery === "") {
-		return {};
-	}
-
-	const result: FilterValues = {};
-	const keyValuePair = /(\w+):"([^"]+)"|(\w+):(\S+)/g;
-
-	for (const match of filterQuery.matchAll(keyValuePair)) {
-		const key = match[1] ?? match[3];
-		const value = match[2] ?? match[4];
-		if (key && value) {
-			result[key] = value;
-		}
-	}
-
-	return result;
-};
-
-const stringifyFilter = (filterValue: FilterValues): string => {
-	let result = "";
-
-	for (const key in filterValue) {
-		const value = filterValue[key];
-		if (value) {
-			const needsQuotes = value.includes(" ");
-			result += needsQuotes ? `${key}:"${value}" ` : `${key}:${value} `;
-		}
-	}
-
-	return result.trim();
-};
-
-const BaseSkeleton: FC<SkeletonProps> = ({ children, ...skeletonProps }) => {
+const BaseSkeleton: React.FC<SkeletonProps> = ({
+	children,
+	...skeletonProps
+}) => {
 	return (
 		<Skeleton
 			height={36}
@@ -147,23 +113,23 @@ const BaseSkeleton: FC<SkeletonProps> = ({ children, ...skeletonProps }) => {
 	);
 };
 
-export const MenuSkeleton: FC = () => {
+export const MenuSkeleton: React.FC = () => {
 	return <BaseSkeleton className="min-w-[200px] shrink-0" />;
 };
 
-type FilterProps = ComponentProps<"div"> & {
+type FilterProps = React.ComponentProps<"div"> & {
 	filter: ReturnType<typeof useFilter>;
-	optionsSkeleton: ReactNode;
+	optionsSkeleton: React.ReactNode;
 	isLoading: boolean;
 	learnMoreLink?: string;
 	learnMoreLabel2?: string;
 	learnMoreLink2?: string;
 	error?: unknown;
-	options?: ReactNode;
+	options?: React.ReactNode;
 	presets: PresetFilter[];
 };
 
-export const Filter: FC<FilterProps> = ({
+export const Filter: React.FC<FilterProps> = ({
 	filter,
 	isLoading,
 	error,
@@ -210,14 +176,16 @@ export const Filter: FC<FilterProps> = ({
 				</>
 			) : (
 				<>
-					<PresetMenu
-						value={filter.query}
-						onSelect={(query) => filter.update(query)}
-						presets={presets}
-						learnMoreLink={learnMoreLink}
-						learnMoreLabel2={learnMoreLabel2}
-						learnMoreLink2={learnMoreLink2}
-					/>
+					{presets.length > 0 && (
+						<PresetMenu
+							value={filter.query}
+							onSelect={(query) => filter.update(query)}
+							presets={presets}
+							learnMoreLink={learnMoreLink}
+							learnMoreLabel2={learnMoreLabel2}
+							learnMoreLink2={learnMoreLink2}
+						/>
+					)}
 					<div className="flex flex-col gap-2 w-full">
 						<SearchField
 							ref={textboxInputRef}
@@ -253,16 +221,16 @@ export const Filter: FC<FilterProps> = ({
 	);
 };
 
-interface PresetMenuProps {
+type PresetMenuProps = {
 	value: string;
 	presets: PresetFilter[];
 	learnMoreLink?: string;
 	learnMoreLabel2?: string;
 	learnMoreLink2?: string;
 	onSelect: (query: string) => void;
-}
+};
 
-const PresetMenu: FC<PresetMenuProps> = ({
+const PresetMenu: React.FC<PresetMenuProps> = ({
 	value,
 	presets,
 	learnMoreLink,

@@ -1,7 +1,6 @@
-import type { ComponentPropsWithRef } from "react";
-import { cn } from "#/utils/cn";
+import { cn } from "cn";
 
-type MessageProps = ComponentPropsWithRef<"div">;
+type MessageProps = React.ComponentProps<"div">;
 
 export const Message = ({ className, ref, ...props }: MessageProps) => {
 	return (
@@ -9,7 +8,7 @@ export const Message = ({ className, ref, ...props }: MessageProps) => {
 	);
 };
 
-type MessageContentProps = ComponentPropsWithRef<"div">;
+type MessageContentProps = React.ComponentProps<"div">;
 
 export const MessageContent = ({
 	className,
@@ -20,7 +19,7 @@ export const MessageContent = ({
 		<div
 			ref={ref}
 			className={cn(
-				"whitespace-pre-wrap break-words text-[13px] leading-relaxed text-content-primary",
+				"whitespace-pre-wrap wrap-break-word text-[13px] leading-relaxed text-content-primary",
 				className,
 			)}
 			{...props}

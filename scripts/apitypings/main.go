@@ -26,6 +26,7 @@ func main() {
 	generateDirectories := map[string]string{
 		"github.com/coder/coder/v2/codersdk":                  "",
 		"github.com/coder/coder/v2/coderd/healthcheck/health": "Health",
+		"github.com/coder/coder/v2/codersdk/x/agenthooks":     "AgentHook",
 		"github.com/coder/coder/v2/codersdk/healthsdk":        "",
 	}
 	for dir, prefix := range generateDirectories {
@@ -78,6 +79,7 @@ func TSMutations(ts *guts.Typescript) {
 		config.NotNullMaps,
 		FixSerpentStruct,
 		DiscriminatedChatMessagePart,
+		AgentHookRawMessages,
 		// Prefer enums as types
 		config.EnumAsTypes,
 		// Enum list generator
@@ -134,6 +136,10 @@ func TypeMappings(gen *guts.GoParser) error {
 		"github.com/coder/serpent.URL":            "string",
 		"github.com/coder/serpent.HostPort":       "string",
 		"encoding/json.RawMessage":                "map[string]string",
+		// wsrelated.Config is a client-side selection tree that the Go client
+		// marshals to the include_related query string via Config.QueryParam.
+		// Its wire representation is that comma-separated string.
+		"github.com/coder/coder/v2/codersdk/wsrelated.Config": "string",
 		// decimal.Decimal preserves exact pricing precision (e.g. $3.50 per
 		// million tokens) and serializes as a JSON string to avoid
 		// floating-point loss in transit.
@@ -144,6 +150,43 @@ func TypeMappings(gen *guts.GoParser) error {
 	}
 
 	return nil
+}
+
+// AgentHookRawMessages maps agent-hook raw JSON fields to unknown instead of
+// the global object type.
+func AgentHookRawMessages(ts *guts.Typescript) {
+	if _, ok := ts.Node("AgentHookRequest"); !ok {
+		return
+	}
+	unknown := bindings.KeywordUnknown
+	fields := map[string]string{
+		"AgentHookRequest":              "data",
+		"AgentHookUserPromptSubmitData": "parts",
+		"AgentHookPreToolUseData":       "tool_input",
+		"AgentHookPostToolUseData":      "tool_response",
+		"AgentHookPermission":           "input_override",
+	}
+	for typeName, fieldName := range fields {
+		node, ok := ts.Node(typeName)
+		if !ok {
+			panic(fmt.Sprintf("agent hook type %q was not generated", typeName))
+		}
+		iface, ok := node.(*bindings.Interface)
+		if !ok {
+			panic(fmt.Sprintf("agent hook type %q is not an interface", typeName))
+		}
+		found := false
+		for _, field := range iface.Fields {
+			if field.Name == fieldName {
+				field.Type = &unknown
+				found = true
+				break
+			}
+		}
+		if !found {
+			panic(fmt.Sprintf("agent hook field %q.%s was not generated", typeName, fieldName))
+		}
+	}
 }
 
 // DiscriminatedChatMessagePart splits the flat ChatMessagePart
@@ -168,6 +211,10 @@ func DiscriminatedChatMessagePart(ts *guts.Typescript) {
 	// we can copy type information from the original interface.
 	fieldMap := make(map[string]*bindings.PropertySignature, len(iface.Fields))
 	for _, f := range iface.Fields {
+		if f.Name == "result" {
+			unknown := bindings.KeywordUnknown
+			f.Type = &unknown
+		}
 		fieldMap[f.Name] = f
 	}
 

@@ -1,5 +1,4 @@
 import { BugIcon } from "lucide-react";
-import type { FC } from "react";
 import type { Workspace } from "#/api/typesGenerated";
 import { TopbarButton } from "#/components/FullPageLayout/Topbar";
 import { BuildParametersPopover } from "./BuildParametersPopover";
@@ -10,7 +9,7 @@ type DebugButtonProps = Omit<ActionButtonProps, "loading"> & {
 	enableBuildParameters: boolean;
 };
 
-export const DebugButton: FC<DebugButtonProps> = ({
+export const DebugButton: React.FC<DebugButtonProps> = ({
 	handleAction,
 	workspace,
 	enableBuildParameters,
@@ -32,7 +31,6 @@ export const DebugButton: FC<DebugButtonProps> = ({
 			<BuildParametersPopover
 				label="Debug with build parameters"
 				workspace={workspace}
-				onSubmit={handleAction}
 			/>
 		</div>
 	);

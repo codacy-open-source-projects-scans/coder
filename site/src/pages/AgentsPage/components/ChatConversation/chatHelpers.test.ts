@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type * as TypesGen from "#/api/typesGenerated";
-import type { ModelSelectorOption } from "../ChatElements";
+import type { ModelSelectorOption } from "#/modules/aiModels/ModelSelector";
+import {
+	MockChatCompactionMessage,
+	MockChatMessage,
+} from "#/testHelpers/chatEntities";
 import {
 	extractContextUsageFromMessage,
 	getLatestContextUsage,
@@ -13,19 +17,7 @@ import {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Minimal ChatMessage factory – only required fields. */
-const makeMessage = (
-	overrides: Partial<TypesGen.ChatMessage> = {},
-): TypesGen.ChatMessage =>
-	({
-		id: 1,
-		chat_id: "chat-1",
-		created_at: "2025-01-01T00:00:00Z",
-		role: "assistant",
-		...overrides,
-	}) as TypesGen.ChatMessage;
-
-const makeOption = (
+const buildOption = (
 	id: string,
 	provider: string,
 	model: string,
@@ -42,11 +34,11 @@ const makeOption = (
 
 describe("extractContextUsageFromMessage", () => {
 	it("returns null when the message has no usage fields", () => {
-		expect(extractContextUsageFromMessage(makeMessage())).toBeNull();
+		expect(extractContextUsageFromMessage(MockChatMessage)).toBeNull();
 	});
 
 	it("returns usage when input_tokens is present", () => {
-		const msg = makeMessage({ usage: { input_tokens: 100 } });
+		const msg = { ...MockChatMessage, usage: { input_tokens: 100 } };
 		const result = extractContextUsageFromMessage(msg);
 		expect(result).not.toBeNull();
 		expect(result!.inputTokens).toBe(100);
@@ -54,42 +46,78 @@ describe("extractContextUsageFromMessage", () => {
 	});
 
 	it("returns usage when output_tokens is present", () => {
-		const msg = makeMessage({ usage: { output_tokens: 50 } });
+		const msg = { ...MockChatMessage, usage: { output_tokens: 50 } };
 		const result = extractContextUsageFromMessage(msg);
 		expect(result).not.toBeNull();
 		expect(result!.outputTokens).toBe(50);
 		expect(result!.usedTokens).toBe(50);
 	});
 
-	it("sums all token components into usedTokens", () => {
-		const msg = makeMessage({
+	it.each<{
+		shape: string;
+		usage: TypesGen.ChatMessageUsage;
+		usedTokens: number;
+	}>([
+		// Usage values recorded from real provider responses.
+		{
+			shape: "reasoning inside output",
 			usage: {
-				input_tokens: 10,
-				output_tokens: 20,
-				reasoning_tokens: 5,
-				cache_creation_tokens: 3,
-				cache_read_tokens: 2,
+				input_tokens: 110,
+				output_tokens: 334,
+				reasoning_tokens: 256,
+				cache_read_tokens: 5632,
 			},
+			usedTokens: 110 + 334 + 5632,
+		},
+		{
+			shape: "cache creation present",
+			usage: {
+				input_tokens: 3,
+				output_tokens: 120,
+				cache_read_tokens: 7736,
+				cache_creation_tokens: 129,
+			},
+			usedTokens: 3 + 120 + 7736 + 129,
+		},
+		{
+			shape: "no cache fields",
+			usage: { input_tokens: 4220, output_tokens: 41 },
+			usedTokens: 4220 + 41,
+		},
+	])(
+		"sums input, output and cache tokens with $shape",
+		({ usage, usedTokens }) => {
+			const result = extractContextUsageFromMessage({
+				...MockChatMessage,
+				usage,
+			});
+			expect(result?.usedTokens).toBe(usedTokens);
+			expect(result?.inputTokens).toBe(usage.input_tokens);
+			expect(result?.outputTokens).toBe(usage.output_tokens);
+			expect(result?.reasoningTokens).toBe(usage.reasoning_tokens);
+			expect(result?.cacheReadTokens).toBe(usage.cache_read_tokens);
+			expect(result?.cacheCreationTokens).toBe(usage.cache_creation_tokens);
+		},
+	);
+
+	it("does not count reasoning tokens reported alone", () => {
+		const result = extractContextUsageFromMessage({
+			...MockChatMessage,
+			usage: { reasoning_tokens: 256, context_limit: 128000 },
 		});
-		const result = extractContextUsageFromMessage(msg);
-		expect(result).not.toBeNull();
-		expect(result!.usedTokens).toBe(10 + 20 + 5 + 3 + 2);
-		expect(result!.inputTokens).toBe(10);
-		expect(result!.outputTokens).toBe(20);
-		expect(result!.reasoningTokens).toBe(5);
-		expect(result!.cacheCreationTokens).toBe(3);
-		expect(result!.cacheReadTokens).toBe(2);
+		expect(result?.usedTokens).toBeUndefined();
+		expect(result?.reasoningTokens).toBe(256);
 	});
 
 	it("includes contextLimitTokens when context_limit is set", () => {
-		const msg = makeMessage({ usage: { context_limit: 128000 } });
+		const msg = { ...MockChatMessage, usage: { context_limit: 128000 } };
 		const result = extractContextUsageFromMessage(msg);
 		expect(result).not.toBeNull();
 		expect(result!.contextLimitTokens).toBe(128000);
 	});
 
 	it("returns usage with only contextLimitTokens and no usedTokens", () => {
-		const msg = makeMessage({ usage: { context_limit: 4096 } });
+		const msg = { ...MockChatMessage, usage: { context_limit: 4096 } };
 		const result = extractContextUsageFromMessage(msg);
 		expect(result).not.toBeNull();
 		expect(result!.usedTokens).toBeUndefined();
@@ -102,35 +130,143 @@ describe("extractContextUsageFromMessage", () => {
 // ---------------------------------------------------------------------------
 
 describe("getLatestContextUsage", () => {
-	it("returns null for an empty message list", () => {
-		expect(getLatestContextUsage([])).toBeNull();
+	const compactionSummaryMessage: TypesGen.ChatMessage = {
+		...MockChatMessage,
+		id: 2,
+		role: "tool",
+		content: [{ type: "tool-result", tool_name: "chat_summarized" }],
+	};
+
+	it("uses the compacted estimate from persisted messages", () => {
+		const messages: TypesGen.ChatMessage[] = [
+			{ ...MockChatMessage, id: 1, usage: { input_tokens: 90000 } },
+			MockChatCompactionMessage,
+		];
+		expect(getLatestContextUsage(messages)).toEqual({
+			usedTokens: 12000,
+			contextLimitTokens: 100000,
+			estimated: true,
+		});
+		expect(getLatestContextUsage(messages, 200000)).toEqual({
+			usedTokens: 12000,
+			contextLimitTokens: 200000,
+			estimated: true,
+		});
 	});
 
-	it("returns null when no messages have usage data", () => {
-		const messages = [makeMessage(), makeMessage({ id: 2 })];
+	it("replaces the estimate with newer measured usage", () => {
+		const result = getLatestContextUsage(
+			[
+				MockChatCompactionMessage,
+				{
+					...MockChatMessage,
+					id: 4,
+					usage: { input_tokens: 15000, context_limit: 200000 },
+				},
+			],
+			100000,
+		);
+		expect(result?.usedTokens).toBe(15000);
+		expect(result?.contextLimitTokens).toBe(200000);
+		expect(result?.estimated).toBeUndefined();
+	});
+
+	it.each([
+		undefined,
+		null,
+		[],
+		{},
+		{ estimated_context_tokens: 0, context_limit_tokens: 100000 },
+		{ estimated_context_tokens: -1, context_limit_tokens: 100000 },
+		{ estimated_context_tokens: 1.5, context_limit_tokens: 100000 },
+		{ estimated_context_tokens: "12000", context_limit_tokens: 100000 },
+		{ estimated_context_tokens: 12000, context_limit_tokens: 0 },
+		{ estimated_context_tokens: 12000 },
+	])(
+		"does not reuse pre-compaction usage for invalid metadata %j",
+		(result) => {
+			const message: TypesGen.ChatMessage = {
+				...MockChatCompactionMessage,
+				content: [
+					{ type: "tool-result", tool_name: "chat_summarized", result },
+				],
+			};
+			expect(
+				getLatestContextUsage([
+					{ ...MockChatMessage, usage: { input_tokens: 90000 } },
+					message,
+				]),
+			).toBeNull();
+		},
+	);
+
+	it.each<TypesGen.ChatMessagePart>([
+		{ type: "tool-call", tool_name: "chat_summarized" },
+		{
+			type: "tool-result",
+			tool_name: "chat_summarized",
+			is_error: true,
+			result: MockChatCompactionMessage.content?.find(
+				(part) => part.type === "tool-result",
+			)?.result,
+		},
+		{ type: "tool-call", tool_name: "chat_cleared" },
+	])("stops at a boundary without successful summary metadata: %j", (part) => {
+		expect(
+			getLatestContextUsage([
+				MockChatCompactionMessage,
+				{ ...MockChatMessage, content: [part] },
+			]),
+		).toBeNull();
+	});
+
+	it("has no usage for an empty chat", () => {
+		expect(getLatestContextUsage([], 200000)).toBeNull();
+	});
+
+	it("returns usage from the newest usage-bearing message", () => {
+		const messages = [
+			{ ...MockChatMessage, id: 1, usage: { input_tokens: 100 } },
+			{ ...MockChatMessage, id: 2 },
+			{ ...MockChatMessage, id: 3, usage: { input_tokens: 300 } },
+		];
+		const result = getLatestContextUsage(messages);
+		expect(result?.inputTokens).toBe(300);
+	});
+
+	it("returns null when a compaction summary is newer than usage", () => {
+		const messages = [
+			{ ...MockChatMessage, id: 1, usage: { input_tokens: 100 } },
+			compactionSummaryMessage,
+		];
 		expect(getLatestContextUsage(messages)).toBeNull();
 	});
 
-	it("returns usage from the last message with usage data", () => {
+	it("returns null when a context clear is newer than usage", () => {
 		const messages = [
-			makeMessage({ id: 1, usage: { input_tokens: 100 } }),
-			makeMessage({ id: 2 }),
-			makeMessage({ id: 3, usage: { input_tokens: 300 } }),
+			{ ...MockChatMessage, id: 1, usage: { input_tokens: 100 } },
+			{
+				...MockChatMessage,
+				id: 2,
+				role: "tool" as const,
+				content: [{ type: "tool-result" as const, tool_name: "chat_cleared" }],
+			},
 		];
-		const result = getLatestContextUsage(messages);
-		expect(result).not.toBeNull();
-		expect(result!.inputTokens).toBe(300);
+		expect(getLatestContextUsage(messages)).toBeNull();
 	});
 
-	it("skips trailing messages without usage and finds the latest one", () => {
+	it("returns null when no messages have usage data", () => {
+		const messages = [MockChatMessage, { ...MockChatMessage, id: 2 }];
+		expect(getLatestContextUsage(messages)).toBeNull();
+	});
+
+	it("returns usage when it is newer than a compaction summary", () => {
 		const messages = [
-			makeMessage({ id: 1, usage: { input_tokens: 50 } }),
-			makeMessage({ id: 2, usage: { input_tokens: 200 } }),
-			makeMessage({ id: 3 }),
+			compactionSummaryMessage,
+			{ ...MockChatMessage, id: 3, usage: { input_tokens: 300 } },
 		];
 		const result = getLatestContextUsage(messages);
-		expect(result).not.toBeNull();
-		expect(result!.inputTokens).toBe(200);
+		expect(result?.inputTokens).toBe(300);
 	});
 });
 
@@ -182,8 +318,8 @@ describe("getParentChatID", () => {
 
 describe("resolveModelFromChatConfig", () => {
 	const options: ModelSelectorOption[] = [
-		makeOption("openai:gpt-4", "openai", "gpt-4"),
-		makeOption("anthropic:claude-3", "anthropic", "claude-3"),
+		buildOption("openai:gpt-4", "openai", "gpt-4"),
+		buildOption("anthropic:claude-3", "anthropic", "claude-3"),
 	];
 
 	it("returns empty string when no model options exist", () => {
@@ -201,40 +337,6 @@ describe("resolveModelFromChatConfig", () => {
 		);
 	});
 
-	it("matches by provider:model combined candidate", () => {
-		// The model field alone doesn't match an option id, but
-		// provider + model concatenated does.
-		const config = { model: "gpt-4", provider: "openai" };
-		expect(resolveModelFromChatConfig(config, options)).toBe("openai:gpt-4");
-	});
-
-	it("falls back to model field match on option.model property", () => {
-		// Neither `model` nor `provider:model` match an option id,
-		// so the function falls through to matching option.model.
-		const altOptions: ModelSelectorOption[] = [
-			makeOption("custom-id-1", "openai", "gpt-4"),
-		];
-		const config = { model: "gpt-4", provider: "openai" };
-		expect(resolveModelFromChatConfig(config, altOptions)).toBe("custom-id-1");
-	});
-
-	it("falls back to model field match ignoring provider when provider is absent", () => {
-		const altOptions: ModelSelectorOption[] = [
-			makeOption("custom-id-1", "openai", "gpt-4"),
-		];
-		const config = { model: "gpt-4" };
-		expect(resolveModelFromChatConfig(config, altOptions)).toBe("custom-id-1");
-	});
-
-	it("respects provider when matching on option.model", () => {
-		const altOptions: ModelSelectorOption[] = [
-			makeOption("id-a", "azure", "gpt-4"),
-			makeOption("id-b", "openai", "gpt-4"),
-		];
-		const config = { model: "gpt-4", provider: "openai" };
-		expect(resolveModelFromChatConfig(config, altOptions)).toBe("id-b");
-	});
-
 	it("returns first option when no match is found", () => {
 		const config = { model: "unknown-model" };
 		expect(resolveModelFromChatConfig(config, options)).toBe("openai:gpt-4");
@@ -250,10 +352,10 @@ describe("resolveModelFromChatConfig", () => {
 // ---------------------------------------------------------------------------
 
 describe("getWorkspaceAgent", () => {
-	const makeAgent = (id: string): TypesGen.WorkspaceAgent =>
+	const buildAgent = (id: string): TypesGen.WorkspaceAgent =>
 		({ id, name: `agent-${id}` }) as TypesGen.WorkspaceAgent;
 
-	const makeWorkspace = (
+	const buildWorkspace = (
 		agents: TypesGen.WorkspaceAgent[],
 	): TypesGen.Workspace =>
 		({
@@ -267,37 +369,33 @@ describe("getWorkspaceAgent", () => {
 	});
 
 	it("returns undefined when there are no agents", () => {
-		const ws = makeWorkspace([]);
+		const ws = buildWorkspace([]);
 		expect(getWorkspaceAgent(ws, "agent-1")).toBeUndefined();
 	});
 
 	it("returns the matching agent by id", () => {
-		const ws = makeWorkspace([makeAgent("a1"), makeAgent("a2")]);
+		const ws = buildWorkspace([buildAgent("a1"), buildAgent("a2")]);
 		expect(getWorkspaceAgent(ws, "a2")).toEqual(
 			expect.objectContaining({ id: "a2" }),
 		);
 	});
 
-	it("returns the first agent when workspaceAgentId does not match", () => {
-		const ws = makeWorkspace([makeAgent("a1"), makeAgent("a2")]);
-		expect(getWorkspaceAgent(ws, "no-match")).toEqual(
-			expect.objectContaining({ id: "a1" }),
-		);
+	it("returns undefined when workspaceAgentId does not match", () => {
+		const ws = buildWorkspace([buildAgent("a1"), buildAgent("a2")]);
+		expect(getWorkspaceAgent(ws, "no-match")).toBeUndefined();
 	});
 
-	it("returns the first agent when workspaceAgentId is undefined", () => {
-		const ws = makeWorkspace([makeAgent("a1")]);
-		expect(getWorkspaceAgent(ws, undefined)).toEqual(
-			expect.objectContaining({ id: "a1" }),
-		);
+	it("returns undefined when workspaceAgentId is undefined", () => {
+		const ws = buildWorkspace([buildAgent("a1")]);
+		expect(getWorkspaceAgent(ws, undefined)).toBeUndefined();
 	});
 
 	it("collects agents from multiple resources", () => {
 		const ws = {
 			latest_build: {
 				resources: [
-					{ agents: [makeAgent("r1-a1")] },
-					{ agents: [makeAgent("r2-a1")] },
+					{ agents: [buildAgent("r1-a1")] },
+					{ agents: [buildAgent("r2-a1")] },
 				],
 			},
 		} as unknown as TypesGen.Workspace;
@@ -309,7 +407,7 @@ describe("getWorkspaceAgent", () => {
 	it("handles resources with no agents array", () => {
 		const ws = {
 			latest_build: {
-				resources: [{ agents: undefined }, { agents: [makeAgent("a1")] }],
+				resources: [{ agents: undefined }, { agents: [buildAgent("a1")] }],
 			},
 		} as unknown as TypesGen.Workspace;
 		expect(getWorkspaceAgent(ws, "a1")).toEqual(

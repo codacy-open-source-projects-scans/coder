@@ -1,25 +1,28 @@
-import { useTheme } from "@emotion/react";
 import {
 	File as FileViewer,
 	type SupportedLanguages,
 } from "@pierre/diffs/react";
-import type { ComponentPropsWithRef, ReactNode } from "react";
+import { cn } from "cn";
 import {
 	type Components,
 	defaultRehypePlugins,
 	Streamdown,
 	type UrlTransform,
 } from "streamdown";
-import { cn } from "#/utils/cn";
+import { CopyButton } from "#/components/CopyButton/CopyButton";
+import { ScrollArea } from "#/components/ScrollArea/ScrollArea";
+import { useTheme } from "#/theme/context";
+import { MarkdownImage } from "./MarkdownImage";
+import { MermaidDiagram } from "./MermaidDiagram";
 
-interface ResponseProps extends Omit<ComponentPropsWithRef<"div">, "children"> {
+type ResponseProps = Omit<React.ComponentProps<"div">, "children"> & {
 	children: string;
 	urlTransform?: UrlTransform;
 	/** Enable streaming-mode Streamdown with incomplete-markdown
-	 * preprocessing (remend) and useTransition-based render
-	 * scheduling. Pass true only for live-streaming output. */
+	 * preprocessing (remend). Pass true only for live-streaming
+	 * output. */
 	streaming?: boolean;
-}
+};
 
 // Omit rehype-raw so HTML-like syntax in LLM output is rendered as
 // escaped text instead of being parsed by the HTML5 engine. Without
@@ -30,14 +33,6 @@ const chatRehypePlugins = [
 	defaultRehypePlugins.sanitize,
 	defaultRehypePlugins.harden,
 ];
-
-const fileViewerCSS =
-	"pre, [data-line], [data-diffs-header] { background-color: transparent !important; }";
-
-const fileViewerTheme = {
-	light: "github-light",
-	dark: "github-dark-high-contrast",
-} as const;
 
 type HastNode = {
 	type?: string;
@@ -51,15 +46,15 @@ type HastNode = {
 
 type MarkdownComponentProps = {
 	href?: string;
-	children?: ReactNode;
+	src?: string;
+	alt?: string;
+	children?: React.ReactNode;
 	node?: HastNode;
 	type?: string;
 	checked?: boolean;
 	disabled?: boolean;
 	className?: string;
 };
-
-type FileViewerThemeType = "light" | "dark";
 
 /**
  * Recursively extracts text from a HAST node tree. This is plain
@@ -84,6 +79,29 @@ const getClassNames = (className: string[] | string | undefined): string[] => {
 	return className.filter(
 		(classToken): classToken is string => typeof classToken === "string",
 	);
+};
+
+const fileViewerTheme = {
+	light: "github-light",
+	dark: "github-dark-high-contrast",
+} as const;
+
+type FileViewerThemeType = keyof typeof fileViewerTheme;
+
+const markdownFileViewerCSS = [
+	":host { background-color: transparent !important; }",
+	"pre, [data-code], [data-line], [data-diffs-header] { background-color: transparent !important; }",
+	"[data-code] { padding-block: 8px !important; overflow: visible !important; }",
+	"[data-disable-line-numbers][data-file] { --diffs-grid-number-column-width: 0px !important; }",
+	"[data-disable-line-numbers] [data-column-number] { min-width: 0 !important; padding: 0 !important; }",
+	"[data-line] { min-height: 20px !important; padding-inline: 12px 40px !important; }",
+].join(" ");
+
+const markdownFileViewerStyle = {
+	"--diffs-font-family": '"Geist Mono Variable", monospace, monospace',
+	"--diffs-header-font-family": '"Geist Variable", system-ui, sans-serif',
+	"--diffs-font-size": "12px",
+	"--diffs-line-height": "20px",
 };
 
 const createComponents = (
@@ -148,7 +166,7 @@ const createComponents = (
 						"align-middle relative -top-px",
 						checked
 							? "border-content-link bg-content-link text-white"
-							: "border-border-default bg-surface-primary",
+							: "border-border bg-surface-primary",
 					)}
 				>
 					{checked && (
@@ -170,10 +188,16 @@ const createComponents = (
 			);
 		},
 
-		// Horizontal rule: reset browser default inset/ridge border
-		// (preflight is disabled) to a clean 1px solid line.
+		// Gate externally hosted images behind viewer consent so
+		// rendering a chat never discloses the viewer's IP address
+		// to an attacker-controlled host (Cure53 CDM-02-006).
+		img: ({ src, alt }: MarkdownComponentProps) => (
+			<MarkdownImage src={src} alt={alt} />
+		),
+		// Horizontal rule: render a clean 1px solid line using theme
+		// tokens instead of the default border.
 		hr: () => (
-			<hr className="my-6 border-0 border-t border-solid border-border-default" />
+			<hr className="my-6 border-0 border-t border-solid border-border" />
 		),
 		// Table cells: streamdown defaults to text-sm (14px).
 		// Drop the explicit size so cells inherit the 13px base.
@@ -185,14 +209,12 @@ const createComponents = (
 		td: ({ children }: MarkdownComponentProps) => (
 			<td className="px-4 py-2">{children}</td>
 		),
-		// Inline code only — fenced blocks are handled by the pre override.
+		// Inline code only, fenced blocks are handled by the pre override.
 		code: ({ children }: MarkdownComponentProps) => (
 			<code className="rounded bg-surface-quaternary/25 px-1 py-0.5 font-mono text-content-primary">
 				{children}
 			</code>
 		),
-		// Fenced code blocks: extract language and content from the HAST
-		// node directly (plain data), then render with FileViewer.
 		pre: ({ node }: MarkdownComponentProps) => {
 			const codeChild = node?.children?.[0];
 			if (codeChild?.tagName === "code") {
@@ -200,40 +222,66 @@ const createComponents = (
 				const langClass = classes.find((c: string) =>
 					c.startsWith("language-"),
 				);
-				const lang = langClass ? langClass.replace("language-", "") : "text";
+				const lang = langClass?.replace(/^language-/, "") ?? "text";
 				const content = getHastText(codeChild).trimEnd();
 				if (content) {
-					return (
-						<div className="my-4 overflow-hidden rounded-xl border border-solid border-border-default text-2xs">
-							<FileViewer
-								file={{
-									name: `block.${lang}`,
-									lang: lang as SupportedLanguages,
-									contents: content,
-									cacheKey: content,
-								}}
-								options={{
-									overflow: "scroll",
-									themeType: fileViewerThemeType,
-									disableFileHeader: true,
-									disableLineNumbers: true,
-									theme: viewerTheme,
-									unsafeCSS: fileViewerCSS,
-								}}
+					const isMermaid = lang === "mermaid";
+					// Shiki has no Mermaid grammar and the viewer renders
+					// nothing for unknown languages, so the fallback source
+					// view is highlighted as plain text.
+					const viewerLang: SupportedLanguages = isMermaid
+						? "text"
+						: (lang as SupportedLanguages);
+					// MermaidDiagram's error fallback strips the margin, border
+					// and rounding from its direct child, so the frame must stay
+					// on the outermost element rather than the ScrollArea.
+					const codeBlock = (
+						<div className="group/code-block relative my-4 overflow-hidden rounded-md border border-solid border-border bg-surface-primary">
+							<ScrollArea
+								orientation="both"
+								scrollBarClassName="w-1.5"
+								horizontalScrollBarClassName="h-1.5"
+							>
+								<FileViewer
+									file={{
+										name: `block.${viewerLang}`,
+										lang: viewerLang,
+										contents: content,
+										cacheKey: content,
+									}}
+									options={{
+										overflow: "scroll",
+										themeType: fileViewerThemeType,
+										disableFileHeader: true,
+										disableLineNumbers: true,
+										theme: viewerTheme,
+										unsafeCSS: markdownFileViewerCSS,
+									}}
+									style={markdownFileViewerStyle}
+								/>
+							</ScrollArea>
+							<CopyButton
+								text={content}
+								label="Copy code"
+								className="absolute right-1.5 top-1.5 z-20 size-6 bg-surface-primary p-0 opacity-0 transition-opacity hover:bg-surface-tertiary group-hover/code-block:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100"
 							/>
 						</div>
 					);
+					if (isMermaid) {
+						return <MermaidDiagram source={content} fallback={codeBlock} />;
+					}
+					return codeBlock;
 				}
 			}
-			return <pre>{node?.children?.map?.(() => null)}</pre>;
+			return <pre>{getHastText(node)}</pre>;
 		},
 	};
 };
 
 // Precompute component maps for both themes at module scope so
-// every Response instance shares the same stable references.
-// This prevents Streamdown from discarding its cached render
-// tree on each parent re-render.
+// every Response instance shares the same stable references. This
+// prevents Streamdown from discarding its cached render tree on each
+// parent re-render.
 const componentsByTheme: Record<FileViewerThemeType, Components> = {
 	light: createComponents("light", fileViewerTheme.light),
 	dark: createComponents("dark", fileViewerTheme.dark),
@@ -268,6 +316,15 @@ export const Response = ({
 				rehypePlugins={chatRehypePlugins}
 				mode={streaming ? "streaming" : "static"}
 				parseIncompleteMarkdown={streaming}
+				// Streamdown only flags the trailing block as an
+				// incomplete code fence while isAnimating is set, which
+				// MermaidDiagram relies on to defer rendering.
+				isAnimating={streaming}
+				// Streamdown 2.6 caps table height at 300px by
+				// default, even with controls disabled. Chat tables
+				// should grow with their content instead of
+				// scrolling internally.
+				tableMaxHeight={0}
 			>
 				{children}
 			</Streamdown>

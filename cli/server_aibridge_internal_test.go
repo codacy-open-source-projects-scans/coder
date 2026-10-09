@@ -1,286 +1,277 @@
 package cli
 
 import (
-	"fmt"
+	"bytes"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/trace/noop"
 
 	"cdr.dev/slog/v3"
-	"cdr.dev/slog/v3/sloggers/slogtest"
 	"github.com/coder/coder/v2/aibridge"
+	"github.com/coder/coder/v2/aibridge/headers"
+	"github.com/coder/coder/v2/aibridge/recorder"
+	"github.com/coder/coder/v2/coderd/aibridged/proto"
+	"github.com/coder/coder/v2/coderd/database"
 	"github.com/coder/coder/v2/codersdk"
 	"github.com/coder/coder/v2/testutil"
+	"github.com/coder/serpent"
 )
 
-func TestReadAIBridgeProvidersFromEnv(t *testing.T) {
+func TestBuildProviderFromProtoSetsAPIDumpDir(t *testing.T) {
 	t.Parallel()
 
+	const dumpDir = "/tmp/coder-aibridge-dumps"
+
 	tests := []struct {
-		name        string
-		env         []string
-		expected    []codersdk.AIBridgeProviderConfig
-		errContains string
+		name         string
+		provider     *proto.AIProvider
+		expectedType string
 	}{
 		{
-			name: "Empty",
-			env:  []string{"HOME=/home/frodo"},
+			name: "OpenAI",
+			provider: &proto.AIProvider{
+				Enabled: true,
+				Type:    string(database.AIProviderTypeOpenai),
+				Name:    "openai",
+				BaseUrl: "https://api.openai.com/",
+			},
+			expectedType: aibridge.ProviderOpenAI,
 		},
 		{
-			name: "SingleProvider",
-			env: []string{
-				"CODER_AIBRIDGE_PROVIDER_0_TYPE=anthropic",
-				"CODER_AIBRIDGE_PROVIDER_0_NAME=anthropic-zdr",
-				"CODER_AIBRIDGE_PROVIDER_0_KEY=sk-ant-xxx",
-				"CODER_AIBRIDGE_PROVIDER_0_BASE_URL=https://api.anthropic.com/",
+			name: "Anthropic",
+			provider: &proto.AIProvider{
+				Enabled: true,
+				Type:    string(database.AIProviderTypeAnthropic),
+				Name:    "anthropic",
+				BaseUrl: "https://api.anthropic.com/",
 			},
-			expected: []codersdk.AIBridgeProviderConfig{
-				{
-					Type:    aibridge.ProviderAnthropic,
-					Name:    "anthropic-zdr",
-					Key:     "sk-ant-xxx",
-					BaseURL: "https://api.anthropic.com/",
+			expectedType: aibridge.ProviderAnthropic,
+		},
+		{
+			name: "Copilot",
+			provider: &proto.AIProvider{
+				Enabled: true,
+				Type:    string(database.AIProviderTypeCopilot),
+				Name:    "copilot",
+				BaseUrl: "https://api.githubcopilot.com/",
+			},
+			expectedType: aibridge.ProviderCopilot,
+		},
+		{
+			name: "Azure",
+			provider: &proto.AIProvider{
+				Enabled: true,
+				Type:    string(database.AIProviderTypeAzure),
+				Name:    "azure",
+				BaseUrl: "https://example.openai.azure.com/",
+			},
+			expectedType: aibridge.ProviderOpenAI,
+		},
+		{
+			name: "Google",
+			provider: &proto.AIProvider{
+				Enabled: true,
+				Type:    string(database.AIProviderTypeGoogle),
+				Name:    "google",
+				BaseUrl: "https://generativelanguage.googleapis.com/v1beta/openai/",
+			},
+			expectedType: aibridge.ProviderOpenAI,
+		},
+		{
+			name: "OpenAICompat",
+			provider: &proto.AIProvider{
+				Enabled: true,
+				Type:    string(database.AIProviderTypeOpenaiCompat),
+				Name:    "openai-compat",
+				BaseUrl: "https://compat.example.com/v1/",
+			},
+			expectedType: aibridge.ProviderOpenAI,
+		},
+		{
+			name: "OpenRouter",
+			provider: &proto.AIProvider{
+				Enabled: true,
+				Type:    string(database.AIProviderTypeOpenrouter),
+				Name:    "openrouter",
+				BaseUrl: "https://openrouter.ai/api/v1/",
+			},
+			expectedType: aibridge.ProviderOpenAI,
+		},
+		{
+			name: "Vercel",
+			provider: &proto.AIProvider{
+				Enabled: true,
+				Type:    string(database.AIProviderTypeVercel),
+				Name:    "vercel",
+				BaseUrl: "https://api.v0.dev/v1/",
+			},
+			expectedType: aibridge.ProviderOpenAI,
+		},
+		{
+			name: "Bedrock",
+			provider: &proto.AIProvider{
+				Enabled: true,
+				Type:    string(database.AIProviderTypeBedrock),
+				Name:    "bedrock",
+				BaseUrl: "https://bedrock-runtime.us-east-1.amazonaws.com/",
+				Bedrock: &proto.AIProviderKindBedrock{
+					Region:          "us-east-1",
+					AccessKey:       "AKID",
+					AccessKeySecret: "secret",
+					Model:           "anthropic.claude-3-5-sonnet-20241022-v2:0",
+					SmallFastModel:  "anthropic.claude-3-5-haiku-20241022-v1:0",
 				},
 			},
-		},
-		{
-			name: "MultipleProvidersSameType",
-			env: []string{
-				"CODER_AIBRIDGE_PROVIDER_0_TYPE=anthropic",
-				"CODER_AIBRIDGE_PROVIDER_0_NAME=anthropic-us",
-				"CODER_AIBRIDGE_PROVIDER_1_TYPE=anthropic",
-				"CODER_AIBRIDGE_PROVIDER_1_NAME=anthropic-eu",
-				"CODER_AIBRIDGE_PROVIDER_1_BASE_URL=https://eu.api.anthropic.com/",
-			},
-			expected: []codersdk.AIBridgeProviderConfig{
-				{Type: aibridge.ProviderAnthropic, Name: "anthropic-us"},
-				{Type: aibridge.ProviderAnthropic, Name: "anthropic-eu", BaseURL: "https://eu.api.anthropic.com/"},
-			},
-		},
-		{
-			name: "DefaultName",
-			env: []string{
-				"CODER_AIBRIDGE_PROVIDER_0_TYPE=openai",
-			},
-			expected: []codersdk.AIBridgeProviderConfig{
-				{Type: aibridge.ProviderOpenAI, Name: aibridge.ProviderOpenAI},
-			},
-		},
-		{
-			name: "MixedTypes",
-			env: []string{
-				"CODER_AIBRIDGE_PROVIDER_0_TYPE=anthropic",
-				"CODER_AIBRIDGE_PROVIDER_0_NAME=anthropic-main",
-				"CODER_AIBRIDGE_PROVIDER_1_TYPE=openai",
-				"CODER_AIBRIDGE_PROVIDER_2_TYPE=copilot",
-				"CODER_AIBRIDGE_PROVIDER_2_NAME=copilot-custom",
-				"CODER_AIBRIDGE_PROVIDER_2_BASE_URL=https://custom.copilot.com",
-			},
-			expected: []codersdk.AIBridgeProviderConfig{
-				{Type: aibridge.ProviderAnthropic, Name: "anthropic-main"},
-				{Type: aibridge.ProviderOpenAI, Name: aibridge.ProviderOpenAI},
-				{Type: aibridge.ProviderCopilot, Name: "copilot-custom", BaseURL: "https://custom.copilot.com"},
-			},
-		},
-		{
-			name: "BedrockFields",
-			env: []string{
-				"CODER_AIBRIDGE_PROVIDER_0_TYPE=anthropic",
-				"CODER_AIBRIDGE_PROVIDER_0_NAME=anthropic-bedrock",
-				"CODER_AIBRIDGE_PROVIDER_0_BEDROCK_REGION=us-west-2",
-				"CODER_AIBRIDGE_PROVIDER_0_BEDROCK_ACCESS_KEY=AKID",
-				"CODER_AIBRIDGE_PROVIDER_0_BEDROCK_ACCESS_KEY_SECRET=secret",
-				"CODER_AIBRIDGE_PROVIDER_0_BEDROCK_MODEL=anthropic.claude-3-sonnet",
-				"CODER_AIBRIDGE_PROVIDER_0_BEDROCK_SMALL_FAST_MODEL=anthropic.claude-3-haiku",
-				"CODER_AIBRIDGE_PROVIDER_0_BEDROCK_BASE_URL=https://bedrock.us-west-2.amazonaws.com",
-			},
-			expected: []codersdk.AIBridgeProviderConfig{
-				{
-					Type:                   aibridge.ProviderAnthropic,
-					Name:                   "anthropic-bedrock",
-					BedrockRegion:          "us-west-2",
-					BedrockAccessKey:       "AKID",
-					BedrockAccessKeySecret: "secret",
-					BedrockModel:           "anthropic.claude-3-sonnet",
-					BedrockSmallFastModel:  "anthropic.claude-3-haiku",
-					BedrockBaseURL:         "https://bedrock.us-west-2.amazonaws.com",
-				},
-			},
-		},
-		{
-			name: "OutOfOrderIndices",
-			env: []string{
-				"CODER_AIBRIDGE_PROVIDER_1_TYPE=anthropic",
-				"CODER_AIBRIDGE_PROVIDER_1_NAME=second",
-				"CODER_AIBRIDGE_PROVIDER_0_TYPE=openai",
-				"CODER_AIBRIDGE_PROVIDER_0_NAME=first",
-			},
-			expected: []codersdk.AIBridgeProviderConfig{
-				{Type: aibridge.ProviderOpenAI, Name: "first"},
-				{Type: aibridge.ProviderAnthropic, Name: "second"},
-			},
-		},
-		{
-			name:        "SkippedIndex",
-			env:         []string{"CODER_AIBRIDGE_PROVIDER_0_TYPE=openai", "CODER_AIBRIDGE_PROVIDER_2_TYPE=anthropic"},
-			errContains: "skipped",
-		},
-		{
-			name:        "InvalidKey",
-			env:         []string{"CODER_AIBRIDGE_PROVIDER_XXX_TYPE=openai"},
-			errContains: "parse number",
-		},
-		{
-			name:        "MissingType",
-			env:         []string{"CODER_AIBRIDGE_PROVIDER_0_NAME=my-provider", "CODER_AIBRIDGE_PROVIDER_0_KEY=sk-xxx"},
-			errContains: "TYPE is required",
-		},
-		{
-			name:        "InvalidType",
-			env:         []string{"CODER_AIBRIDGE_PROVIDER_0_TYPE=gemini"},
-			errContains: "unknown TYPE",
-		},
-		{
-			name: "DuplicateExplicitNames",
-			env: []string{
-				"CODER_AIBRIDGE_PROVIDER_0_TYPE=anthropic",
-				"CODER_AIBRIDGE_PROVIDER_0_NAME=my-provider",
-				"CODER_AIBRIDGE_PROVIDER_1_TYPE=openai",
-				"CODER_AIBRIDGE_PROVIDER_1_NAME=my-provider",
-			},
-			errContains: "duplicate NAME",
-		},
-		{
-			name:        "DuplicateDefaultNames",
-			env:         []string{"CODER_AIBRIDGE_PROVIDER_0_TYPE=anthropic", "CODER_AIBRIDGE_PROVIDER_1_TYPE=anthropic"},
-			errContains: "duplicate NAME",
-		},
-		{
-			name:        "BedrockFieldsOnNonAnthropic",
-			env:         []string{"CODER_AIBRIDGE_PROVIDER_0_TYPE=openai", "CODER_AIBRIDGE_PROVIDER_0_BEDROCK_REGION=us-west-2"},
-			errContains: "BEDROCK_* fields are only supported with TYPE",
-		},
-		{
-			name: "IgnoresUnrelatedEnvVars",
-			env: []string{
-				"CODER_AIBRIDGE_OPENAI_KEY=should-be-ignored",
-				"CODER_AIBRIDGE_ANTHROPIC_KEY=also-ignored",
-				"CODER_AIBRIDGE_PROVIDER_0_TYPE=openai",
-				"CODER_AIBRIDGE_PROVIDER_0_KEY=sk-xxx",
-				"SOME_OTHER_VAR=hello",
-			},
-			expected: []codersdk.AIBridgeProviderConfig{
-				{Type: aibridge.ProviderOpenAI, Name: aibridge.ProviderOpenAI, Key: "sk-xxx"},
-			},
-		},
-		{
-			// KEYS, BEDROCK_ACCESS_KEYS, and BEDROCK_ACCESS_KEY_SECRETS
-			// are plural aliases for their singular counterparts.
-			name: "PluralKeyAliases",
-			env: []string{
-				"CODER_AIBRIDGE_PROVIDER_0_TYPE=anthropic",
-				"CODER_AIBRIDGE_PROVIDER_0_KEYS=sk-ant-xxx",
-				"CODER_AIBRIDGE_PROVIDER_0_BEDROCK_ACCESS_KEYS=AKID",
-				"CODER_AIBRIDGE_PROVIDER_0_BEDROCK_ACCESS_KEY_SECRETS=secret",
-			},
-			expected: []codersdk.AIBridgeProviderConfig{
-				{
-					Type:                   aibridge.ProviderAnthropic,
-					Name:                   aibridge.ProviderAnthropic,
-					Key:                    "sk-ant-xxx",
-					BedrockAccessKey:       "AKID",
-					BedrockAccessKeySecret: "secret",
-				},
-			},
-		},
-		{
-			name: "ConflictKeyAndKeys",
-			env: []string{
-				"CODER_AIBRIDGE_PROVIDER_0_TYPE=openai",
-				"CODER_AIBRIDGE_PROVIDER_0_KEY=sk-single",
-				"CODER_AIBRIDGE_PROVIDER_0_KEYS=sk-multi",
-			},
-			errContains: "KEY and KEYS are mutually exclusive",
-		},
-		{
-			name: "ConflictBedrockAccessKeyAndKeys",
-			env: []string{
-				"CODER_AIBRIDGE_PROVIDER_0_TYPE=anthropic",
-				"CODER_AIBRIDGE_PROVIDER_0_BEDROCK_ACCESS_KEY=AKID1",
-				"CODER_AIBRIDGE_PROVIDER_0_BEDROCK_ACCESS_KEYS=AKID2",
-			},
-			errContains: "BEDROCK_ACCESS_KEY and BEDROCK_ACCESS_KEYS are mutually exclusive",
-		},
-		{
-			name: "ConflictBedrockSecretAndSecrets",
-			env: []string{
-				"CODER_AIBRIDGE_PROVIDER_0_TYPE=anthropic",
-				"CODER_AIBRIDGE_PROVIDER_0_BEDROCK_ACCESS_KEY_SECRET=s1",
-				"CODER_AIBRIDGE_PROVIDER_0_BEDROCK_ACCESS_KEY_SECRETS=s2",
-			},
-			errContains: "BEDROCK_ACCESS_KEY_SECRET and BEDROCK_ACCESS_KEY_SECRETS are mutually exclusive",
+			expectedType: aibridge.ProviderBedrock,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			providers, err := ReadAIBridgeProvidersFromEnv(slogtest.Make(t, nil), tt.env)
-			if tt.errContains != "" {
-				require.Error(t, err)
-				assert.Contains(t, err.Error(), tt.errContains)
-				return
-			}
+
+			provider, err := buildProvider(t.Context(), protoToProviderSpec(tt.provider), codersdk.AIBridgeConfig{
+				AllowBYOK:  serpent.Bool(true),
+				APIDumpDir: serpent.String(dumpDir),
+			}, slog.Make(), nil)
 			require.NoError(t, err)
-			require.Equal(t, tt.expected, providers)
+			assert.Equal(t, dumpDir, provider.APIDumpDir())
+			assert.Equal(t, tt.expectedType, provider.Type())
 		})
 	}
+}
 
-	// Cases below need special setup that doesn't fit the table above.
+func TestBuildProviderActorHeaders(t *testing.T) {
+	t.Parallel()
 
-	t.Run("MultiDigitIndices", func(t *testing.T) {
-		t.Parallel()
-		// Indices 0, 1, 2, ..., 10 — verifies that 10 sorts after 2,
-		// not between 1 and 2 as a lexicographic sort would do.
-		var env []string
-		var expected []codersdk.AIBridgeProviderConfig
-		for i := range 11 {
-			env = append(env,
-				fmt.Sprintf("CODER_AIBRIDGE_PROVIDER_%d_TYPE=openai", i),
-				fmt.Sprintf("CODER_AIBRIDGE_PROVIDER_%d_KEY=sk-%d", i, i),
-				fmt.Sprintf("CODER_AIBRIDGE_PROVIDER_%d_NAME=p%d", i, i),
-			)
-			expected = append(expected, codersdk.AIBridgeProviderConfig{
-				Type: aibridge.ProviderOpenAI,
-				Name: fmt.Sprintf("p%d", i),
-				Key:  fmt.Sprintf("sk-%d", i),
-			})
-		}
-		providers, err := ReadAIBridgeProvidersFromEnv(slogtest.Make(t, nil), env)
-		require.NoError(t, err)
-		require.Equal(t, expected, providers)
-	})
+	actorID := uuid.MustParse("6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b")
+	const (
+		actorAPIKeyID    = "authenticated-api-key-id"
+		actorUsername    = "authenticated-username"
+		actorEmail       = "authenticated@example.com"
+		clientID         = "client-user"
+		clientName       = "client-username"
+		customIDHeader   = "X-Downstream-User-ID"
+		customNameHeader = "X-Downstream-Username"
+		customMailHeader = "X-Downstream-Email"
+	)
 
-	t.Run("UnknownFieldWarnsButSucceeds", func(t *testing.T) {
-		t.Parallel()
-		// A typo like TPYE instead of TYPE should not prevent startup;
-		// the function logs a warning and continues.
-		sink := testutil.NewFakeSink(t)
-		providers, err := ReadAIBridgeProvidersFromEnv(sink.Logger(), []string{
-			"CODER_AIBRIDGE_PROVIDER_0_TYPE=openai",
-			"CODER_AIBRIDGE_PROVIDER_0_TPYE=openai",
+	tests := []struct {
+		name              string
+		providerType      database.AIProviderType
+		sendActorHeaders  bool
+		actorHeaderID     string
+		actorHeaderName   string
+		actorHeaderEmail  string
+		wantCustomHeaders bool
+	}{
+		{
+			name:             "disabled with configured destinations",
+			providerType:     database.AIProviderTypeOpenai,
+			actorHeaderID:    customIDHeader,
+			actorHeaderName:  customNameHeader,
+			actorHeaderEmail: customMailHeader,
+		},
+		{
+			name:             "enabled with empty destinations",
+			providerType:     database.AIProviderTypeOpenai,
+			sendActorHeaders: true,
+		},
+		{
+			name:              "enabled with selected destinations",
+			providerType:      database.AIProviderTypeOpenai,
+			sendActorHeaders:  true,
+			actorHeaderID:     customIDHeader,
+			actorHeaderName:   customNameHeader,
+			actorHeaderEmail:  customMailHeader,
+			wantCustomHeaders: true,
+		},
+		{
+			name:             "Copilot ignores configured destinations",
+			providerType:     database.AIProviderTypeCopilot,
+			sendActorHeaders: true,
+			actorHeaderID:    customIDHeader,
+			actorHeaderName:  customNameHeader,
+			actorHeaderEmail: customMailHeader,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			upstreamHeaders := make(chan http.Header, 1)
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				upstreamHeaders <- r.Header.Clone()
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"id":"chatcmpl-test","object":"chat.completion","choices":[]}`))
+			}))
+			t.Cleanup(upstream.Close)
+
+			provider, err := buildProvider(t.Context(), aiProviderSpec{
+				Type:    tt.providerType,
+				Name:    string(tt.providerType),
+				Enabled: true,
+				BaseURL: upstream.URL,
+				Keys:    []string{"upstream-key"},
+			}, codersdk.AIBridgeConfig{
+				SendActorHeaders:    serpent.Bool(tt.sendActorHeaders),
+				ActorHeaderID:       serpent.String(tt.actorHeaderID),
+				ActorHeaderUsername: serpent.String(tt.actorHeaderName),
+				ActorHeaderEmail:    serpent.String(tt.actorHeaderEmail),
+			}, slog.Make(), nil)
+			require.NoError(t, err)
+
+			request := httptest.NewRequest(http.MethodPost, provider.RoutePrefix()+"/chat/completions", bytes.NewBufferString(`{"model":"gpt-4","messages":[],"stream":false}`))
+			request = request.WithContext(aibridge.AsActor(request.Context(), aibridge.Actor{ID: actorID, APIKeyID: actorAPIKeyID, Username: actorUsername, Email: actorEmail}))
+			request.Header.Set("Authorization", "Bearer client-key")
+			request.Header.Set(headers.ActorIDHeader, clientID)
+			request.Header.Set(headers.ActorMetadataHeader("Username"), clientName)
+
+			interceptor, err := provider.CreateInterceptor(httptest.NewRecorder(), request, noop.NewTracerProvider().Tracer("test"))
+			require.NoError(t, err)
+			interceptor.Setup(slog.Make(), recorder.NewLogRecorder(slog.Make(), false, nil), nil)
+
+			processRequest := httptest.NewRequest(http.MethodPost, provider.RoutePrefix()+"/chat/completions", bytes.NewBufferString(`{"model":"gpt-4","messages":[],"stream":false}`)).WithContext(request.Context())
+			response := httptest.NewRecorder()
+			require.NoError(t, interceptor.ProcessRequest(response, processRequest))
+
+			receivedHeaders := testutil.TryReceive(testutil.Context(t, testutil.WaitShort), t, upstreamHeaders)
+			if tt.wantCustomHeaders {
+				assert.Equal(t, actorID.String(), receivedHeaders.Get(customIDHeader))
+				assert.Equal(t, actorUsername, receivedHeaders.Get(customNameHeader))
+				assert.Equal(t, actorEmail, receivedHeaders.Get(customMailHeader))
+			} else {
+				assert.NotContains(t, receivedHeaders, http.CanonicalHeaderKey(customIDHeader))
+				assert.NotContains(t, receivedHeaders, customNameHeader)
+				assert.NotContains(t, receivedHeaders, customMailHeader)
+			}
+			// Client actor headers never reach the upstream.
+			assert.NotContains(t, receivedHeaders, http.CanonicalHeaderKey(headers.ActorIDHeader))
+			assert.NotContains(t, receivedHeaders, http.CanonicalHeaderKey(headers.ActorMetadataHeader("Username")))
+			for name, values := range receivedHeaders {
+				assert.NotContains(t, values, actorAPIKeyID, "the actor API key ID must never be forwarded in %s", name)
+			}
 		})
-		require.NoError(t, err)
-		require.Equal(t, []codersdk.AIBridgeProviderConfig{
-			{Type: aibridge.ProviderOpenAI, Name: aibridge.ProviderOpenAI},
-		}, providers)
+	}
+}
 
-		warnings := sink.Entries(func(e slog.SinkEntry) bool {
-			return e.Message == "ignoring unknown aibridge provider field (check for typos)"
-		})
-		require.Len(t, warnings, 1)
-		require.Len(t, warnings[0].Fields, 1)
-		assert.Equal(t, "CODER_AIBRIDGE_PROVIDER_0_TPYE", warnings[0].Fields[0].Value)
-	})
+func TestBuildProviderFromProtoBedrockWithoutSettings(t *testing.T) {
+	t.Parallel()
+
+	_, err := buildProvider(t.Context(), protoToProviderSpec(&proto.AIProvider{
+		Enabled: true,
+		Type:    string(database.AIProviderTypeBedrock),
+		Name:    "bedrock-no-settings",
+		BaseUrl: "https://bedrock-runtime.us-east-1.amazonaws.com/",
+	}), codersdk.AIBridgeConfig{
+		AllowBYOK: serpent.Bool(true),
+	}, slog.Make(), nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "bedrock provider has no bedrock credentials configured")
 }

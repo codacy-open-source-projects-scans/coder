@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { fn } from "storybook/test";
+import { fn, screen, userEvent, within } from "storybook/test";
 import { Table, TableBody } from "#/components/Table/Table";
 import { MockSession } from "#/testHelpers/entities";
 import { ListSessionsRow } from "./ListSessionsRow";
@@ -27,6 +27,38 @@ type Story = StoryObj<typeof ListSessionsRow>;
 export const Default: Story = {
 	args: {
 		session: MockSession,
+	},
+};
+
+export const SingleProvider: Story = {
+	args: {
+		session: {
+			...MockSession,
+			providers: ["anthropic"],
+		},
+	},
+};
+
+export const MultipleProviders: Story = {
+	args: {
+		session: {
+			...MockSession,
+			providers: ["anthropic", "openai", "copilot"],
+		},
+	},
+	play: async ({ canvasElement }) => {
+		const canvas = within(canvasElement);
+		await userEvent.hover(canvas.getByRole("button", { name: "3 providers" }));
+		await screen.findByRole("tooltip");
+	},
+};
+
+export const EmptyProviders: Story = {
+	args: {
+		session: {
+			...MockSession,
+			providers: [],
+		},
 	},
 };
 
@@ -78,5 +110,29 @@ export const LargeTokenCounts: Story = {
 				cache_write_input_tokens: 12_000,
 			},
 		},
+	},
+};
+
+export const NetworkCallsBlocked: Story = {
+	args: {
+		session: {
+			...MockSession,
+			network_calls: { total: 23, blocked: 2 },
+		},
+	},
+};
+
+export const NoNetworkActivity: Story = {
+	args: {
+		session: {
+			...MockSession,
+			network_calls: { total: 0, blocked: 0 },
+		},
+	},
+};
+
+export const NetworkDisabled: Story = {
+	args: {
+		session: { ...MockSession, network_calls: undefined },
 	},
 };

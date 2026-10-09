@@ -1,3 +1,4 @@
+import { cn } from "cn";
 import {
 	ChevronLeftIcon,
 	ExternalLinkIcon,
@@ -6,7 +7,7 @@ import {
 	TriangleAlertIcon,
 	XIcon,
 } from "lucide-react";
-import { type FC, useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
 	Link as RouterLink,
 	useNavigate,
@@ -51,7 +52,6 @@ import { TemplateFileTree } from "#/modules/templates/TemplateFiles/TemplateFile
 import { TemplateResourcesTable } from "#/modules/templates/TemplateResourcesTable/TemplateResourcesTable";
 import { WorkspaceBuildLogs } from "#/modules/workspaces/WorkspaceBuildLogs/WorkspaceBuildLogs";
 import type { PublishVersionData } from "#/pages/TemplateVersionEditorPage/types";
-import { cn } from "#/utils/cn";
 import {
 	createFile,
 	existsFile,
@@ -75,10 +75,11 @@ import { TemplateVersionStatusBadge } from "./TemplateVersionStatusBadge";
 
 type Tab = "logs" | "resources" | undefined; // Undefined is to hide the tab
 
-interface TemplateVersionEditorProps {
+type TemplateVersionEditorProps = {
 	template: Template;
 	templateVersion: TemplateVersion;
-	defaultFileTree: FileTree;
+	fileTree: FileTree;
+	onFileTreeChange: (updater: (fileTree: FileTree) => FileTree) => void;
 	buildLogs?: ProvisionerJobLog[];
 	resources?: WorkspaceResource[];
 	isBuilding: boolean;
@@ -89,7 +90,7 @@ interface TemplateVersionEditorProps {
 	onCancelPublish: () => void;
 	publishingError?: unknown;
 	publishedVersion?: TemplateVersion;
-	onCreateWorkspace: () => void;
+	createWorkspaceUrl: string | undefined;
 	isAskingPublishParameters: boolean;
 	isPromptingMissingVariables: boolean;
 	isPublishing: boolean;
@@ -101,14 +102,15 @@ interface TemplateVersionEditorProps {
 	onUpdateProvisionerTags: (tags: Record<string, string>) => void;
 	activePath: string | undefined;
 	onActivePathChange: (path: string | undefined) => void;
-}
+};
 
-export const TemplateVersionEditor: FC<TemplateVersionEditorProps> = ({
+export const TemplateVersionEditor: React.FC<TemplateVersionEditorProps> = ({
 	isBuilding,
 	canPublish,
 	template,
 	templateVersion,
-	defaultFileTree,
+	fileTree,
+	onFileTreeChange,
 	onPreview,
 	onPublish,
 	onConfirmPublish,
@@ -117,7 +119,7 @@ export const TemplateVersionEditor: FC<TemplateVersionEditorProps> = ({
 	isPublishing,
 	publishingError,
 	publishedVersion,
-	onCreateWorkspace,
+	createWorkspaceUrl,
 	buildLogs,
 	resources,
 	isPromptingMissingVariables,
@@ -133,7 +135,6 @@ export const TemplateVersionEditor: FC<TemplateVersionEditorProps> = ({
 	const navigate = useNavigate();
 	const getLink = useLinks();
 	const [selectedTab, setSelectedTab] = useState<Tab>(defaultTab);
-	const [fileTree, setFileTree] = useState(defaultFileTree);
 	const [createFileOpen, setCreateFileOpen] = useState(false);
 	const [deleteFileOpen, setDeleteFileOpen] = useState<string>();
 	const [renameFileOpen, setRenameFileOpen] = useState<string>();
@@ -222,7 +223,10 @@ export const TemplateVersionEditor: FC<TemplateVersionEditorProps> = ({
 						<Tooltip>
 							<TooltipTrigger asChild>
 								<TopbarIconButton asChild>
-									<RouterLink to={templateLink}>
+									<RouterLink
+										to={templateLink}
+										aria-label="Back to the template"
+									>
 										<ChevronLeftIcon />
 									</RouterLink>
 								</TopbarIconButton>
@@ -307,8 +311,10 @@ export const TemplateVersionEditor: FC<TemplateVersionEditorProps> = ({
 								prominent
 								dismissible
 								actions={
-									<Button size="sm" onClick={onCreateWorkspace}>
-										Create a workspace
+									<Button asChild size="sm">
+										<RouterLink to={createWorkspaceUrl ?? ""}>
+											Create a workspace
+										</RouterLink>
 									</Button>
 								}
 							>
@@ -321,7 +327,7 @@ export const TemplateVersionEditor: FC<TemplateVersionEditorProps> = ({
 
 					<Sidebar>
 						<div className="h-[42px] py-0 pr-2 pl-4 flex items-center">
-							<span className="text-content-primary text-[13px]">Files</span>
+							<span className="text-content-primary text-sm">Files</span>
 
 							<div className="ml-auto [&_svg]:fill-content-primary">
 								<Tooltip>
@@ -349,7 +355,9 @@ export const TemplateVersionEditor: FC<TemplateVersionEditorProps> = ({
 								}}
 								checkExists={(path) => existsFile(path, fileTree)}
 								onConfirm={(path) => {
-									setFileTree((fileTree) => createFile(path, fileTree, ""));
+									onFileTreeChange((fileTree) =>
+										createFile(path, fileTree, ""),
+									);
 									onActivePathChange(path);
 									setCreateFileOpen(false);
 									setDirty(true);
@@ -360,7 +368,7 @@ export const TemplateVersionEditor: FC<TemplateVersionEditorProps> = ({
 									if (!deleteFileOpen) {
 										throw new Error("delete file must be set");
 									}
-									setFileTree((fileTree) =>
+									onFileTreeChange((fileTree) =>
 										removeFile(deleteFileOpen, fileTree),
 									);
 									setDeleteFileOpen(undefined);
@@ -385,7 +393,7 @@ export const TemplateVersionEditor: FC<TemplateVersionEditorProps> = ({
 									if (!renameFileOpen) {
 										return;
 									}
-									setFileTree((fileTree) =>
+									onFileTreeChange((fileTree) =>
 										moveFile(renameFileOpen, newPath, fileTree),
 									);
 									onActivePathChange(newPath);
@@ -408,7 +416,7 @@ export const TemplateVersionEditor: FC<TemplateVersionEditorProps> = ({
 					</Sidebar>
 
 					<div className="flex flex-col w-full min-h-full overflow-hidden">
-						<div className="flex-1 overflow-y-auto" data-chromatic="ignore">
+						<div className="flex-1 overflow-y-auto" data-pixel="ignore">
 							{activePath ? (
 								isEditorValueBinary ? (
 									<div
@@ -431,7 +439,7 @@ export const TemplateVersionEditor: FC<TemplateVersionEditorProps> = ({
 											if (!activePath) {
 												return;
 											}
-											setFileTree((fileTree) =>
+											onFileTreeChange((fileTree) =>
 												updateFile(activePath, value, fileTree),
 											);
 											setDirty(true);
@@ -505,7 +513,7 @@ export const TemplateVersionEditor: FC<TemplateVersionEditorProps> = ({
 							{selectedTab === "logs" && (
 								<div className="flex flex-col h-[280px] overflow-y-auto">
 									{templateVersion.job.error ? (
-										<div>
+										<div className="sticky top-0 z-10">
 											<ProvisionerAlert
 												title="Error during the build"
 												detail={templateVersion.job.error}
@@ -535,7 +543,7 @@ export const TemplateVersionEditor: FC<TemplateVersionEditorProps> = ({
 												"[&_.logs-header]:border-0 [&_.logs-header]:px-4 [&_.logs-header]:py-2 [&_.logs-header]:font-mono",
 												"[&_.logs-header:first-of-type]:pt-4 [&_.logs-header:last-child]:pb-4",
 												"[&_.logs-line]:pl-4",
-												"[&_.logs-container]:!border-0",
+												"[&_.logs-container]:border-0!",
 											)}
 											hideTimestamps
 											logs={buildLogs}
@@ -624,7 +632,7 @@ const useLeaveSiteWarning = (enabled: boolean) => {
 
 const tabClassName = (isActive: boolean) =>
 	cn(
-		"p-3 text-[10px] uppercase tracking-[0.5px] font-medium bg-transparent [font-family:inherit] border-0",
+		"p-3 text-[10px] uppercase tracking-[0.5px] font-medium bg-transparent font-[inherit] border-0",
 		"text-content-secondary transition-all duration-150",
 		"flex gap-2 items-center justify-center relative",
 		"[&_svg]:max-w-3 [&_svg]:max-h-3",

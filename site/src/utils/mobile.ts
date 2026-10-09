@@ -1,15 +1,22 @@
 /**
+ * Matches viewports below the `sm` Tailwind breakpoint (< 640 px), a
+ * reasonable proxy for a mobile / touch device with a virtual keyboard.
+ */
+export const mobileViewportMediaQuery = "(max-width: 639px)";
+
+/**
  * Returns `true` when the viewport width is at or below the `sm`
  * Tailwind breakpoint (< 640 px), which is a reasonable proxy for a
  * mobile / touch device where auto-focusing an input would cause the
  * virtual keyboard to pop up unexpectedly.
  */
 export const isMobileViewport = (): boolean => {
-	if (typeof window === "undefined" || !window.matchMedia) {
-		return false;
-	}
-	return window.matchMedia("(max-width: 639px)").matches;
+	return window.matchMedia(mobileViewportMediaQuery).matches;
 };
+
+export const coarsePointerMediaQuery = "(pointer: coarse)";
+
+export const belowMdViewportMediaQuery = "(max-width: 767px)";
 
 /**
  * Returns `true` when the viewport width is below the `md` Tailwind
@@ -20,8 +27,13 @@ export const isMobileViewport = (): boolean => {
  * mobile branch instead of the desktop flyout branch.
  */
 export const isBelowMdViewport = (): boolean => {
-	if (typeof window === "undefined" || !window.matchMedia) {
-		return false;
-	}
-	return window.matchMedia("(max-width: 767px)").matches;
+	return window.matchMedia(belowMdViewportMediaQuery).matches;
 };
+
+/**
+ * Matches viewports below the `lg` Tailwind breakpoint (< 1024 px),
+ * aligning with `lg:` utilities that switch between a side-by-side
+ * layout and a single-panel-at-a-time layout (e.g. the Agents chat
+ * page's chat vs. right panel split).
+ */
+export const belowLgViewportMediaQuery = "(max-width: 1023px)";

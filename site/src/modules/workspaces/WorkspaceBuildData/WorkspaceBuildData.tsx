@@ -1,35 +1,30 @@
-import { useTheme } from "@emotion/react";
+import { cn } from "cn";
 import { InfoIcon } from "lucide-react";
 import type { WorkspaceBuild } from "#/api/typesGenerated";
-import { BuildIcon } from "#/components/BuildIcon/BuildIcon";
 import { Skeleton } from "#/components/Skeleton/Skeleton";
 import {
 	Tooltip,
 	TooltipContent,
 	TooltipTrigger,
 } from "#/components/Tooltip/Tooltip";
-import { cn } from "#/utils/cn";
+import { BuildIcon } from "#/modules/workspaces/BuildIcon/BuildIcon";
 import { createDayString } from "#/utils/createDayString";
 import {
-	buildReasonLabels,
+	getBuildReasonLabel,
 	getDisplayWorkspaceBuildInitiatedBy,
-	getDisplayWorkspaceBuildStatus,
 	systemBuildReasons,
 } from "#/utils/workspace";
 
-export const WorkspaceBuildData = ({ build }: { build: WorkspaceBuild }) => {
-	const theme = useTheme();
-	const statusType = getDisplayWorkspaceBuildStatus(theme, build).type;
+type WorkspaceBuildDataProps = {
+	build: WorkspaceBuild;
+};
 
+export const WorkspaceBuildData: React.FC<WorkspaceBuildDataProps> = ({
+	build,
+}) => {
 	return (
 		<div className="flex flex-row items-center gap-3 leading-normal">
-			<BuildIcon
-				transition={build.transition}
-				className="size-4"
-				css={{
-					color: theme.roles[statusType].fill.solid,
-				}}
-			/>
+			<BuildIcon transition={build.transition} jobStatus={build.job.status} />
 			<div className="overflow-hidden flex flex-col">
 				<div
 					className={cn(
@@ -45,15 +40,10 @@ export const WorkspaceBuildData = ({ build }: { build: WorkspaceBuild }) => {
 						build.transition === "start" && (
 							<Tooltip>
 								<TooltipTrigger asChild>
-									<InfoIcon
-										css={(theme) => ({
-											color: theme.palette.info.light,
-										})}
-										className="size-icon-xs -mt-px"
-									/>
+									<InfoIcon className="text-content-secondary size-icon-xs -mt-px" />
 								</TooltipTrigger>
 								<TooltipContent side="bottom">
-									{buildReasonLabels[build.reason]}
+									{getBuildReasonLabel(build.reason)}
 								</TooltipContent>
 							</Tooltip>
 						)}

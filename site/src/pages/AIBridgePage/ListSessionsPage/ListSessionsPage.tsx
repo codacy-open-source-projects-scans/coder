@@ -1,20 +1,27 @@
-import type { FC } from "react";
+import { useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { paginatedSessions } from "#/api/queries/aiBridge";
-import { useFilter } from "#/components/Filter/Filter";
+import type { DateTimeRangeValue } from "#/components/DateTimeRangePicker/dateTimeRange";
+import { useFilter, useFilterParamsKey } from "#/components/Filter/Filter";
 import { useUserFilterMenu } from "#/components/Filter/UserFilter";
 import { useAuthenticated } from "#/hooks/useAuthenticated";
 import { usePaginatedQuery } from "#/hooks/usePaginatedQuery";
 import { useDashboard } from "#/modules/dashboard/useDashboard";
 import { RequirePermission } from "#/modules/permissions/RequirePermission";
 import { pageTitle } from "#/utils/page";
+import { useClientFilterMenu } from "../filters/ClientFilter";
+import { useModelFilterMenu } from "../filters/ModelFilter";
+import { useProviderFilterMenu } from "../filters/ProviderFilter";
 import { getAIBridgePermissions } from "../getAIBridgePermissions";
-import { useClientFilterMenu } from "../RequestLogsPage/RequestLogsFilter/ClientFilter";
-import { useModelFilterMenu } from "../RequestLogsPage/RequestLogsFilter/ModelFilter";
-import { useProviderFilterMenu } from "../RequestLogsPage/RequestLogsFilter/ProviderFilter";
 import { ListSessionsPageView } from "./ListSessionsPageView";
+import {
+	defaultTimeRange,
+	parseTimeRange,
+	queryWithTimeRange,
+	withDefaultTimeRange,
+} from "./timeRange";
 
-const AISessionListPage: FC = () => {
+const AISessionListPage: React.FC = () => {
 	const { permissions } = useAuthenticated();
 	const { entitlements } = useDashboard();
 	const navigate = useNavigate();
@@ -26,9 +33,21 @@ const AISessionListPage: FC = () => {
 
 	const canViewSessions = isEntitled && hasPermission;
 
+	// The default time range lives in memory, not the URL, so a shared link
+	// resolves relative to the viewer's current time. It is fixed per mount
+	// so query cache keys stay stable.
+	const [defaultRange] = useState(() => defaultTimeRange(new Date()));
+
 	const [searchParams, setSearchParams] = useSearchParams();
 	const sessionsQuery = usePaginatedQuery({
 		...paginatedSessions(searchParams),
+		// Merge the default range into every fetch (including prefetches) so
+		// the unfiltered sessions query never scans the entire table.
+		queryPayload: () =>
+			withDefaultTimeRange(
+				searchParams.get(useFilterParamsKey) ?? "",
+				defaultRange,
+			),
 		enabled: canViewSessions,
 	});
 
@@ -37,6 +56,26 @@ const AISessionListPage: FC = () => {
 		onSearchParamsChange: setSearchParams,
 		onUpdate: sessionsQuery.goToFirstPage,
 	});
+
+	const explicitTimeRange = parseTimeRange(filter.values);
+	const timeRange = explicitTimeRange ?? defaultRange;
+
+	// The preset is display-only; the URL stores resolved timestamps. With no
+	// range in the URL (e.g. after clearing the search) the default window
+	// applies, which is the "Last 24 hours" preset. Otherwise show the last
+	// picked preset only while the URL range still matches it.
+	const [lastPicked, setLastPicked] = useState<DateTimeRangeValue | null>(null);
+	// URL round-trips truncate to seconds, so compare at second precision.
+	const sameSecond = (a: Date, b: Date) =>
+		Math.floor(a.getTime() / 1000) === Math.floor(b.getTime() / 1000);
+	const preset =
+		explicitTimeRange === null
+			? "last_24h"
+			: lastPicked?.preset !== undefined &&
+					sameSecond(lastPicked.start, timeRange.start) &&
+					sameSecond(lastPicked.end, timeRange.end)
+				? lastPicked.preset
+				: undefined;
 
 	const userMenu = useUserFilterMenu({
 		value: filter.values.initiator,
@@ -48,11 +87,11 @@ const AISessionListPage: FC = () => {
 	});
 
 	const providerMenu = useProviderFilterMenu({
-		value: filter.values.provider,
+		value: filter.values.provider_name,
 		onChange: (option) =>
 			filter.update({
 				...filter.values,
-				provider: option?.value,
+				provider_name: option?.value,
 			}),
 	});
 
@@ -76,7 +115,7 @@ const AISessionListPage: FC = () => {
 
 	return (
 		<RequirePermission isFeatureVisible={hasPermission}>
-			<title>{pageTitle("Sessions", "AI Bridge")}</title>
+			<title>{pageTitle("Sessions", "AI Gateway")}</title>
 
 			<ListSessionsPageView
 				isLoading={sessionsQuery.isLoading}
@@ -86,7 +125,7 @@ const AISessionListPage: FC = () => {
 				sessions={sessionsQuery.data?.sessions}
 				sessionsQuery={sessionsQuery}
 				onSessionRowClick={(sessionId) =>
-					navigate(`/aibridge/sessions/${sessionId}`)
+					navigate(`/ai-gateway/sessions/${sessionId}`)
 				}
 				filterProps={{
 					filter,
@@ -96,6 +135,15 @@ const AISessionListPage: FC = () => {
 						provider: providerMenu,
 						client: clientMenu,
 						model: modelMenu,
+					},
+					timeRange: {
+						start: timeRange.start,
+						end: timeRange.end,
+						preset,
+					},
+					onTimeRangeChange: (value) => {
+						setLastPicked(value);
+						filter.update(queryWithTimeRange(filter.values, value));
 					},
 				}}
 			/>

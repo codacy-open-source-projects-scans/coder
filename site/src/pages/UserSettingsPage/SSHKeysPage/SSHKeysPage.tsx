@@ -1,13 +1,16 @@
-import { type FC, useState } from "react";
+import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "react-query";
 import { toast } from "sonner";
 import { getErrorDetail, getErrorMessage } from "#/api/errors";
 import { regenerateUserSSHKey, userSSHKey } from "#/api/queries/sshKeys";
-import { ConfirmDialog } from "#/components/Dialogs/ConfirmDialog/ConfirmDialog";
-import { Section } from "../Section";
+import { ConfirmDialog } from "#/components/Dialog/ConfirmDialog/ConfirmDialog";
+import {
+	SettingsHeader,
+	SettingsHeaderTitle,
+} from "#/components/SettingsHeader/SettingsHeader";
 import { SSHKeysPageView } from "./SSHKeysPageView";
 
-const SSHKeysPage: FC = () => {
+const SSHKeysPage: React.FC = () => {
 	const [isConfirmingRegeneration, setIsConfirmingRegeneration] =
 		useState(false);
 
@@ -19,14 +22,15 @@ const SSHKeysPage: FC = () => {
 
 	return (
 		<>
-			<Section title="SSH keys">
-				<SSHKeysPageView
-					isLoading={userSSHKeyQuery.isLoading}
-					getSSHKeyError={userSSHKeyQuery.error}
-					sshKey={userSSHKeyQuery.data}
-					onRegenerateClick={() => setIsConfirmingRegeneration(true)}
-				/>
-			</Section>
+			<SettingsHeader>
+				<SettingsHeaderTitle>SSH keys</SettingsHeaderTitle>
+			</SettingsHeader>
+			<SSHKeysPageView
+				isLoading={userSSHKeyQuery.isLoading}
+				getSSHKeyError={userSSHKeyQuery.error}
+				sshKey={userSSHKeyQuery.data}
+				onRegenerateClick={() => setIsConfirmingRegeneration(true)}
+			/>
 
 			<ConfirmDialog
 				type="delete"

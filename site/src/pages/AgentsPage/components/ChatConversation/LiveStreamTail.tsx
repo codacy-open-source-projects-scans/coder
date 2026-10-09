@@ -1,171 +1,42 @@
-import { Link } from "react-router";
-import type { UrlTransform } from "streamdown";
-import type * as TypesGen from "#/api/typesGenerated";
-import { Alert, AlertDescription } from "#/components/Alert/Alert";
-import { Button } from "#/components/Button/Button";
-import type { ChatDetailError } from "../../utils/usageLimitMessage";
-import type { SubagentVariant } from "../ChatElements/tools/subagentDescriptor";
+import { MessageScroller } from "#/vendor/message-scroller";
 import { ChatStatusCallout } from "./ChatStatusCallout";
-import {
-	selectIsAwaitingFirstStreamChunk,
-	selectReconnectState,
-	selectRetryState,
-	selectStreamError,
-	selectStreamState,
-	selectSubagentStatusOverrides,
-	useChatSelector,
-	type useChatStore,
-} from "./chatStore";
-import { deriveLiveStatus, type LiveStatusModel } from "./liveStatusModel";
-import { StreamingOutput } from "./StreamingOutput";
-import { buildStreamTools } from "./streamState";
-import type { MergedTool, StreamState } from "./types";
+import type { LiveStatusModel } from "./liveStatusModel";
 
-const shouldRenderStreamingSection = (liveStatus: LiveStatusModel): boolean =>
-	liveStatus.phase === "streaming" ||
-	liveStatus.phase === "starting" ||
-	liveStatus.phase === "retrying" ||
-	liveStatus.phase === "reconnecting" ||
-	liveStatus.hasAccumulatedOutput;
-
-type ChatStoreHandle = ReturnType<typeof useChatStore>["store"];
-
-interface LiveStreamTailContentProps {
+type LiveStreamTailContentProps = {
 	isTranscriptEmpty: boolean;
-	streamState: StreamState | null;
-	streamTools: readonly MergedTool[];
 	liveStatus: LiveStatusModel;
-	startingResetKey?: string;
-	subagentTitles: Map<string, string>;
-	subagentVariants?: Map<string, SubagentVariant>;
-	subagentStatusOverrides: Map<string, TypesGen.ChatStatus>;
-	urlTransform?: UrlTransform;
-	mcpServers?: readonly TypesGen.MCPServerConfig[];
-}
+};
 
+// The live assistant turn renders as a timeline row, so the tail below the
+// transcript only carries the empty state.
 export const LiveStreamTailContent = ({
 	isTranscriptEmpty,
-	streamState,
-	streamTools,
 	liveStatus,
-	startingResetKey,
-	subagentTitles,
-	subagentVariants,
-	subagentStatusOverrides,
-	urlTransform,
-	mcpServers,
 }: LiveStreamTailContentProps) => {
-	const shouldRenderStreamSection = shouldRenderStreamingSection(liveStatus);
-	const terminalStatus = liveStatus.phase === "failed" ? liveStatus : null;
-	const usageLimitStatus =
-		terminalStatus?.kind === "usage_limit" ? terminalStatus : null;
-	const shouldRenderEmptyState =
-		isTranscriptEmpty && liveStatus.phase === "idle";
-
-	if (
-		!shouldRenderEmptyState &&
-		!shouldRenderStreamSection &&
-		!terminalStatus
-	) {
+	if (!isTranscriptEmpty || liveStatus.phase !== "idle") {
 		return null;
 	}
 
 	return (
-		<div className="flex flex-col gap-2">
-			{shouldRenderEmptyState && (
-				<div className="py-12 text-center text-content-secondary">
-					<p className="text-sm">Start a conversation with your agent.</p>
-				</div>
-			)}
-			{shouldRenderStreamSection && (
-				<StreamingOutput
-					streamState={streamState}
-					streamTools={streamTools}
-					liveStatus={liveStatus}
-					startingResetKey={startingResetKey}
-					subagentTitles={subagentTitles}
-					subagentVariants={subagentVariants}
-					subagentStatusOverrides={subagentStatusOverrides}
-					urlTransform={urlTransform}
-					mcpServers={mcpServers}
-				/>
-			)}
-			{usageLimitStatus ? (
-				<Alert
-					severity="info"
-					actions={
-						<Button asChild size="sm">
-							<Link to="/agents/analytics">View Usage</Link>
-						</Button>
-					}
-				>
-					<AlertDescription>{usageLimitStatus.message}</AlertDescription>
-				</Alert>
-			) : terminalStatus ? (
-				<ChatStatusCallout status={terminalStatus} />
-			) : null}
+		<div className="py-12 text-center text-content-secondary">
+			<p className="text-sm">Start a conversation with your agent.</p>
 		</div>
 	);
 };
 
-interface LiveStreamTailProps {
-	store: ChatStoreHandle;
-	persistedError: ChatDetailError | undefined;
-	isTranscriptEmpty: boolean;
-	startingResetKey?: string;
-	subagentTitles: Map<string, string>;
-	subagentVariants?: Map<string, SubagentVariant>;
-	urlTransform?: UrlTransform;
-	mcpServers?: readonly TypesGen.MCPServerConfig[];
-}
-
-export const LiveStreamTail = ({
-	store,
-	persistedError,
-	isTranscriptEmpty,
-	startingResetKey,
-	subagentTitles,
-	subagentVariants,
-	urlTransform,
-	mcpServers,
-}: LiveStreamTailProps) => {
-	const streamState = useChatSelector(store, selectStreamState);
-	const streamError = useChatSelector(store, selectStreamError);
-	const retryState = useChatSelector(store, selectRetryState);
-	const reconnectState = useChatSelector(store, selectReconnectState);
-	const isAwaitingFirstStreamChunk = useChatSelector(
-		store,
-		selectIsAwaitingFirstStreamChunk,
-	);
-	const subagentStatusOverrides = useChatSelector(
-		store,
-		selectSubagentStatusOverrides,
-	);
-	const streamTools = buildStreamTools(
-		streamState?.toolCalls,
-		streamState?.toolResults,
-	);
-	const liveStatus = deriveLiveStatus({
-		streamState,
-		retryState,
-		reconnectState,
-		streamError,
-		persistedError: persistedError ?? null,
-		isAwaitingFirstStreamChunk,
-	});
-
+// Terminal failures render as a transcript row so a long error scrolls with
+// the conversation instead of squeezing the composer out of the panel.
+export const TerminalStatusRow = ({
+	liveStatus,
+}: {
+	liveStatus: LiveStatusModel;
+}) => {
+	if (liveStatus.phase !== "failed") {
+		return null;
+	}
 	return (
-		<LiveStreamTailContent
-			isTranscriptEmpty={isTranscriptEmpty}
-			streamState={streamState}
-			streamTools={streamTools}
-			liveStatus={liveStatus}
-			startingResetKey={startingResetKey}
-			subagentTitles={subagentTitles}
-			subagentVariants={subagentVariants}
-			subagentStatusOverrides={subagentStatusOverrides}
-			urlTransform={urlTransform}
-			mcpServers={mcpServers}
-		/>
+		<MessageScroller.Item messageId="terminal-status">
+			<ChatStatusCallout status={liveStatus} />
+		</MessageScroller.Item>
 	);
 };

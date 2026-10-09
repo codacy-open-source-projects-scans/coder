@@ -1,5 +1,6 @@
+import { cn } from "cn";
 import { ChevronRightIcon } from "lucide-react";
-import { type FC, useState } from "react";
+import { useState } from "react";
 import { Link as RouterLink } from "react-router";
 import type {
 	ProvisionerDaemon,
@@ -19,7 +20,6 @@ import {
 	ProvisionerTruncateTags,
 } from "#/modules/provisioners/ProvisionerTags";
 import { ProvisionerKey } from "#/pages/OrganizationSettingsPage/OrganizationProvisionersPage/ProvisionerKey";
-import { cn } from "#/utils/cn";
 import { relativeTime } from "#/utils/time";
 import { ProvisionerVersion } from "./ProvisionerVersion";
 
@@ -38,7 +38,7 @@ type ProvisionerRowProps = {
 	defaultIsOpen: boolean;
 };
 
-export const ProvisionerRow: FC<ProvisionerRowProps> = ({
+export const ProvisionerRow: React.FC<ProvisionerRowProps> = ({
 	provisioner,
 	buildVersion,
 	defaultIsOpen = false,
@@ -116,10 +116,10 @@ export const ProvisionerRow: FC<ProvisionerRowProps> = ({
 							])}
 						>
 							<dt>Last seen:</dt>
-							<dd data-chromatic="ignore">{provisioner.last_seen_at}</dd>
+							<dd data-pixel="ignore">{provisioner.last_seen_at}</dd>
 
 							<dt>Creation time:</dt>
-							<dd data-chromatic="ignore">{provisioner.created_at}</dd>
+							<dd data-pixel="ignore">{provisioner.created_at}</dd>
 
 							<dt>Version:</dt>
 							<dd>

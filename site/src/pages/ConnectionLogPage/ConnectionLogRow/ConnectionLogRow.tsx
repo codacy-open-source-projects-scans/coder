@@ -1,11 +1,10 @@
 import { InfoIcon, NetworkIcon } from "lucide-react";
-import type { FC } from "react";
 import { Link as RouterLink } from "react-router";
 import userAgentParser from "ua-parser-js";
 import type { ConnectionLog } from "#/api/typesGenerated";
 import { Avatar } from "#/components/Avatar/Avatar";
 import { Link } from "#/components/Link/Link";
-import { StatusPill } from "#/components/StatusPill/StatusPill";
+import { StatusBadge } from "#/components/StatusBadge/StatusBadge";
 import { TableCell } from "#/components/Table/Table";
 import { TimelineEntry } from "#/components/Timeline/TimelineEntry";
 import {
@@ -16,11 +15,11 @@ import {
 import { connectionTypeIsWeb } from "#/utils/connection";
 import { ConnectionLogDescription } from "./ConnectionLogDescription/ConnectionLogDescription";
 
-interface ConnectionLogRowProps {
+type ConnectionLogRowProps = {
 	connectionLog: ConnectionLog;
-}
+};
 
-export const ConnectionLogRow: FC<ConnectionLogRowProps> = ({
+export const ConnectionLogRow: React.FC<ConnectionLogRowProps> = ({
 	connectionLog,
 }) => {
 	const userAgent = connectionLog.web_info?.user_agent
@@ -36,7 +35,7 @@ export const ConnectionLogRow: FC<ConnectionLogRowProps> = ({
 			data-testid={`connection-log-row-${connectionLog.id}`}
 			clickable={false}
 		>
-			<TableCell className="!p-0 border-0">
+			<TableCell className="p-0! border-0">
 				<div className="flex flex-row items-center gap-4 py-4 px-8">
 					<div className="flex flex-row items-center gap-4 flex-1">
 						{/* Non-web logs don't have an associated user, so we
@@ -64,7 +63,7 @@ export const ConnectionLogRow: FC<ConnectionLogRowProps> = ({
 
 							<div className="flex flex-row items-center gap-4">
 								{code !== undefined && (
-									<StatusPill
+									<StatusBadge
 										code={code}
 										isHttpCode={isWeb}
 										label={isWeb ? "HTTP Status Code" : "SSH Exit Code"}
@@ -72,7 +71,7 @@ export const ConnectionLogRow: FC<ConnectionLogRowProps> = ({
 								)}
 								<Tooltip>
 									<TooltipTrigger asChild>
-										<InfoIcon className="text-content-link" />
+										<InfoIcon className="size-icon-sm text-content-secondary" />
 									</TooltipTrigger>
 									<TooltipContent side="bottom">
 										<div className="flex flex-col gap-2">

@@ -21,12 +21,12 @@ const _repoFieldGuard: Record<keyof _ComparedRepoFields, true> = {
 	unified_diff: true,
 };
 
-interface UseGitWatcherOptions {
-	chatId: string | undefined;
+type UseGitWatcherOptions = {
+	chatId: string;
 	agentStatus: WorkspaceAgentStatus | undefined;
-}
+};
 
-interface UseGitWatcherResult {
+type UseGitWatcherResult = {
 	/** Current repo state, keyed by repo root path. */
 	repositories: ReadonlyMap<string, WorkspaceAgentRepoChanges>;
 	/**
@@ -37,9 +37,11 @@ interface UseGitWatcherResult {
 	everDirty: ReadonlySet<string>;
 	/** Whether the WebSocket is currently connected. */
 	isConnected: boolean;
+	/** Whether the watcher has received repository state for this chat. */
+	hasReceivedChanges: boolean;
 	/** Send a refresh request. Returns true if sent, false if disconnected. */
 	refresh: () => boolean;
-}
+};
 
 export function useGitWatcher({
 	chatId,
@@ -52,12 +54,13 @@ export function useGitWatcher({
 		() => new Set(),
 	);
 	const [isConnected, setIsConnected] = useState(false);
+	const [hasReceivedChanges, setHasReceivedChanges] = useState(false);
 
 	const socketRef = useRef<WebSocket | null>(null);
 	// Chat-scoped state (everDirty) resets on chatId change but
 	// must survive agentStatus flaps on the same chat.
 	// https://react.dev/reference/react/useState#storing-information-from-previous-renders
-	const [lastChatId, setLastChatId] = useState<string | undefined>(chatId);
+	const [lastChatId, setLastChatId] = useState(chatId);
 	if (lastChatId !== chatId) {
 		setLastChatId(chatId);
 		setEverDirty((prev) => (prev.size === 0 ? prev : new Set()));
@@ -77,15 +80,13 @@ export function useGitWatcher({
 	};
 
 	useEffect(() => {
-		if (!chatId || agentStatus !== "connected") {
+		if (agentStatus !== "connected") {
 			return;
 		}
 
-		const activeChatId = chatId;
-
 		const dispose = createReconnectingWebSocket({
 			connect() {
-				const socket = watchChatGit(activeChatId);
+				const socket = watchChatGit(chatId);
 				socketRef.current = socket;
 
 				socket.addEventListener("message", (event) => {
@@ -104,6 +105,7 @@ export function useGitWatcher({
 					}
 
 					if (data.type === "changes") {
+						setHasReceivedChanges(true);
 						if (data.repositories) {
 							setRepositories((prev) => {
 								let changed = false;
@@ -159,6 +161,7 @@ export function useGitWatcher({
 
 			onDisconnect() {
 				setIsConnected(false);
+				setHasReceivedChanges(false);
 				socketRef.current = null;
 			},
 
@@ -172,10 +175,11 @@ export function useGitWatcher({
 			// chat-scoped and persists across reconnects.
 			dispose();
 			setIsConnected(false);
+			setHasReceivedChanges(false);
 			setRepositories(new Map());
 			socketRef.current = null;
 		};
 	}, [chatId, agentStatus]);
 
-	return { repositories, everDirty, isConnected, refresh };
+	return { repositories, everDirty, isConnected, hasReceivedChanges, refresh };
 }

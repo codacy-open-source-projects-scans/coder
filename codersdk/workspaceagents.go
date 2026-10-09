@@ -170,6 +170,11 @@ type WorkspaceAgent struct {
 	DisplayApps              []DisplayApp              `json:"display_apps"`
 	LogSources               []WorkspaceAgentLogSource `json:"log_sources"`
 	Scripts                  []WorkspaceAgentScript    `json:"scripts"`
+	// Metadata is only populated on the workspaces list endpoint when the
+	// request opts in with the include_agent_metadata search key, and it
+	// only carries the requested keys. The description's script is always
+	// empty here: it can be long, and list consumers want values.
+	Metadata []WorkspaceAgentMetadata `json:"metadata,omitempty"`
 
 	// StartupScriptBehavior is a legacy field that is deprecated in favor
 	// of the `coder_script` resource. It's only referenced by old clients.
@@ -185,17 +190,29 @@ type WorkspaceAgentLogSource struct {
 	Icon             string    `json:"icon"`
 }
 
+type WorkspaceAgentScriptStatus string
+
+// This is also in database/models.go and should be kept in sync.
+const (
+	WorkspaceAgentScriptStatusOK            WorkspaceAgentScriptStatus = "ok"
+	WorkspaceAgentScriptStatusExitFailure   WorkspaceAgentScriptStatus = "exit_failure"
+	WorkspaceAgentScriptStatusTimedOut      WorkspaceAgentScriptStatus = "timed_out"
+	WorkspaceAgentScriptStatusPipesLeftOpen WorkspaceAgentScriptStatus = "pipes_left_open"
+)
+
 type WorkspaceAgentScript struct {
-	ID               uuid.UUID     `json:"id" format:"uuid"`
-	LogSourceID      uuid.UUID     `json:"log_source_id" format:"uuid"`
-	LogPath          string        `json:"log_path"`
-	Script           string        `json:"script"`
-	Cron             string        `json:"cron"`
-	RunOnStart       bool          `json:"run_on_start"`
-	RunOnStop        bool          `json:"run_on_stop"`
-	StartBlocksLogin bool          `json:"start_blocks_login"`
-	Timeout          time.Duration `json:"timeout"`
-	DisplayName      string        `json:"display_name"`
+	ID               uuid.UUID                   `json:"id" format:"uuid"`
+	LogSourceID      uuid.UUID                   `json:"log_source_id" format:"uuid"`
+	LogPath          string                      `json:"log_path"`
+	Script           string                      `json:"script"`
+	Cron             string                      `json:"cron"`
+	RunOnStart       bool                        `json:"run_on_start"`
+	RunOnStop        bool                        `json:"run_on_stop"`
+	StartBlocksLogin bool                        `json:"start_blocks_login"`
+	Timeout          time.Duration               `json:"timeout"`
+	DisplayName      string                      `json:"display_name"`
+	ExitCode         *int32                      `json:"exit_code,omitempty"`
+	Status           *WorkspaceAgentScriptStatus `json:"status,omitempty"`
 }
 
 type WorkspaceAgentHealth struct {
@@ -353,7 +370,7 @@ func (c *Client) WorkspaceAgent(ctx context.Context, id uuid.UUID) (WorkspaceAge
 		return WorkspaceAgent{}, ReadBodyAsError(res)
 	}
 	var workspaceAgent WorkspaceAgent
-	err = json.NewDecoder(res.Body).Decode(&workspaceAgent)
+	err = ReadBodyAsJSON(res, &workspaceAgent)
 	if err != nil {
 		return WorkspaceAgent{}, err
 	}
@@ -380,7 +397,7 @@ func (c *Client) IssueReconnectingPTYSignedToken(ctx context.Context, req IssueR
 		return IssueReconnectingPTYSignedTokenResponse{}, ReadBodyAsError(res)
 	}
 	var resp IssueReconnectingPTYSignedTokenResponse
-	return resp, json.NewDecoder(res.Body).Decode(&resp)
+	return resp, ReadBodyAsJSON(res, &resp)
 }
 
 type WorkspaceAgentListeningPortsResponse struct {
@@ -409,7 +426,7 @@ func (c *Client) WorkspaceAgentListeningPorts(ctx context.Context, agentID uuid.
 		return WorkspaceAgentListeningPortsResponse{}, ReadBodyAsError(res)
 	}
 	var listeningPorts WorkspaceAgentListeningPortsResponse
-	return listeningPorts, json.NewDecoder(res.Body).Decode(&listeningPorts)
+	return listeningPorts, ReadBodyAsJSON(res, &listeningPorts)
 }
 
 // WorkspaceAgentDevcontainerStatus is the status of a devcontainer.
@@ -570,7 +587,7 @@ func (c *Client) WorkspaceAgentListContainers(ctx context.Context, agentID uuid.
 	}
 	var cr WorkspaceAgentListContainersResponse
 
-	return cr, json.NewDecoder(res.Body).Decode(&cr)
+	return cr, ReadBodyAsJSON(res, &cr)
 }
 
 func (c *Client) WatchWorkspaceAgentContainers(ctx context.Context, agentID uuid.UUID) (<-chan WorkspaceAgentListContainersResponse, io.Closer, error) {
@@ -631,7 +648,7 @@ func (c *Client) WorkspaceAgentRecreateDevcontainer(ctx context.Context, agentID
 		return Response{}, ReadBodyAsError(res)
 	}
 	var m Response
-	if err := json.NewDecoder(res.Body).Decode(&m); err != nil {
+	if err := ReadBodyAsJSON(res, &m); err != nil {
 		return Response{}, xerrors.Errorf("decode response body: %w", err)
 	}
 	return m, nil
@@ -667,7 +684,7 @@ func (c *Client) WorkspaceAgentLogsAfter(ctx context.Context, agentID uuid.UUID,
 		}
 
 		var logs []WorkspaceAgentLog
-		err = json.NewDecoder(resp.Body).Decode(&logs)
+		err = ReadBodyAsJSON(resp, &logs)
 		if err != nil {
 			return nil, nil, xerrors.Errorf("decode startup logs: %w", err)
 		}

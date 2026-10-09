@@ -18,7 +18,7 @@ import (
 	"golang.org/x/xerrors"
 
 	"cdr.dev/slog/v3"
-	"github.com/coder/coder/v2/agent/agentgit"
+	"github.com/coder/coder/v2/agent/agentchat"
 	"github.com/coder/coder/v2/coderd/httpapi"
 	"github.com/coder/coder/v2/codersdk"
 	"github.com/coder/coder/v2/codersdk/workspacesdk"
@@ -86,6 +86,8 @@ func (api *API) HandleReadFile(rw http.ResponseWriter, r *http.Request) {
 }
 
 func (api *API) streamFile(ctx context.Context, rw http.ResponseWriter, path string, offset, limit int64) (HTTPResponseCode, error) {
+	logger := api.logger.With(agentchat.Fields(ctx)...)
+
 	if !filepath.IsAbs(path) {
 		return http.StatusBadRequest, xerrors.Errorf("file path must be absolute: %q", path)
 	}
@@ -131,7 +133,7 @@ func (api *API) streamFile(ctx context.Context, rw http.ResponseWriter, path str
 	reader := io.NewSectionReader(f, offset, bytesToRead)
 	_, err = io.Copy(rw, reader)
 	if err != nil && !errors.Is(err, io.EOF) && ctx.Err() == nil {
-		api.logger.Error(ctx, "workspace agent read file", slog.Error(err))
+		logger.Error(ctx, "workspace agent read file", slog.Error(err))
 	}
 
 	return 0, nil
@@ -322,8 +324,8 @@ func (api *API) HandleWriteFile(rw http.ResponseWriter, r *http.Request) {
 
 	// Track edited path for git watch.
 	if api.pathStore != nil {
-		if chatID, ancestorIDs, ok := agentgit.ExtractChatContext(r); ok {
-			api.pathStore.AddPaths(append([]uuid.UUID{chatID}, ancestorIDs...), []string{path})
+		if chatContext, ok := agentchat.FromContext(ctx); ok {
+			api.pathStore.AddPaths(append([]uuid.UUID{chatContext.ID}, chatContext.AncestorIDs...), []string{path})
 		}
 	}
 
@@ -385,17 +387,17 @@ func (api *API) HandleEditFiles(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Duplicate entries both read the same file and race to write;
-	// the first entry's edits are silently lost. Resolve symlinks
-	// before comparing so two paths that alias the same real file
-	// (e.g. one via a symlink, one direct) don't slip past as
-	// distinct keys. prepareFileEdit resolves the path again for
-	// its own use; the double lstat cost is cheap compared to the
-	// data-loss risk of silent aliasing.
+	// Merge duplicate entries that refer to the same literal path
+	// so callers don't have to pre-coalesce. Two different paths
+	// that resolve to the same real file via symlinks are still
+	// rejected: silently merging edits the caller addressed to
+	// different paths would hide accidental aliasing.
 	type seenEntry struct {
 		caller string
+		index  int // position in merged slice
 	}
 	seenPaths := make(map[string]seenEntry, len(req.Files))
+	var merged []workspacesdk.FileEdits
 	for _, f := range req.Files {
 		// On resolve error, use the raw path; phase 1 surfaces
 		// the error with its proper status code.
@@ -404,17 +406,22 @@ func (api *API) HandleEditFiles(rw http.ResponseWriter, r *http.Request) {
 			key = resolved
 		}
 		if prev, dup := seenPaths[key]; dup {
-			msg := fmt.Sprintf("duplicate file path %q: combine edits into a single entry's \"edits\" list", f.Path)
-			if prev.caller != f.Path {
-				msg = fmt.Sprintf("duplicate file path %q aliases %q (same real file): combine edits into a single entry's \"edits\" list", f.Path, prev.caller)
+			// Same literal path: merge edits.
+			if filepath.Clean(prev.caller) == filepath.Clean(f.Path) {
+				merged[prev.index].Edits = append(merged[prev.index].Edits, f.Edits...)
+				continue
 			}
+			// Different paths, same real file (symlink alias).
+			msg := fmt.Sprintf("duplicate file path %q aliases %q (same real file): combine edits into a single entry's \"edits\" list", f.Path, prev.caller)
 			httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
 				Message: msg,
 			})
 			return
 		}
-		seenPaths[key] = seenEntry{caller: f.Path}
+		seenPaths[key] = seenEntry{caller: f.Path, index: len(merged)}
+		merged = append(merged, f)
 	}
+	req.Files = merged
 
 	// Phase 1: compute all edits in memory. If any file fails
 	// (bad path, search miss, permission error), bail before
@@ -458,12 +465,12 @@ func (api *API) HandleEditFiles(rw http.ResponseWriter, r *http.Request) {
 
 	// Track edited paths for git watch.
 	if api.pathStore != nil {
-		if chatID, ancestorIDs, ok := agentgit.ExtractChatContext(r); ok {
+		if chatContext, ok := agentchat.FromContext(ctx); ok {
 			filePaths := make([]string, 0, len(req.Files))
 			for _, f := range req.Files {
 				filePaths = append(filePaths, f.Path)
 			}
-			api.pathStore.AddPaths(append([]uuid.UUID{chatID}, ancestorIDs...), filePaths)
+			api.pathStore.AddPaths(append([]uuid.UUID{chatContext.ID}, chatContext.AncestorIDs...), filePaths)
 		}
 	}
 
@@ -565,6 +572,8 @@ func (api *API) prepareFileEdit(path string, edits []workspacesdk.FileEdit) (int
 // On failure the temp file is cleaned up and the original is
 // untouched.
 func (api *API) atomicWrite(ctx context.Context, path string, mode *os.FileMode, r io.Reader) (int, error) {
+	logger := api.logger.With(agentchat.Fields(ctx)...)
+
 	dir := filepath.Dir(path)
 	tmpName := filepath.Join(dir, fmt.Sprintf(".%s.tmp.%s", filepath.Base(path), uuid.New().String()[:8]))
 
@@ -579,7 +588,7 @@ func (api *API) atomicWrite(ctx context.Context, path string, mode *os.FileMode,
 
 	cleanup := func() {
 		if err := api.filesystem.Remove(tmpName); err != nil {
-			api.logger.Warn(ctx, "unable to clean up temp file", slog.Error(err))
+			logger.Warn(ctx, "unable to clean up temp file", slog.Error(err))
 		}
 	}
 
@@ -601,7 +610,7 @@ func (api *API) atomicWrite(ctx context.Context, path string, mode *os.FileMode,
 	// no window where the target has wrong permissions.
 	if mode != nil {
 		if err := api.filesystem.Chmod(tmpName, *mode); err != nil {
-			api.logger.Warn(ctx, "unable to set file permissions",
+			logger.Warn(ctx, "unable to set file permissions",
 				slog.F("path", path),
 				slog.Error(err),
 			)
@@ -997,10 +1006,10 @@ func buildReplacementLines(matched, searchLines []string, replace, forcedEnding 
 			case prefix > 0 && suffix > 0:
 				prefixRLead := leadOnly(repLines[prefix-1])
 				suffixRLead := leadOnly(repLines[len(repLines)-suffix])
-				switch {
-				case rLeadForI == suffixRLead:
+				switch rLeadForI {
+				case suffixRLead:
 					refIdx = len(searchLines) - suffix
-				case rLeadForI == prefixRLead:
+				case prefixRLead:
 					refIdx = prefix - 1
 				default:
 					refIdx = len(searchLines) - suffix
@@ -1072,19 +1081,43 @@ func buildReplacementLines(matched, searchLines []string, replace, forcedEnding 
 	return b.String()
 }
 
-// fuzzyReplace attempts to find `search` inside `content` and replace it
-// with `replace`. It uses a cascading match strategy inspired by
-// openai/codex's apply_patch:
+// errOldTextAmbiguous is returned when the old_text matches more
+// than one location and replace_all is false. Shared by the
+// byte-level pass and the line-level passes so both spell the
+// remediation identically.
+const errOldTextAmbiguous = "old_text matches %d occurrences " +
+	"(expected exactly 1). Include more surrounding " +
+	"context to make the match unique, or set " +
+	"replace_all to true"
+
+// errOldTextNotFoundPrefix is the shared lead of every not-found
+// message; the per-pass tails below complete it. Rewording the lead
+// touches this one constant.
+const errOldTextNotFoundPrefix = "old_text not found in file. Verify that old_text " +
+	"matches the file content exactly, including whitespace"
+
+// errOldTextNotFound is the leading sentence returned when all match
+// passes miss; diagnostic hints are appended after it.
+const errOldTextNotFound = errOldTextNotFoundPrefix + " and indentation"
+
+// errOldTextNotFoundLineEndings is the ending-rewrite variant, used
+// when the caller signaled intent to change line endings and the
+// exact pass missed.
+const errOldTextNotFoundLineEndings = errOldTextNotFoundPrefix + ", indentation, and line endings"
+
+// fuzzyReplace attempts to find the edit's old_text inside content
+// and replace it with new_text. It uses a cascading match strategy
+// inspired by openai/codex's apply_patch:
 //
 //  1. Exact substring match (byte-for-byte).
 //  2. Line-by-line match ignoring trailing whitespace on each line.
 //  3. Line-by-line match ignoring all leading/trailing whitespace
 //     (indentation-tolerant).
 //
-// When edit.ReplaceAll is false (the default), the search string must
-// match exactly one location. If multiple matches are found, an error
-// is returned asking the caller to include more context or set
-// replace_all.
+// When edit.ReplaceAll is false (the default), the old_text must
+// match exactly one location. If multiple matches are found, an
+// error is returned asking the caller to include more context or
+// set replace_all.
 //
 // When a fuzzy match is found (passes 2 or 3), buildReplacementLines
 // emits the spliced output by per-position substitution at
@@ -1094,8 +1127,8 @@ func buildReplacementLines(matched, searchLines []string, replace, forcedEnding 
 // lines) while letting the caller drive deliberate rewrites of
 // leading whitespace or endings.
 func fuzzyReplace(content string, edit workspacesdk.FileEdit) (string, error) {
-	search := edit.Search
-	replace := edit.Replace
+	search := edit.OldText
+	replace := edit.NewText
 
 	// An empty search string has no meaningful interpretation: it
 	// matches at every byte position, which means the caller has not
@@ -1103,7 +1136,7 @@ func fuzzyReplace(content string, edit workspacesdk.FileEdit) (string, error) {
 	// replace_all=true can't silently inject the replacement between
 	// every byte.
 	if search == "" {
-		return "", xerrors.New("search string must not be empty; include the " +
+		return "", xerrors.New("old_text must not be empty; include the " +
 			"text you want to match")
 	}
 
@@ -1150,10 +1183,7 @@ func fuzzyReplace(content string, edit workspacesdk.FileEdit) (string, error) {
 		}
 		count := strings.Count(content, search)
 		if count > 1 {
-			return "", xerrors.Errorf("search string matches %d occurrences "+
-				"(expected exactly 1). Include more surrounding "+
-				"context to make the match unique, or set "+
-				"replace_all to true", count)
+			return "", xerrors.Errorf(errOldTextAmbiguous, count)
 		}
 		// Exactly one match.
 		return strings.Replace(content, search, pass1Replace, 1), nil
@@ -1162,9 +1192,7 @@ func fuzzyReplace(content string, edit workspacesdk.FileEdit) (string, error) {
 	if callerEndingIntent {
 		// Intent signaled but pass 1 missed; reject rather than let
 		// pass 2's CRLF/LF interchange bridge a mismatched search.
-		return "", xerrors.New("search string not found in file. Verify the search " +
-			"string matches the file content exactly, including whitespace, " +
-			"indentation, and line endings")
+		return "", xerrors.New(errOldTextNotFoundLineEndings)
 	}
 
 	trimRight := func(a, b string) bool {
@@ -1192,9 +1220,240 @@ func fuzzyReplace(content string, edit workspacesdk.FileEdit) (string, error) {
 		return result, err
 	}
 
-	return "", xerrors.New("search string not found in file. Verify the search " +
-		"string matches the file content exactly, including whitespace " +
-		"and indentation")
+	msg := errOldTextNotFound
+	// miscount takes precedence: a near-match means the search is the
+	// model's typo'd new text, not a swapped field. Emitting both can
+	// trick an agent into following the inversion hint and corrupting
+	// an unrelated line where the replace string coincidentally
+	// occurs.
+	if hint := miscountHint(contentLines, searchLines); hint != "" {
+		msg += ". " + hint
+	} else if hint := inversionHint(content, contentLines, replace, replaceLines, trimRight, trimAll); hint != "" {
+		msg += ". " + hint
+	}
+	return "", xerrors.New(msg)
+}
+
+// maxHintLines caps the number of line numbers (inversion) or
+// candidate file lines (per miscount) listed in a single hint before
+// truncation with " and N more".
+const maxHintLines = 5
+
+// inversionHint detects the case where the caller swapped `old_text`
+// and `new_text`: old_text did not match but new_text appears in the file.
+func inversionHint(
+	content string,
+	contentLines []string,
+	replace string,
+	replaceLines []string,
+	trimRight, trimAll func(a, b string) bool,
+) string {
+	if len(replaceLines) == 0 {
+		return ""
+	}
+
+	lines := substringMatchLines(content, replace)
+	if len(lines) == 0 {
+		lines = lineEquivalentMatchLines(contentLines, replaceLines, trimRight)
+	}
+	if len(lines) == 0 {
+		lines = lineEquivalentMatchLines(contentLines, replaceLines, trimAll)
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return fmt.Sprintf(
+		"Did you swap %q and %q? Your new_text string appears at line %s",
+		"old_text", "new_text", formatLineList(lines),
+	)
+}
+
+// substringMatchLines returns the 1-based line numbers where needle
+// occurs in content as a byte-for-byte substring, including
+// overlapping starts. Repeat occurrences on the same line collapse
+// to a single line number.
+func substringMatchLines(content, needle string) []int {
+	if needle == "" {
+		return nil
+	}
+	var lines []int
+	seen := make(map[int]struct{})
+	for offset := 0; ; {
+		rel := strings.Index(content[offset:], needle)
+		if rel < 0 {
+			break
+		}
+		idx := offset + rel
+		line := 1 + strings.Count(content[:idx], "\n")
+		if _, dup := seen[line]; !dup {
+			seen[line] = struct{}{}
+			lines = append(lines, line)
+		}
+		// Advance by one byte so self-overlapping needles (e.g.
+		// "A\nB\nA\n" inside "A\nB\nA\nB\nA\n") still report
+		// every distinct starting line.
+		offset = idx + 1
+		if offset > len(content) {
+			break
+		}
+	}
+	return lines
+}
+
+// lineEquivalentMatchLines returns the 1-based start line of every
+// contiguous block of contentLines that matches needleLines under eq.
+func lineEquivalentMatchLines(contentLines, needleLines []string, eq func(a, b string) bool) []int {
+	if len(needleLines) == 0 || len(needleLines) > len(contentLines) {
+		return nil
+	}
+	var starts []int
+outer:
+	for i := 0; i <= len(contentLines)-len(needleLines); i++ {
+		for j, n := range needleLines {
+			if !eq(contentLines[i+j], n) {
+				continue outer
+			}
+		}
+		starts = append(starts, i+1)
+	}
+	return starts
+}
+
+// formatLineList renders a sorted line list as "12, 47, 89", truncated
+// to maxHintLines entries with " and N more" when more exist.
+func formatLineList(lines []int) string {
+	var b strings.Builder
+	shown := min(len(lines), maxHintLines)
+	for i := 0; i < shown; i++ {
+		if i > 0 {
+			_, _ = b.WriteString(", ")
+		}
+		_, _ = fmt.Fprintf(&b, "%d", lines[i])
+	}
+	if rest := len(lines) - shown; rest > 0 {
+		_, _ = fmt.Fprintf(&b, " and %d more", rest)
+	}
+	return b.String()
+}
+
+// miscountHint detects search lines that match a file line except for
+// the count of one repeated rune. Emits one hint per
+// (search-line, disagreeing-rune) group, capped at maxMiscountHints
+// total with " and N more" suffix.
+func miscountHint(contentLines, searchLines []string) string {
+	const maxMiscountHints = 3
+	var hints []string
+	extra := 0
+	for _, sLine := range searchLines {
+		sContent, _ := splitEnding(sLine)
+		if strings.TrimSpace(sContent) == "" {
+			continue
+		}
+		// One search line can disagree on different runes against
+		// different file lines; group by rune so each hint names a
+		// single codepoint.
+		groups := make(map[rune][]candidate)
+		counts := make(map[rune]int)
+		order := []rune{}
+		for i, cLine := range contentLines {
+			cContent, _ := splitEnding(cLine)
+			r, sc, cc, ok := singleRuneCountMismatch(sContent, cContent)
+			if !ok {
+				continue
+			}
+			if _, seen := groups[r]; !seen {
+				order = append(order, r)
+				counts[r] = sc
+			}
+			groups[r] = append(groups[r], candidate{line: i + 1, cCount: cc})
+		}
+		for _, r := range order {
+			if len(hints) >= maxMiscountHints {
+				extra++
+				continue
+			}
+			hints = append(hints, formatMiscount(counts[r], r, groups[r]))
+		}
+	}
+	if extra > 0 {
+		hints = append(hints, fmt.Sprintf("and %d more", extra))
+	}
+	return strings.Join(hints, ". ")
+}
+
+// formatMiscount renders one miscount candidate group.
+func formatMiscount(sCount int, r rune, cands []candidate) string {
+	var b strings.Builder
+	_, _ = fmt.Fprintf(&b, "Your old_text has %d %q (U+%04X); the file has ", sCount, string(r), r)
+	shown := min(len(cands), maxHintLines)
+	for i := 0; i < shown; i++ {
+		if i > 0 {
+			_, _ = b.WriteString(", ")
+		}
+		_, _ = fmt.Fprintf(&b, "%d at line %d", cands[i].cCount, cands[i].line)
+	}
+	if rest := len(cands) - shown; rest > 0 {
+		_, _ = fmt.Fprintf(&b, " and %d more", rest)
+	}
+	return b.String()
+}
+
+// candidate records a file line where one rune's count disagrees with
+// the search.
+type candidate struct {
+	line   int
+	cCount int
+}
+
+// singleRuneCountMismatch reports whether s and c agree on every rune
+// class except one, where the disagreeing rune appears at least twice
+// on one side.
+func singleRuneCountMismatch(s, c string) (r rune, sCount, cCount int, ok bool) {
+	if s == "" || c == "" {
+		return 0, 0, 0, false
+	}
+	sFreq := runeFrequency(s)
+	cFreq := runeFrequency(c)
+	var (
+		diffRune  rune
+		diffCount int
+		sc        int
+		cc        int
+	)
+	for rr, scv := range sFreq {
+		ccv := cFreq[rr]
+		if scv != ccv {
+			diffCount++
+			diffRune = rr
+			sc = scv
+			cc = ccv
+		}
+	}
+	for rr, ccv := range cFreq {
+		if _, present := sFreq[rr]; present {
+			continue
+		}
+		diffCount++
+		diffRune = rr
+		sc = 0
+		cc = ccv
+	}
+	if diffCount != 1 {
+		return 0, 0, 0, false
+	}
+	if sc < 2 && cc < 2 {
+		return 0, 0, 0, false
+	}
+	return diffRune, sc, cc, true
+}
+
+// runeFrequency returns the count of each rune in s.
+func runeFrequency(s string) map[rune]int {
+	freq := make(map[rune]int)
+	for _, r := range s {
+		freq[r]++
+	}
+	return freq
 }
 
 // seekLines scans contentLines looking for a contiguous subsequence that matches
@@ -1263,10 +1522,7 @@ func fuzzyReplaceLines(
 
 	if !replaceAll {
 		if count := countLineMatches(contentLines, searchLines, eq); count > 1 {
-			return "", true, xerrors.Errorf("search string matches %d occurrences "+
-				"(expected exactly 1). Include more surrounding "+
-				"context to make the match unique, or set "+
-				"replace_all to true", count)
+			return "", true, xerrors.Errorf(errOldTextAmbiguous, count)
 		}
 		var b strings.Builder
 		for _, l := range contentLines[:start] {

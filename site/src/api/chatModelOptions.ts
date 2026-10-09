@@ -4,7 +4,7 @@ import schema from "./chatModelOptionsGenerated.json";
  * Describes a single configurable field for a chat model provider.
  * Generated from Go struct tags via `scripts/modeloptionsgen`.
  */
-export interface FieldSchema {
+export type FieldSchema = {
 	/** The JSON key used in API payloads (may use dot-notation for nested fields). */
 	json_name: string;
 	/** The corresponding Go struct field name. */
@@ -23,14 +23,18 @@ export interface FieldSchema {
 	enum?: string[];
 	/** If true, this field should not be rendered in admin UI forms. */
 	hidden?: boolean;
-}
+	visible_when?: string;
+	conflicts_with?: string[];
+	/** Raw provider types the field applies to; absent means every provider. */
+	visible_for_providers?: string[];
+};
 
 /**
  * A group of fields belonging to a single provider or the general section.
  */
-export interface ProviderSchema {
+type ProviderSchema = {
 	fields: FieldSchema[];
-}
+};
 
 /**
  * Top-level schema describing all configurable chat model options.
@@ -40,64 +44,21 @@ export interface ProviderSchema {
  * - `provider_aliases` maps alternate names to canonical provider names
  *   (e.g. "azure" → "openai").
  */
-export interface ModelOptionsSchema {
+type ModelOptionsSchema = {
 	general: ProviderSchema;
 	providers: Record<string, ProviderSchema>;
 	provider_aliases: Record<string, string>;
-}
+};
 
 /** The imported schema, typed as {@link ModelOptionsSchema}. */
-export const modelOptionsSchema: ModelOptionsSchema =
-	schema as ModelOptionsSchema;
-
-const syntheticGeneralFields: FieldSchema[] = [
-	{
-		json_name: "cost.input_price_per_million_tokens",
-		go_name: "Cost.InputPricePerMillionTokens",
-		type: "number",
-		description: "Input token price in USD per 1M tokens",
-		required: false,
-		input_type: "input",
-	},
-	{
-		json_name: "cost.output_price_per_million_tokens",
-		go_name: "Cost.OutputPricePerMillionTokens",
-		type: "number",
-		description: "Output token price in USD per 1M tokens",
-		required: false,
-		input_type: "input",
-	},
-	{
-		json_name: "cost.cache_read_price_per_million_tokens",
-		go_name: "Cost.CacheReadPricePerMillionTokens",
-		type: "number",
-		description: "Cache read token price in USD per 1M tokens",
-		required: false,
-		input_type: "input",
-	},
-	{
-		json_name: "cost.cache_write_price_per_million_tokens",
-		go_name: "Cost.CacheWritePricePerMillionTokens",
-		type: "number",
-		description:
-			"Cache write or cache creation token price in USD per 1M tokens",
-		required: false,
-		input_type: "input",
-	},
-];
+const modelOptionsSchema: ModelOptionsSchema = schema as ModelOptionsSchema;
 
 /**
  * Get the general (provider-independent) fields such as temperature
  * and max_output_tokens.
  */
 export function getGeneralFields(): FieldSchema[] {
-	const fields = [...modelOptionsSchema.general.fields];
-	for (const field of syntheticGeneralFields) {
-		if (!fields.some((existing) => existing.json_name === field.json_name)) {
-			fields.push(field);
-		}
-	}
-	return fields;
+	return modelOptionsSchema.general.fields;
 }
 
 /**
@@ -134,14 +95,6 @@ export function getProviderNames(): string[] {
 }
 
 /**
- * Check whether a provider is known, either as a canonical name or an alias.
- */
-export function isKnownProvider(provider: string): boolean {
-	const resolved = resolveProvider(provider);
-	return resolved in modelOptionsSchema.providers;
-}
-
-/**
  * Convert a snake_case segment to camelCase.
  * Only the first character after each underscore is uppercased;
  * the leading character stays lowercase.
@@ -172,12 +125,28 @@ export function toFormFieldKey(provider: string, jsonName: string): string {
 	return `${provider}.${camelSegments.join(".")}`;
 }
 
-/** Get only the visible (non-hidden) fields for a provider. */
+/** Get only the visible fields for a raw provider type. */
 export function getVisibleProviderFields(provider: string): FieldSchema[] {
-	return getProviderFields(provider).filter((f) => !f.hidden);
+	return getProviderFields(provider).filter(
+		(f) => !f.hidden && isFieldVisibleForProvider(f, provider),
+	);
 }
 
-/** Get only the visible (non-hidden) general fields. */
-export function getVisibleGeneralFields(): FieldSchema[] {
-	return getGeneralFields().filter((f) => !f.hidden);
+/** Matches the raw provider type, not {@link resolveProvider}, so aliases
+ * like "azure" do not inherit client construction fields. */
+export function isFieldVisibleForProvider(
+	field: FieldSchema,
+	provider: string,
+): boolean {
+	const scope = field.visible_for_providers;
+	if (!scope || scope.length === 0) {
+		return true;
+	}
+	return scope.includes(provider.trim().toLowerCase());
+}
+
+export function getVisibleGeneralFields(provider: string): FieldSchema[] {
+	return getGeneralFields().filter(
+		(f) => !f.hidden && isFieldVisibleForProvider(f, provider),
+	);
 }

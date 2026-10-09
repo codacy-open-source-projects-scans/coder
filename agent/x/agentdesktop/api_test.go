@@ -162,7 +162,7 @@ func (f *fakeDesktop) StartRecording(_ context.Context, recordingID string) erro
 	if err != nil {
 		return err
 	}
-	_, _ = tmpFile.Write([]byte(fmt.Sprintf("fake-mp4-data-%s-%d", recordingID, f.startCount)))
+	_, _ = fmt.Fprintf(tmpFile, "fake-mp4-data-%s-%d", recordingID, f.startCount)
 	_ = tmpFile.Close()
 	f.recordings[recordingID] = tmpFile.Name()
 	return nil
@@ -257,9 +257,9 @@ func (f *oversizedFakeDesktop) StopRecording(ctx context.Context, recordingID st
 	artifact.Reader.Close()
 
 	// Look up the path from the fakeDesktop recordings.
-	f.fakeDesktop.recMu.Lock()
-	path := f.fakeDesktop.recordings[recordingID]
-	f.fakeDesktop.recMu.Unlock()
+	f.recMu.Lock()
+	path := f.recordings[recordingID]
+	f.recMu.Unlock()
 
 	// Expand the file to exceed the maximum recording size.
 	if err := os.Truncate(path, workspacesdk.MaxRecordingSize+1); err != nil {
@@ -521,6 +521,59 @@ func TestHandleAction_TypeAction(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, rr.Code)
 	assert.Equal(t, "hello world", fake.lastTyped)
+}
+
+func TestHandleAction_KeyDownAndUp(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		action     string
+		wantOutput string
+	}{
+		{name: "KeyDown", action: "key_down", wantOutput: "key_down action performed"},
+		{name: "KeyUp", action: "key_up", wantOutput: "key_up action performed"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			logger := slogtest.Make(t, nil)
+			fake := &fakeDesktop{
+				startCfg: agentdesktop.DisplayConfig{Width: 1920, Height: 1080},
+			}
+			api := agentdesktop.NewAPI(logger, fake, nil)
+			defer api.Close()
+
+			text := "ctrl"
+			body := agentdesktop.DesktopAction{
+				Action: tt.action,
+				Text:   &text,
+			}
+			b, err := json.Marshal(body)
+			require.NoError(t, err)
+
+			rr := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/action", bytes.NewReader(b))
+			req.Header.Set("Content-Type", "application/json")
+
+			handler := api.Routes()
+			handler.ServeHTTP(rr, req)
+
+			assert.Equal(t, http.StatusOK, rr.Code)
+
+			var resp agentdesktop.DesktopActionResponse
+			err = json.NewDecoder(rr.Body).Decode(&resp)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantOutput, resp.Output)
+			if tt.action == "key_down" {
+				assert.Equal(t, "ctrl", fake.lastKeyDown)
+			} else {
+				assert.Equal(t, "ctrl", fake.lastKeyUp)
+			}
+		})
+	}
 }
 
 func TestHandleAction_HoldKey(t *testing.T) {

@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/coder/coder/v2/coderd/coderdtest"
+	"github.com/coder/coder/v2/coderd/oauth2provider/oauth2providertest"
 	"github.com/coder/coder/v2/codersdk"
 	"github.com/coder/coder/v2/testutil"
 )
@@ -21,6 +22,7 @@ func TestOAuth2ClientMetadataValidation(t *testing.T) {
 	// Single instance shared across all sub-tests. Each registers independent OAuth2 apps with unique client names.
 	client := coderdtest.New(t, nil)
 	_ = coderdtest.CreateFirstUser(t, client)
+	oauth2providertest.EnableDCR(t, client)
 
 	t.Run("RedirectURIValidation", func(t *testing.T) {
 		t.Parallel()
@@ -468,6 +470,7 @@ func TestOAuth2ClientNameValidation(t *testing.T) {
 	// Single instance shared across all sub-tests. Each registers independent OAuth2 apps.
 	client := coderdtest.New(t, nil)
 	_ = coderdtest.CreateFirstUser(t, client)
+	oauth2providertest.EnableDCR(t, client)
 
 	tests := []struct {
 		name        string
@@ -538,68 +541,35 @@ func TestOAuth2ClientNameValidation(t *testing.T) {
 	}
 }
 
-// TestOAuth2ClientScopeValidation tests scope parameter validation
 func TestOAuth2ClientScopeValidation(t *testing.T) {
 	t.Parallel()
 
 	// Single instance shared across all sub-tests. Each registers independent OAuth2 apps.
 	client := coderdtest.New(t, nil)
 	_ = coderdtest.CreateFirstUser(t, client)
+	oauth2providertest.EnableDCR(t, client)
 
+	// TestRegisteredScopeAllowlist covers the scope rules. These rows prove
+	// the handler wiring only.
 	tests := []struct {
-		name        string
-		scope       string
-		expectError bool
+		name      string
+		scope     string
+		wantScope string
+		// Empty means the request is accepted.
+		wantError string
+		// The scope text the error echoes.
+		wantShown string
 	}{
 		{
-			name:        "DefaultEmpty",
-			scope:       "",
-			expectError: false,
+			name:      "UnknownNameDropped",
+			scope:     "workspace:read nosuch:scope",
+			wantScope: "workspace:read",
 		},
 		{
-			name:        "ValidRead",
-			scope:       "read",
-			expectError: false,
-		},
-		{
-			name:        "ValidWrite",
-			scope:       "write",
-			expectError: false,
-		},
-		{
-			name:        "ValidMultiple",
-			scope:       "read write",
-			expectError: false,
-		},
-		{
-			name:        "ValidOpenID",
-			scope:       "openid",
-			expectError: false,
-		},
-		{
-			name:        "ValidProfile",
-			scope:       "profile",
-			expectError: false,
-		},
-		{
-			name:        "ValidEmail",
-			scope:       "email",
-			expectError: false,
-		},
-		{
-			name:        "ValidCombined",
-			scope:       "openid profile email read write",
-			expectError: false,
-		},
-		{
-			name:        "InvalidAdmin",
-			scope:       "admin",
-			expectError: false, // Admin scope should be allowed but validated during authorization
-		},
-		{
-			name:        "ValidCustom",
-			scope:       "custom:scope",
-			expectError: false,
+			name:      "OnlyUnknownNames",
+			scope:     "openid profile email",
+			wantError: "unknown or unsupported scope",
+			wantShown: "openid profile email",
 		},
 	}
 
@@ -615,13 +585,16 @@ func TestOAuth2ClientScopeValidation(t *testing.T) {
 				Scope:        test.scope,
 			}
 
-			_, err := client.PostOAuth2ClientRegistration(ctx, req)
+			resp, err := client.PostOAuth2ClientRegistration(ctx, req)
 
-			if test.expectError {
-				require.Error(t, err)
-			} else {
+			if test.wantError == "" {
 				require.NoError(t, err)
+				require.Equal(t, test.wantScope, resp.Scope)
+				return
 			}
+			require.ErrorContains(t, err, "invalid_client_metadata")
+			require.ErrorContains(t, err, test.wantError)
+			require.ErrorContains(t, err, test.wantShown)
 		})
 	}
 }
@@ -632,6 +605,7 @@ func TestOAuth2ClientMetadataDefaults(t *testing.T) {
 
 	client := coderdtest.New(t, nil)
 	_ = coderdtest.CreateFirstUser(t, client)
+	oauth2providertest.EnableDCR(t, client)
 
 	ctx := testutil.Context(t, testutil.WaitLong)
 
@@ -675,6 +649,7 @@ func TestOAuth2ClientMetadataEdgeCases(t *testing.T) {
 	// Single instance shared across all sub-tests. Each registers independent OAuth2 apps with unique client names.
 	client := coderdtest.New(t, nil)
 	_ = coderdtest.CreateFirstUser(t, client)
+	oauth2providertest.EnableDCR(t, client)
 
 	t.Run("ExtremelyLongRedirectURI", func(t *testing.T) {
 		t.Parallel()

@@ -1,5 +1,4 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, within } from "storybook/test";
 import { Tool } from "./Tool";
 
 const PROCESS_ID = "376b2458-e318-4442-8b87-51a0f9727f0e";
@@ -7,14 +6,16 @@ const PROCESS_ID = "376b2458-e318-4442-8b87-51a0f9727f0e";
 const meta: Meta<typeof Tool> = {
 	title: "components/ai-elements/tool/ProcessSignal",
 	component: Tool,
-	decorators: [
-		(Story) => (
-			<div className="max-w-3xl rounded-lg border border-solid border-border-default bg-surface-primary p-4">
-				<Story />
-			</div>
-		),
-	],
-	args: { name: "process_signal" },
+	args: {
+		name: "process_signal",
+		organizationId: "organization-id",
+		mcpServers: [],
+		isError: false,
+		subagentTitles: new Map(),
+		subagentVariants: new Map(),
+		shellToolDisplayMode: "auto",
+		codeDiffDisplayMode: "auto",
+	},
 };
 export default meta;
 type Story = StoryObj<typeof Tool>;
@@ -28,10 +29,6 @@ export const RunningKill: Story = {
 		status: "running",
 		args: { process_id: PROCESS_ID, signal: "kill" },
 	},
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		expect(canvas.getByText("Killing process…")).toBeInTheDocument();
-	},
 };
 
 export const RunningTerminate: Story = {
@@ -39,20 +36,12 @@ export const RunningTerminate: Story = {
 		status: "running",
 		args: { process_id: PROCESS_ID, signal: "terminate" },
 	},
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		expect(canvas.getByText("Terminating process…")).toBeInTheDocument();
-	},
 };
 
 export const RunningUnknownSignal: Story = {
 	args: {
 		status: "running",
 		args: { process_id: PROCESS_ID, signal: "" },
-	},
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		expect(canvas.getByText("Sending signal…")).toBeInTheDocument();
 	},
 };
 
@@ -69,10 +58,6 @@ export const SuccessKill: Story = {
 			message: `signal "kill" sent to process ${PROCESS_ID}`,
 		},
 	},
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		expect(canvas.getByText("Killed process 376b2458")).toBeInTheDocument();
-	},
 };
 
 export const SuccessTerminate: Story = {
@@ -83,10 +68,6 @@ export const SuccessTerminate: Story = {
 			success: true,
 			message: `signal "terminate" sent to process ${PROCESS_ID}`,
 		},
-	},
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		expect(canvas.getByText("Terminated process 376b2458")).toBeInTheDocument();
 	},
 };
 
@@ -108,12 +89,6 @@ export const SoftFailureKill: Story = {
 			error: "signal process: process not found",
 		},
 	},
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		expect(
-			canvas.getByText("Failed to kill process 376b2458"),
-		).toBeInTheDocument();
-	},
 };
 
 export const SoftFailureTerminate: Story = {
@@ -124,12 +99,6 @@ export const SoftFailureTerminate: Story = {
 			success: false,
 			error: "signal process: process not found",
 		},
-	},
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		expect(
-			canvas.getByText("Failed to terminate process 376b2458"),
-		).toBeInTheDocument();
 	},
 };
 
@@ -143,10 +112,6 @@ export const ProtocolError: Story = {
 		isError: true,
 		args: { process_id: "", signal: "kill" },
 		result: "process_id is required",
-	},
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		expect(canvas.getByText("Failed to kill process")).toBeInTheDocument();
 	},
 };
 
@@ -163,26 +128,8 @@ export const ProtocolErrorStructured: Story = {
 			error: "workspace connection resolver is not configured",
 		},
 	},
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		expect(
-			canvas.getByText("Failed to terminate process 376b2458"),
-		).toBeInTheDocument();
-	},
 };
 
 // ---------------------------------------------------------------------------
 // Edge cases
 // ---------------------------------------------------------------------------
-
-/** No args parsed yet (streamed tool call with partial data). */
-export const NoArgs: Story = {
-	args: {
-		status: "running",
-		args: undefined,
-	},
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		expect(canvas.getByText("Sending signal…")).toBeInTheDocument();
-	},
-};

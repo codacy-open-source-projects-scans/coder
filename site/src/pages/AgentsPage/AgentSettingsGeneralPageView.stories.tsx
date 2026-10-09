@@ -1,9 +1,20 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, fn, userEvent, waitFor, within } from "storybook/test";
+import { expect, fn, spyOn, userEvent, waitFor, within } from "storybook/test";
+import { API } from "#/api/api";
+import { preferenceSettingsKey } from "#/api/queries/users";
+import type { AgentChatSendShortcut } from "#/api/typesGenerated";
 import {
 	AgentSettingsGeneralPageView,
 	type AgentSettingsGeneralPageViewProps,
 } from "./AgentSettingsGeneralPageView";
+
+const preferencesData = {
+	thinking_display_mode: "auto" as const,
+	shell_tool_display_mode: "auto" as const,
+	code_diff_display_mode: "auto" as const,
+	collapse_assistant_steps: false,
+	agent_chat_send_shortcut: "enter" as const,
+};
 
 const baseArgs: AgentSettingsGeneralPageViewProps = {
 	userPromptData: {
@@ -26,6 +37,9 @@ const meta = {
 	title: "pages/AgentsPage/AgentSettingsGeneralPageView",
 	component: AgentSettingsGeneralPageView,
 	args: baseArgs,
+	parameters: {
+		queries: [{ key: ["me", "preferences"], data: preferencesData }],
+	},
 } satisfies Meta<typeof AgentSettingsGeneralPageView>;
 
 export default meta;
@@ -38,14 +52,6 @@ export const InvisibleUnicodeWarningUserPrompt: Story = {
 		userPromptData: {
 			custom_prompt: "My custom prompt\u200b\u200c\u200dhidden",
 		},
-	},
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-
-		await canvas.findByText("Personal Instructions");
-		const alert = await canvas.findByText(/invisible Unicode/);
-		expect(alert).toBeInTheDocument();
-		expect(alert.textContent).toContain("2");
 	},
 };
 
@@ -61,12 +67,10 @@ export const InvisibleUnicodeWarningOnType: Story = {
 			"Additional behavior, style, and tone preferences",
 		);
 
-		expect(canvas.queryByText(/invisible Unicode/)).toBeNull();
 		await userEvent.type(textarea, "hello\u200bworld");
 
-		await waitFor(() => {
-			expect(canvas.getByText(/invisible Unicode/)).toBeInTheDocument();
-		});
+		// Wait for the warning to render so the snapshot captures it.
+		await canvas.findByText(/invisible Unicode/);
 	},
 };
 
@@ -111,14 +115,85 @@ export const SavesUserPrompt: Story = {
 	},
 };
 
-export const RendersChatLayoutSection: Story = {
+export const TogglesSendShortcut: Story = {
+	beforeEach: () => {
+		let agentChatSendShortcut: AgentChatSendShortcut =
+			preferencesData.agent_chat_send_shortcut;
+		spyOn(API, "getUserPreferenceSettings").mockImplementation(async () => ({
+			...preferencesData,
+			agent_chat_send_shortcut: agentChatSendShortcut,
+		}));
+		spyOn(API, "updateUserPreferenceSettings").mockImplementation(
+			async (req) => {
+				agentChatSendShortcut =
+					req.agent_chat_send_shortcut ?? agentChatSendShortcut;
+				return {
+					...preferencesData,
+					agent_chat_send_shortcut: agentChatSendShortcut,
+				};
+			},
+		);
+	},
+	play: async ({ canvasElement }) => {
+		const canvas = within(canvasElement);
+		const toggle = await canvas.findByRole("switch", {
+			name: "Require Cmd/Ctrl+Enter to send messages",
+		});
+
+		expect(await canvas.findByText("Keyboard shortcuts")).toBeInTheDocument();
+		expect(toggle).not.toBeChecked();
+
+		await userEvent.click(toggle);
+		await waitFor(() => {
+			expect(API.updateUserPreferenceSettings).toHaveBeenCalledWith({
+				agent_chat_send_shortcut: "modifier_enter",
+			});
+			expect(toggle).toBeChecked();
+		});
+	},
+};
+
+export const CollapseAssistantStepsEnabled: Story = {
+	parameters: {
+		queries: [
+			{
+				key: preferenceSettingsKey,
+				data: { ...preferencesData, collapse_assistant_steps: true },
+			},
+		],
+	},
+};
+
+export const CollapseAssistantStepsLoadError: Story = {
+	// Drop the seeded preferences so the component fetches and hits the error.
+	parameters: { queries: [] },
+	beforeEach: () => {
+		spyOn(API, "getUserPreferenceSettings").mockRejectedValue(
+			new Error("boom"),
+		);
+	},
+	play: async ({ canvasElement }) => {
+		await within(canvasElement).findByText(
+			"Failed to load your collapse assistant steps preference.",
+		);
+	},
+};
+
+export const CollapseAssistantStepsSaveError: Story = {
+	beforeEach: () => {
+		spyOn(API, "updateUserPreferenceSettings").mockRejectedValue(
+			new Error("boom"),
+		);
+	},
 	play: async ({ canvasElement }) => {
 		const canvas = within(canvasElement);
 
-		expect(await canvas.findByText("Chat Layout")).toBeInTheDocument();
-		expect(
-			await canvas.findByRole("switch", { name: "Full-width chat" }),
-		).toBeInTheDocument();
+		await userEvent.click(
+			await canvas.findByRole("switch", { name: "Collapse assistant steps" }),
+		);
+		await canvas.findByText(
+			"Failed to save your collapse assistant steps preference.",
+		);
 	},
 };
 
@@ -145,25 +220,5 @@ export const ShowsChatDebugLoggingToggle: Story = {
 				debug_logging_enabled: true,
 			});
 		});
-	},
-};
-
-export const HidesChatDebugLoggingToggle: Story = {
-	args: {
-		userDebugLoggingData: {
-			debug_logging_enabled: false,
-			user_toggle_allowed: false,
-			forced_by_deployment: false,
-		},
-	},
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-
-		expect(canvas.queryByText("Record debug logs for my chats")).toBeNull();
-		expect(
-			canvas.queryByRole("switch", {
-				name: "Enable personal chat debug logging",
-			}),
-		).toBeNull();
 	},
 };

@@ -44,8 +44,9 @@ func NewServer(logger slog.Logger, opts ...Option) (*Server, error) {
 		logger: logger,
 		path:   options.path,
 		service: &DRPCAgentSocketService{
-			logger:      logger,
-			unitManager: unit.NewManager(),
+			logger:         logger,
+			unitManager:    unit.NewManager(),
+			contextManager: options.contextManager,
 		},
 	}
 
@@ -55,7 +56,7 @@ func NewServer(logger slog.Logger, opts ...Option) (*Server, error) {
 		return nil, xerrors.Errorf("failed to register drpc service: %w", err)
 	}
 
-	server.drpcServer = drpcserver.NewWithOptions(mux, drpcserver.Options{
+	server.drpcServer = drpcsdk.NewServer(logger, mux, drpcserver.Options{
 		Manager: drpcsdk.DefaultDRPCOptions(nil),
 		Log: func(err error) {
 			if errors.Is(err, context.Canceled) ||

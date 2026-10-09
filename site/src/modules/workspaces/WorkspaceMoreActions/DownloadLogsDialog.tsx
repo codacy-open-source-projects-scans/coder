@@ -1,6 +1,7 @@
+import { cn } from "cn";
 import { saveAs } from "file-saver";
 import JSZip from "jszip";
-import { type FC, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQueries, useQuery } from "react-query";
 import { toast } from "sonner";
 import { getErrorDetail } from "#/api/errors";
@@ -10,9 +11,9 @@ import { Alert } from "#/components/Alert/Alert";
 import {
 	ConfirmDialog,
 	type ConfirmDialogProps,
-} from "#/components/Dialogs/ConfirmDialog/ConfirmDialog";
+} from "#/components/Dialog/ConfirmDialog/ConfirmDialog";
 import { Skeleton } from "#/components/Skeleton/Skeleton";
-import { cn } from "#/utils/cn";
+import { getWorkspaceAgents } from "#/utils/workspace";
 
 type DownloadLogsDialogProps = Pick<
 	ConfirmDialogProps,
@@ -27,7 +28,7 @@ type DownloadableFile = {
 	blob: Blob | undefined;
 };
 
-export const DownloadLogsDialog: FC<DownloadLogsDialogProps> = ({
+export const DownloadLogsDialog: React.FC<DownloadLogsDialogProps> = ({
 	workspace,
 	open,
 	onClose,
@@ -39,15 +40,12 @@ export const DownloadLogsDialog: FC<DownloadLogsDialogProps> = ({
 	});
 
 	const allUniqueAgents = useMemo<readonly WorkspaceAgent[]>(() => {
-		const allAgents = workspace.latest_build.resources.flatMap(
-			(resource) => resource.agents ?? [],
-		);
+		const allAgents = getWorkspaceAgents(workspace);
 
 		// Can't use the "new Set()" trick because we're not dealing with primitives
 		const uniqueAgents = new Map(allAgents.map((agent) => [agent.id, agent]));
-		const iterable = [...uniqueAgents.values()];
-		return iterable;
-	}, [workspace.latest_build.resources]);
+		return [...uniqueAgents.values()];
+	}, [workspace]);
 
 	const agentLogQueries = useQueries({
 		queries: allUniqueAgents.map((agent) => ({
@@ -173,7 +171,10 @@ type DownloadingItemProps = Readonly<{
 	file: DownloadableFile;
 }>;
 
-const DownloadingItem: FC<DownloadingItemProps> = ({ file, giveUpTimeMs }) => {
+const DownloadingItem: React.FC<DownloadingItemProps> = ({
+	file,
+	giveUpTimeMs,
+}) => {
 	const [isWaiting, setIsWaiting] = useState(true);
 
 	useEffect(() => {
@@ -201,13 +202,13 @@ const DownloadingItem: FC<DownloadingItemProps> = ({ file, giveUpTimeMs }) => {
 					!isWaiting && "text-content-disabled",
 				)}
 			>
-				<span className="min-w-0 flex-shrink overflow-hidden text-ellipsis">
+				<span className="min-w-0 shrink overflow-hidden text-ellipsis">
 					{baseName}
 				</span>
-				<span className="flex-shrink-0">.{fileExtension}</span>
+				<span className="shrink-0">.{fileExtension}</span>
 			</span>
 
-			<span className="flex-shrink-0 text-sm whitespace-nowrap">
+			<span className="shrink-0 text-sm whitespace-nowrap">
 				{file.blob ? (
 					humanBlobSize(file.blob.size)
 				) : isWaiting ? (
@@ -227,21 +228,22 @@ const DownloadingItem: FC<DownloadingItemProps> = ({ file, giveUpTimeMs }) => {
 	);
 };
 
-function humanBlobSize(size: number) {
+export function humanBlobSize(size: number) {
 	const BLOB_SIZE_UNITS = ["B", "KB", "MB", "GB", "TB"] as const;
 	let i = 0;
-	let sizeIterator = size;
-	while (sizeIterator > 1024 && i < BLOB_SIZE_UNITS.length) {
-		sizeIterator /= 1024;
+	let sizeInUnits = size;
+	while (sizeInUnits >= 1024 && i < BLOB_SIZE_UNITS.length - 1) {
+		sizeInUnits /= 1024;
 		i++;
 	}
 
-	// The condition for the while loop above means that over time, we could break
-	// out of the loop because we accidentally shot past the array bounds and i
-	// is at index (BLOB_SIZE_UNITS.length). Adding a lot of redundant checks to
-	// make sure we always have a usable unit
-	const finalUnit = BLOB_SIZE_UNITS[i] ?? BLOB_SIZE_UNITS.at(-1) ?? "TB";
-	return `${size.toFixed(2)} ${finalUnit}`;
+	const finalUnit = BLOB_SIZE_UNITS[i];
+
+	// Round to 2 decimals and omit trailing zeros for whole numbers.
+	const formattedSize = new Intl.NumberFormat("en-US", {
+		maximumFractionDigits: 2,
+	}).format(sizeInUnits);
+	return `${formattedSize} ${finalUnit}`;
 }
 
 type FileNameInfo = Readonly<{

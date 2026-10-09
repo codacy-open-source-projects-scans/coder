@@ -2,7 +2,7 @@ package database
 
 import (
 	"database/sql"
-	"encoding/hex"
+	"fmt"
 	"slices"
 	"sort"
 	"strconv"
@@ -17,6 +17,7 @@ import (
 
 	"github.com/coder/coder/v2/coderd/rbac"
 	"github.com/coder/coder/v2/coderd/rbac/policy"
+	"github.com/coder/coder/v2/coderd/util/slice"
 )
 
 type WorkspaceStatus string
@@ -83,6 +84,44 @@ type AuditableGroup struct {
 	Members []GroupMemberTable `json:"members"`
 }
 
+// AuditableGroupAIBudget is the audit-log representation of GroupAIBudget.
+// It enriches the raw record with the group's name and a human-readable
+// spend limit so audit entries can display meaningful values instead of
+// UUIDs and micros.
+type AuditableGroupAIBudget struct {
+	GroupAIBudget
+	GroupName  string `json:"group_name"`
+	SpendLimit string `json:"spend_limit"`
+}
+
+func (b GroupAIBudget) Auditable(groupName string) AuditableGroupAIBudget {
+	return AuditableGroupAIBudget{
+		GroupAIBudget: b,
+		GroupName:     groupName,
+		SpendLimit:    fmt.Sprintf("$%.2f", float64(b.SpendLimitMicros)/1_000_000),
+	}
+}
+
+// AuditableUserAIBudgetOverride is the audit-log representation of
+// UserAIBudgetOverride. It enriches the raw record with the username, the
+// attributed group's name, and a human-readable spend limit so audit
+// entries can display meaningful values instead of UUIDs and micros.
+type AuditableUserAIBudgetOverride struct {
+	UserAIBudgetOverride
+	Username   string `json:"username"`
+	GroupName  string `json:"group_name"`
+	SpendLimit string `json:"spend_limit"`
+}
+
+func (o UserAIBudgetOverride) Auditable(username, groupName string) AuditableUserAIBudgetOverride {
+	return AuditableUserAIBudgetOverride{
+		UserAIBudgetOverride: o,
+		Username:             username,
+		GroupName:            groupName,
+		SpendLimit:           fmt.Sprintf("$%.2f", float64(o.SpendLimitMicros)/1_000_000),
+	}
+}
+
 // Auditable returns an object that can be used in audit logs.
 // Covers both group and group member changes.
 func (g Group) Auditable(members []GroupMember) AuditableGroup {
@@ -133,49 +172,55 @@ func (w ConnectionLog) RBACObject() rbac.Object {
 	return obj
 }
 
-// TaskTable converts a Task to it's reduced version.
-// A more generalized solution is to use json marshaling to
-// consistently keep these two structs in sync.
-// That would be a lot of overhead, and a more costly unit test is
-// written to make sure these match up.
-func (t Task) TaskTable() TaskTable {
-	return TaskTable{
-		ID:                 t.ID,
-		OrganizationID:     t.OrganizationID,
-		OwnerID:            t.OwnerID,
-		Name:               t.Name,
-		DisplayName:        t.DisplayName,
-		WorkspaceID:        t.WorkspaceID,
-		TemplateVersionID:  t.TemplateVersionID,
-		TemplateParameters: t.TemplateParameters,
-		Prompt:             t.Prompt,
-		CreatedAt:          t.CreatedAt,
-		DeletedAt:          t.DeletedAt,
-	}
+func (p ChatProject) RBACObject() rbac.Object {
+	return rbac.ResourceChatProject.WithID(p.ID).InOrg(p.OrganizationID).WithOwner(p.OwnerID.String())
 }
 
-func (t Task) RBACObject() rbac.Object {
-	obj := rbac.ResourceTask.
-		WithID(t.ID).
-		WithOwner(t.OwnerID.String()).
-		InOrg(t.OrganizationID)
+// RBACObject scopes a memory to its project so the project owner owns it.
+// Memories carry no owner of their own, so the parent project must be
+// supplied.
+func (m ChatProjectMemory) RBACObject(project ChatProject) rbac.Object {
+	return rbac.ResourceChatProjectMemory.WithID(m.ID).InOrg(project.OrganizationID).WithOwner(project.OwnerID.String())
+}
 
-	if rbac.WorkspaceACLDisabled() {
-		return obj
-	}
-
-	if t.WorkspaceGroupACL != nil {
-		obj = obj.WithGroupACL(t.WorkspaceGroupACL.RBACACL())
-	}
-	if t.WorkspaceUserACL != nil {
-		obj = obj.WithACLUserList(t.WorkspaceUserACL.RBACACL())
-	}
-
-	return obj
+// ChatProjectMemoryRBACObject is the object to authorize when creating a
+// memory in the project, before an ID exists.
+func ChatProjectMemoryRBACObject(project ChatProject) rbac.Object {
+	return rbac.ResourceChatProjectMemory.InOrg(project.OrganizationID).WithOwner(project.OwnerID.String())
 }
 
 func (c Chat) RBACObject() rbac.Object {
-	return rbac.ResourceChat.WithID(c.ID).WithOwner(c.OwnerID.String()).InOrg(c.OrganizationID)
+	obj := rbac.ResourceChat.
+		WithID(c.ID).
+		WithOwner(c.OwnerID.String()).
+		InOrg(c.OrganizationID)
+
+	if rbac.ChatACLDisabled() {
+		return obj
+	}
+
+	return obj.
+		WithACLUserList(c.UserACL.RBACACL()).
+		WithGroupACL(c.GroupACL.RBACACL())
+}
+
+func (a ChatAutomation) RBACObject() rbac.Object {
+	return rbac.ResourceChatAutomation.
+		WithID(a.ID).
+		InOrg(a.OrganizationID).
+		WithOwner(a.OwnerID.String())
+}
+
+func (m MCPServerConfig) RBACObject() rbac.Object {
+	return rbac.ResourceMCPServerConfig.
+		WithID(m.ID).
+		InOrg(m.OrganizationID).
+		WithGroupACL(m.GroupACL.RBACACL()).
+		WithACLUserList(m.UserACL.RBACACL())
+}
+
+func (c Chat) IsSubChat() bool {
+	return c.RootChatID.Valid || c.ParentChatID.Valid
 }
 
 func (r GetChatsRow) RBACObject() rbac.Object {
@@ -191,6 +236,10 @@ func (c ChatFile) RBACObject() rbac.Object {
 }
 
 func (c GetChatFileMetadataByChatIDRow) RBACObject() rbac.Object {
+	return rbac.ResourceChat.WithID(c.ID).WithOwner(c.OwnerID.String()).InOrg(c.OrganizationID)
+}
+
+func (c GetChatFileDataPrefixesByIDsRow) RBACObject() rbac.Object {
 	return rbac.ResourceChat.WithID(c.ID).WithOwner(c.OwnerID.String()).InOrg(c.OrganizationID)
 }
 
@@ -224,11 +273,10 @@ func (s APIKeyScopes) Has(target APIKeyScope) bool {
 }
 
 // expandRBACScope merges the permissions of all scopes in the list into a
-// single RBAC scope. If the list is empty, it defaults to rbac.ScopeAll for
-// backward compatibility. This method is internal; use ScopeSet() to combine
-// scopes with the API key's allow list for authorization.
+// single RBAC scope. An empty list is an error rather than rbac.ScopeAll, which
+// would widen a key rather than fail it. This method is internal; use
+// ScopeSet() to combine scopes with the API key's allow list for authorization.
 func (s APIKeyScopes) expandRBACScope() (rbac.Scope, error) {
-	// Default to ScopeAll for backward compatibility when no scopes provided.
 	if len(s) == 0 {
 		return rbac.Scope{}, xerrors.New("no scopes provided")
 	}
@@ -401,12 +449,24 @@ func (g GetGroupsRow) RBACObject() rbac.Object {
 	return g.Group.RBACObject()
 }
 
+func (g GetOrganizationGroupsAISpendRow) RBACObject() rbac.Object {
+	return Group{ID: g.GroupID, OrganizationID: g.OrganizationID}.RBACObject()
+}
+
 func (gm GroupMember) RBACObject() rbac.Object {
 	return rbac.ResourceGroupMember.WithID(gm.UserID).InOrg(gm.OrganizationID).WithOwner(gm.UserID.String())
 }
 
 func (gm GetGroupMembersByGroupIDPaginatedRow) RBACObject() rbac.Object {
 	return rbac.ResourceGroupMember.WithID(gm.UserID).InOrg(gm.OrganizationID).WithOwner(gm.UserID.String())
+}
+
+func (r GetGroupMembersAISpendRow) RBACObject() rbac.Object {
+	return rbac.ResourceGroupMember.WithID(r.UserID).InOrg(r.OrganizationID).WithOwner(r.UserID.String())
+}
+
+func (r ExportOrganizationAISpendRow) RBACObject() rbac.Object {
+	return rbac.ResourceGroupMember.WithID(r.UserID).InOrg(r.OrganizationID).WithOwner(r.UserID.String())
 }
 
 // PrebuiltWorkspaceResource defines the interface for types that can be identified as prebuilt workspaces
@@ -584,9 +644,10 @@ func (u GetUsersRow) RBACObject() rbac.Object {
 	return rbac.ResourceUserObject(u.ID)
 }
 
-func (u GitSSHKey) RBACObject() rbac.Object        { return rbac.ResourceUserObject(u.UserID) }
-func (u ExternalAuthLink) RBACObject() rbac.Object { return rbac.ResourceUserObject(u.UserID) }
-func (u UserLink) RBACObject() rbac.Object         { return rbac.ResourceUserObject(u.UserID) }
+func (u GitSSHKey) RBACObject() rbac.Object          { return rbac.ResourceUserObject(u.UserID) }
+func (u ExternalAuthLink) RBACObject() rbac.Object   { return rbac.ResourceUserObject(u.UserID) }
+func (u UserLink) RBACObject() rbac.Object           { return rbac.ResourceUserObject(u.UserID) }
+func (u MCPServerUserToken) RBACObject() rbac.Object { return rbac.ResourceUserObject(u.UserID) }
 
 func (u ExternalAuthLink) OAuthToken() *oauth2.Token {
 	return &oauth2.Token{
@@ -614,6 +675,24 @@ func (OAuth2ProviderAppSecret) RBACObject() rbac.Object {
 
 func (OAuth2ProviderApp) RBACObject() rbac.Object {
 	return rbac.ResourceOauth2App
+}
+
+// IsPublic reports whether the app is a public (secretless, PKCE-only)
+// OAuth2 client per RFC 7591 §2 / OAuth 2.1 §2.1, as opposed to confidential.
+// An unset or unrecognized client type reads as confidential, so an app can
+// never skip client authentication by accident.
+func (a OAuth2ProviderApp) IsPublic() bool {
+	return a.ClientType == OAuth2ProviderAppClientTypePublic
+}
+
+// RegisteredRedirectURIs returns the redirect URIs the authorize and token
+// endpoints accept, primary first. RedirectUris is the source of truth.
+// The result is never empty: callers index the first entry directly.
+func (a OAuth2ProviderApp) RegisteredRedirectURIs() []string {
+	if len(a.RedirectUris) == 0 {
+		return []string{a.CallbackURL}
+	}
+	return slice.Unique(a.RedirectUris)
 }
 
 func (a GetOAuth2ProviderAppsByUserIDRow) RBACObject() rbac.Object {
@@ -731,7 +810,6 @@ func ConvertWorkspaceRows(rows []GetWorkspacesRow) ([]Workspace, error) {
 			TemplateIcon:            r.TemplateIcon,
 			TemplateDescription:     r.TemplateDescription,
 			NextStartAt:             r.NextStartAt,
-			TaskID:                  r.TaskID,
 		}
 
 		var err error
@@ -811,12 +889,20 @@ func (r GetAuthorizationUserRolesRow) RoleNames() ([]rbac.RoleIdentifier, error)
 	return names, nil
 }
 
-func (k CryptoKey) ExpiresAt(keyDuration time.Duration) time.Time {
-	return k.StartsAt.Add(keyDuration).UTC()
+func (r GetActiveUsersAuthorizationRolesRow) RoleNames() ([]rbac.RoleIdentifier, error) {
+	names := make([]rbac.RoleIdentifier, 0, len(r.Roles))
+	for _, role := range r.Roles {
+		value, err := rbac.RoleNameFromString(role)
+		if err != nil {
+			return nil, xerrors.Errorf("convert role %q: %w", role, err)
+		}
+		names = append(names, value)
+	}
+	return names, nil
 }
 
-func (k CryptoKey) DecodeString() ([]byte, error) {
-	return hex.DecodeString(k.Secret.String)
+func (k CryptoKey) ExpiresAt(keyDuration time.Duration) time.Time {
+	return k.StartsAt.Add(keyDuration).UTC()
 }
 
 func (k CryptoKey) CanSign(now time.Time) bool {
@@ -860,6 +946,10 @@ func (m WorkspaceAgentVolumeResourceMonitor) Debounce(
 	}
 
 	return m.DebouncedUntil, false
+}
+
+func (s UserSkill) RBACObject() rbac.Object {
+	return rbac.ResourceUserSkill.WithID(s.ID).WithOwner(s.UserID.String())
 }
 
 func (s UserSecret) RBACObject() rbac.Object {
@@ -932,6 +1022,11 @@ func (r GetWorkspaceAgentAndWorkspaceByIDRow) RBACObject() rbac.Object {
 	return r.WorkspaceTable.RBACObject()
 }
 
+// A workspace agent belongs to the owner of the associated workspace.
+func (r GetWorkspaceBuildAgentsByInstanceIDRow) RBACObject() rbac.Object {
+	return r.WorkspaceTable.RBACObject()
+}
+
 // UpsertConnectionLogParams contains the parameters for upserting a
 // connection log entry. This struct is hand-maintained (not generated
 // by sqlc) because the single-row UpsertConnectionLog query was
@@ -953,6 +1048,7 @@ type UpsertConnectionLogParams struct {
 	SlugOrPort       sql.NullString   `db:"slug_or_port" json:"slug_or_port"`
 	ConnectionID     uuid.NullUUID    `db:"connection_id" json:"connection_id"`
 	DisconnectReason sql.NullString   `db:"disconnect_reason" json:"disconnect_reason"`
+	ClientSessionID  sql.NullString   `db:"client_session_id" json:"client_session_id"`
 	Time             time.Time        `db:"time" json:"time"`
 	ConnectionStatus ConnectionStatus `db:"connection_status" json:"connection_status"`
 }

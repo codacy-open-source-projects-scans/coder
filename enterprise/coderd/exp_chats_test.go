@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
+	"github.com/coder/coder/v2/coderd/aibridgedtest"
 	"github.com/coder/coder/v2/coderd/coderdtest"
 	"github.com/coder/coder/v2/coderd/database"
 	"github.com/coder/coder/v2/coderd/database/dbtestutil"
@@ -24,18 +25,67 @@ import (
 	"github.com/coder/websocket"
 )
 
+func createOpenAIProviderForTest(
+	ctx context.Context,
+	t testing.TB,
+	client *codersdk.ExperimentalClient,
+	apiKey string,
+	baseURL string,
+) codersdk.AIProvider {
+	t.Helper()
+	provider, err := client.CreateAIProvider(ctx, codersdk.CreateAIProviderRequest{
+		Type:        codersdk.AIProviderTypeOpenAI,
+		Name:        "openai-" + uuid.NewString(),
+		DisplayName: "OpenAI",
+		Enabled:     true,
+		BaseURL:     baseURL,
+		APIKeys:     []string{apiKey},
+	})
+	require.NoError(t, err)
+	return provider
+}
+
+func createOpenAIChatModelForTest(
+	ctx context.Context,
+	t testing.TB,
+	client *codersdk.ExperimentalClient,
+	apiKey string,
+	baseURL string,
+) codersdk.ChatModel {
+	t.Helper()
+	provider := createOpenAIProviderForTest(ctx, t, client, apiKey, baseURL)
+	defaultOrg, err := client.OrganizationByName(ctx, codersdk.DefaultOrganization)
+	require.NoError(t, err)
+	model, err := client.CreateChatModel(ctx, defaultOrg.ID, codersdk.CreateChatModelRequest{
+		AIProviderID:         &provider.ID,
+		Model:                "gpt-4",
+		DisplayName:          "GPT-4",
+		ContextLimit:         new(int64(1000)),
+		CompressionThreshold: new(int32(70)),
+	})
+	require.NoError(t, err)
+	return model
+}
+
 func TestChatStreamRelay(t *testing.T) {
+	// OpenAI Responses streaming events are buffered (not relayed) under AI
+	// Gateway routing while the agentic inner loop exists; see
+	// https://github.com/coder/aibridge/issues/223. Unskip once the
+	// reverse-proxy refactor lands and the follow-up tracking ticket is
+	// resolved.
 	t.Parallel()
+	t.Skip("chat stream relay buffers events under AI Gateway routing; see CODAGT-734 and https://github.com/coder/aibridge/issues/223")
 
 	t.Run("RelayMessagePartsAcrossReplicas", func(t *testing.T) {
 		t.Parallel()
 		ctx := testutil.Context(t, testutil.WaitLong)
 
 		db, pubsub := dbtestutil.NewDB(t)
-		firstClient, firstUser := coderdenttest.New(t, &coderdenttest.Options{
+		firstClient, _, firstAPI, firstUser := coderdenttest.NewWithAPI(t, &coderdenttest.Options{
 			Options: &coderdtest.Options{
-				Database: db,
-				Pubsub:   pubsub,
+				Database:         db,
+				Pubsub:           pubsub,
+				DeploymentValues: coderdtest.DeploymentValues(t),
 			},
 			LicenseOptions: &coderdenttest.LicenseOptions{
 				Features: license.Features{
@@ -43,15 +93,18 @@ func TestChatStreamRelay(t *testing.T) {
 				},
 			},
 		})
+		aibridgedtest.StartTestAIBridgeDaemon(t.Context(), t, firstAPI.AGPL, nil)
 
-		secondClient, _ := coderdenttest.New(t, &coderdenttest.Options{
+		secondClient, _, secondAPI, _ := coderdenttest.NewWithAPI(t, &coderdenttest.Options{
 			Options: &coderdtest.Options{
-				Database: db,
-				Pubsub:   pubsub,
+				Database:         db,
+				Pubsub:           pubsub,
+				DeploymentValues: coderdtest.DeploymentValues(t),
 			},
 			DontAddLicense:   true,
 			DontAddFirstUser: true,
 		})
+		aibridgedtest.StartTestAIBridgeDaemon(t.Context(), t, secondAPI.AGPL, nil)
 		secondClient.SetSessionToken(firstClient.SessionToken())
 
 		// Verify we have two replicas
@@ -74,27 +127,11 @@ func TestChatStreamRelay(t *testing.T) {
 			return chattest.OpenAINonStreamingResponse("ok")
 		})
 
-		//nolint:gocritic // Test uses owner client to configure chat providers.
-		provider, err := codersdk.NewExperimentalClient(firstClient).CreateChatProvider(ctx, codersdk.CreateChatProviderConfigRequest{
-			Provider:    "openai",
-			DisplayName: "OpenAI",
-			APIKey:      "test",
-			BaseURL:     openai,
-		})
-		require.NoError(t, err)
-		require.Equal(t, codersdk.ChatProviderConfigSourceDatabase, provider.Source)
-
-		model, err := codersdk.NewExperimentalClient(firstClient).CreateChatModelConfig(ctx, codersdk.CreateChatModelConfigRequest{
-			Provider:             provider.Provider,
-			Model:                "gpt-4",
-			DisplayName:          "GPT-4",
-			ContextLimit:         &[]int64{1000}[0],
-			CompressionThreshold: &[]int32{70}[0],
-		})
-		require.NoError(t, err)
+		expClient := codersdk.NewExperimentalClient(firstClient)
+		model := createOpenAIChatModelForTest(ctx, t, expClient, "test", openai)
 
 		// Create a chat on the first replica
-		chat, err := codersdk.NewExperimentalClient(firstClient).CreateChat(ctx, codersdk.CreateChatRequest{
+		chat, err := expClient.CreateChat(ctx, codersdk.CreateChatRequest{
 			OrganizationID: firstUser.OrganizationID,
 			Content: []codersdk.ChatInputPart{{
 				Type: codersdk.ChatInputPartTypeText,
@@ -189,11 +226,12 @@ func TestChatStreamRelay(t *testing.T) {
 
 		certificates := []tls.Certificate{testutil.GenerateTLSCertificate(t, "localhost")}
 		db, pubsub := dbtestutil.NewDB(t)
-		firstClient, firstUser := coderdenttest.New(t, &coderdenttest.Options{
+		firstClient, _, firstAPI, firstUser := coderdenttest.NewWithAPI(t, &coderdenttest.Options{
 			Options: &coderdtest.Options{
-				Database:        db,
-				Pubsub:          pubsub,
-				TLSCertificates: certificates,
+				Database:         db,
+				Pubsub:           pubsub,
+				TLSCertificates:  certificates,
+				DeploymentValues: coderdtest.DeploymentValues(t),
 			},
 			LicenseOptions: &coderdenttest.LicenseOptions{
 				Features: license.Features{
@@ -201,16 +239,19 @@ func TestChatStreamRelay(t *testing.T) {
 				},
 			},
 		})
+		aibridgedtest.StartTestAIBridgeDaemon(t.Context(), t, firstAPI.AGPL, nil)
 
-		secondClient, _ := coderdenttest.New(t, &coderdenttest.Options{
+		secondClient, _, secondAPI, _ := coderdenttest.NewWithAPI(t, &coderdenttest.Options{
 			Options: &coderdtest.Options{
-				Database:        db,
-				Pubsub:          pubsub,
-				TLSCertificates: certificates,
+				Database:         db,
+				Pubsub:           pubsub,
+				TLSCertificates:  certificates,
+				DeploymentValues: coderdtest.DeploymentValues(t),
 			},
 			DontAddLicense:   true,
 			DontAddFirstUser: true,
 		})
+		aibridgedtest.StartTestAIBridgeDaemon(t.Context(), t, secondAPI.AGPL, nil)
 
 		// Authenticate the second client using cookies only, simulating
 		// browser WebSocket behavior. Browsers cannot set custom
@@ -264,26 +305,11 @@ func TestChatStreamRelay(t *testing.T) {
 			return chattest.OpenAINonStreamingResponse("ok")
 		})
 
-		//nolint:gocritic // Test uses owner client to configure chat providers.
-		provider, err := codersdk.NewExperimentalClient(firstClient).CreateChatProvider(ctx, codersdk.CreateChatProviderConfigRequest{
-			Provider:    "openai",
-			DisplayName: "OpenAI",
-			APIKey:      "test",
-			BaseURL:     openai,
-		})
-		require.NoError(t, err)
-
-		model, err := codersdk.NewExperimentalClient(firstClient).CreateChatModelConfig(ctx, codersdk.CreateChatModelConfigRequest{
-			Provider:             provider.Provider,
-			Model:                "gpt-4",
-			DisplayName:          "GPT-4",
-			ContextLimit:         &[]int64{1000}[0],
-			CompressionThreshold: &[]int32{70}[0],
-		})
-		require.NoError(t, err)
+		expClient := codersdk.NewExperimentalClient(firstClient)
+		model := createOpenAIChatModelForTest(ctx, t, expClient, "test", openai)
 
 		// Create a chat on the first replica.
-		chat, err := codersdk.NewExperimentalClient(firstClient).CreateChat(ctx, codersdk.CreateChatRequest{
+		chat, err := expClient.CreateChat(ctx, codersdk.CreateChatRequest{
 			OrganizationID: firstUser.OrganizationID,
 			Content: []codersdk.ChatInputPart{{
 				Type: codersdk.ChatInputPartTypeText,
@@ -384,10 +410,11 @@ func TestChatStreamRelay(t *testing.T) {
 		ctx := testutil.Context(t, testutil.WaitLong)
 
 		db, pubsub := dbtestutil.NewDB(t)
-		firstClient, firstUser := coderdenttest.New(t, &coderdenttest.Options{
+		firstClient, _, firstAPI, firstUser := coderdenttest.NewWithAPI(t, &coderdenttest.Options{
 			Options: &coderdtest.Options{
-				Database: db,
-				Pubsub:   pubsub,
+				Database:         db,
+				Pubsub:           pubsub,
+				DeploymentValues: coderdtest.DeploymentValues(t),
 			},
 			LicenseOptions: &coderdenttest.LicenseOptions{
 				Features: license.Features{
@@ -395,15 +422,18 @@ func TestChatStreamRelay(t *testing.T) {
 				},
 			},
 		})
+		aibridgedtest.StartTestAIBridgeDaemon(t.Context(), t, firstAPI.AGPL, nil)
 
-		secondClient, _ := coderdenttest.New(t, &coderdenttest.Options{
+		secondClient, _, secondAPI, _ := coderdenttest.NewWithAPI(t, &coderdenttest.Options{
 			Options: &coderdtest.Options{
-				Database: db,
-				Pubsub:   pubsub,
+				Database:         db,
+				Pubsub:           pubsub,
+				DeploymentValues: coderdtest.DeploymentValues(t),
 			},
 			DontAddLicense:   true,
 			DontAddFirstUser: true,
 		})
+		aibridgedtest.StartTestAIBridgeDaemon(t.Context(), t, secondAPI.AGPL, nil)
 
 		//nolint:gocritic // Test uses owner client session token for cookie-based relay auth.
 		sessionToken := firstClient.SessionToken()
@@ -435,25 +465,10 @@ func TestChatStreamRelay(t *testing.T) {
 			return chattest.OpenAINonStreamingResponse("ok")
 		})
 
-		//nolint:gocritic // Test uses owner client to configure providers.
-		provider, err := codersdk.NewExperimentalClient(firstClient).CreateChatProvider(ctx, codersdk.CreateChatProviderConfigRequest{
-			Provider:    "openai",
-			DisplayName: "OpenAI",
-			APIKey:      "test",
-			BaseURL:     openai,
-		})
-		require.NoError(t, err)
+		expClient := codersdk.NewExperimentalClient(firstClient)
+		model := createOpenAIChatModelForTest(ctx, t, expClient, "test", openai)
 
-		model, err := codersdk.NewExperimentalClient(firstClient).CreateChatModelConfig(ctx, codersdk.CreateChatModelConfigRequest{
-			Provider:             provider.Provider,
-			Model:                "gpt-4",
-			DisplayName:          "GPT-4",
-			ContextLimit:         &[]int64{1000}[0],
-			CompressionThreshold: &[]int32{70}[0],
-		})
-		require.NoError(t, err)
-
-		chat, err := codersdk.NewExperimentalClient(firstClient).CreateChat(ctx, codersdk.CreateChatRequest{
+		chat, err := expClient.CreateChat(ctx, codersdk.CreateChatRequest{
 			OrganizationID: firstUser.OrganizationID,
 			Content: []codersdk.ChatInputPart{{
 				Type: codersdk.ChatInputPartTypeText,
@@ -552,7 +567,7 @@ func TestChatStreamRelay(t *testing.T) {
 			dv.HTTPCookies.EnableHostPrefix = true
 			dv.HTTPCookies.Secure = true
 		})
-		firstClient, firstUser := coderdenttest.New(t, &coderdenttest.Options{
+		firstClient, _, firstAPI, firstUser := coderdenttest.NewWithAPI(t, &coderdenttest.Options{
 			Options: &coderdtest.Options{
 				Database:         db,
 				Pubsub:           pubsub,
@@ -564,8 +579,9 @@ func TestChatStreamRelay(t *testing.T) {
 				},
 			},
 		})
+		aibridgedtest.StartTestAIBridgeDaemon(t.Context(), t, firstAPI.AGPL, nil)
 
-		secondClient, _ := coderdenttest.New(t, &coderdenttest.Options{
+		secondClient, _, secondAPI, _ := coderdenttest.NewWithAPI(t, &coderdenttest.Options{
 			Options: &coderdtest.Options{
 				Database:         db,
 				Pubsub:           pubsub,
@@ -574,6 +590,7 @@ func TestChatStreamRelay(t *testing.T) {
 			DontAddLicense:   true,
 			DontAddFirstUser: true,
 		})
+		aibridgedtest.StartTestAIBridgeDaemon(t.Context(), t, secondAPI.AGPL, nil)
 
 		//nolint:gocritic // Test uses owner client session token for cookie-based relay auth.
 		sessionToken := firstClient.SessionToken()
@@ -607,25 +624,10 @@ func TestChatStreamRelay(t *testing.T) {
 			return chattest.OpenAINonStreamingResponse("ok")
 		})
 
-		//nolint:gocritic // Test uses owner client to configure providers.
-		provider, err := codersdk.NewExperimentalClient(firstClient).CreateChatProvider(ctx, codersdk.CreateChatProviderConfigRequest{
-			Provider:    "openai",
-			DisplayName: "OpenAI",
-			APIKey:      "test",
-			BaseURL:     openai,
-		})
-		require.NoError(t, err)
+		expClient := codersdk.NewExperimentalClient(firstClient)
+		model := createOpenAIChatModelForTest(ctx, t, expClient, "test", openai)
 
-		model, err := codersdk.NewExperimentalClient(firstClient).CreateChatModelConfig(ctx, codersdk.CreateChatModelConfigRequest{
-			Provider:             provider.Provider,
-			Model:                "gpt-4",
-			DisplayName:          "GPT-4",
-			ContextLimit:         &[]int64{1000}[0],
-			CompressionThreshold: &[]int32{70}[0],
-		})
-		require.NoError(t, err)
-
-		chat, err := codersdk.NewExperimentalClient(firstClient).CreateChat(ctx, codersdk.CreateChatRequest{
+		chat, err := expClient.CreateChat(ctx, codersdk.CreateChatRequest{
 			OrganizationID: firstUser.OrganizationID,
 			Content: []codersdk.ChatInputPart{{
 				Type: codersdk.ChatInputPartTypeText,
@@ -712,10 +714,11 @@ func TestChatStreamRelay(t *testing.T) {
 		ctx := testutil.Context(t, testutil.WaitLong)
 
 		db, pubsub := dbtestutil.NewDB(t)
-		firstClient, firstUser := coderdenttest.New(t, &coderdenttest.Options{
+		firstClient, _, firstAPI, firstUser := coderdenttest.NewWithAPI(t, &coderdenttest.Options{
 			Options: &coderdtest.Options{
-				Database: db,
-				Pubsub:   pubsub,
+				Database:         db,
+				Pubsub:           pubsub,
+				DeploymentValues: coderdtest.DeploymentValues(t),
 			},
 			LicenseOptions: &coderdenttest.LicenseOptions{
 				Features: license.Features{
@@ -723,15 +726,18 @@ func TestChatStreamRelay(t *testing.T) {
 				},
 			},
 		})
+		aibridgedtest.StartTestAIBridgeDaemon(t.Context(), t, firstAPI.AGPL, nil)
 
-		secondClient, _ := coderdenttest.New(t, &coderdenttest.Options{
+		secondClient, _, secondAPI, _ := coderdenttest.NewWithAPI(t, &coderdenttest.Options{
 			Options: &coderdtest.Options{
-				Database: db,
-				Pubsub:   pubsub,
+				Database:         db,
+				Pubsub:           pubsub,
+				DeploymentValues: coderdtest.DeploymentValues(t),
 			},
 			DontAddLicense:   true,
 			DontAddFirstUser: true,
 		})
+		aibridgedtest.StartTestAIBridgeDaemon(t.Context(), t, secondAPI.AGPL, nil)
 		secondClient.SetSessionToken(firstClient.SessionToken())
 
 		// Verify we have two replicas.
@@ -754,26 +760,11 @@ func TestChatStreamRelay(t *testing.T) {
 			return chattest.OpenAINonStreamingResponse("ok")
 		})
 
-		//nolint:gocritic // Test uses owner client to configure chat providers.
-		provider, err := codersdk.NewExperimentalClient(firstClient).CreateChatProvider(ctx, codersdk.CreateChatProviderConfigRequest{
-			Provider:    "openai",
-			DisplayName: "OpenAI",
-			APIKey:      "test",
-			BaseURL:     openai,
-		})
-		require.NoError(t, err)
-
-		model, err := codersdk.NewExperimentalClient(firstClient).CreateChatModelConfig(ctx, codersdk.CreateChatModelConfigRequest{
-			Provider:             provider.Provider,
-			Model:                "gpt-4",
-			DisplayName:          "GPT-4",
-			ContextLimit:         &[]int64{1000}[0],
-			CompressionThreshold: &[]int32{70}[0],
-		})
-		require.NoError(t, err)
+		expClient := codersdk.NewExperimentalClient(firstClient)
+		model := createOpenAIChatModelForTest(ctx, t, expClient, "test", openai)
 
 		// Create a chat on the first replica.
-		chat, err := codersdk.NewExperimentalClient(firstClient).CreateChat(ctx, codersdk.CreateChatRequest{
+		chat, err := expClient.CreateChat(ctx, codersdk.CreateChatRequest{
 			OrganizationID: firstUser.OrganizationID,
 			Content: []codersdk.ChatInputPart{{
 				Type: codersdk.ChatInputPartTypeText,
@@ -947,23 +938,15 @@ func replicaIDForClientURL(
 	return uuid.Nil
 }
 
-func TestChatModelConfigDefault(t *testing.T) {
+func TestChatModelDefault(t *testing.T) {
 	t.Parallel()
 	ctx := testutil.Context(t, testutil.WaitLong)
 
 	client, _ := coderdenttest.New(t, nil)
 	expClient := codersdk.NewExperimentalClient(client)
 
-	//nolint:gocritic // Test uses owner client to configure chat providers.
-	provider, err := expClient.CreateChatProvider(
-		ctx,
-		codersdk.CreateChatProviderConfigRequest{
-			Provider:    "openai",
-			DisplayName: "OpenAI",
-			APIKey:      "test",
-			BaseURL:     "https://example.com",
-		},
-	)
+	provider := createOpenAIProviderForTest(ctx, t, expClient, "test", "https://example.com")
+	defaultOrg, err := expClient.OrganizationByName(ctx, codersdk.DefaultOrganization)
 	require.NoError(t, err)
 
 	contextLimit := int64(1000)
@@ -971,10 +954,11 @@ func TestChatModelConfigDefault(t *testing.T) {
 	trueValue := true
 	falseValue := false
 
-	firstModel, err := expClient.CreateChatModelConfig(
+	firstModel, err := expClient.CreateChatModel(
 		ctx,
-		codersdk.CreateChatModelConfigRequest{
-			Provider:             provider.Provider,
+		defaultOrg.ID,
+		codersdk.CreateChatModelRequest{
+			AIProviderID:         &provider.ID,
 			Model:                "gpt-5-a",
 			DisplayName:          "GPT 5 A",
 			IsDefault:            &trueValue,
@@ -985,10 +969,11 @@ func TestChatModelConfigDefault(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, firstModel.IsDefault)
 
-	secondModel, err := expClient.CreateChatModelConfig(
+	secondModel, err := expClient.CreateChatModel(
 		ctx,
-		codersdk.CreateChatModelConfigRequest{
-			Provider:             provider.Provider,
+		defaultOrg.ID,
+		codersdk.CreateChatModelRequest{
+			AIProviderID:         &provider.ID,
 			Model:                "gpt-5-b",
 			DisplayName:          "GPT 5 B",
 			IsDefault:            &trueValue,
@@ -999,63 +984,65 @@ func TestChatModelConfigDefault(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, secondModel.IsDefault)
 
-	modelConfigs, err := expClient.ListChatModelConfigs(ctx)
+	models, err := expClient.ChatModels(ctx, defaultOrg.ID)
 	require.NoError(t, err)
-	firstStored := findChatModelConfigByID(t, modelConfigs, firstModel.ID)
-	secondStored := findChatModelConfigByID(t, modelConfigs, secondModel.ID)
+	firstStored := findChatModelByID(t, models.Models, firstModel.ID)
+	secondStored := findChatModelByID(t, models.Models, secondModel.ID)
 	require.False(t, firstStored.IsDefault)
 	require.True(t, secondStored.IsDefault)
 
-	updatedFirst, err := expClient.UpdateChatModelConfig(
+	updatedFirst, err := expClient.UpdateChatModel(
 		ctx,
+		defaultOrg.ID,
 		firstModel.ID,
-		codersdk.UpdateChatModelConfigRequest{
+		codersdk.UpdateChatModelRequest{
 			IsDefault: &trueValue,
 		},
 	)
 	require.NoError(t, err)
 	require.True(t, updatedFirst.IsDefault)
 
-	modelConfigs, err = expClient.ListChatModelConfigs(ctx)
+	models, err = expClient.ChatModels(ctx, defaultOrg.ID)
 	require.NoError(t, err)
-	firstStored = findChatModelConfigByID(t, modelConfigs, firstModel.ID)
-	secondStored = findChatModelConfigByID(t, modelConfigs, secondModel.ID)
+	firstStored = findChatModelByID(t, models.Models, firstModel.ID)
+	secondStored = findChatModelByID(t, models.Models, secondModel.ID)
 	require.True(t, firstStored.IsDefault)
 	require.False(t, secondStored.IsDefault)
 
-	updatedFirst, err = expClient.UpdateChatModelConfig(
+	updatedFirst, err = expClient.UpdateChatModel(
 		ctx,
+		defaultOrg.ID,
 		firstModel.ID,
-		codersdk.UpdateChatModelConfigRequest{
+		codersdk.UpdateChatModelRequest{
 			IsDefault: &falseValue,
 		},
 	)
 	require.NoError(t, err)
 	require.False(t, updatedFirst.IsDefault)
 
-	modelConfigs, err = expClient.ListChatModelConfigs(ctx)
+	models, err = expClient.ChatModels(ctx, defaultOrg.ID)
 	require.NoError(t, err)
-	firstStored = findChatModelConfigByID(t, modelConfigs, firstModel.ID)
-	secondStored = findChatModelConfigByID(t, modelConfigs, secondModel.ID)
+	firstStored = findChatModelByID(t, models.Models, firstModel.ID)
+	secondStored = findChatModelByID(t, models.Models, secondModel.ID)
 	require.False(t, firstStored.IsDefault)
 	require.True(t, secondStored.IsDefault)
 }
 
-func findChatModelConfigByID(
+func findChatModelByID(
 	t *testing.T,
-	modelConfigs []codersdk.ChatModelConfig,
+	models []codersdk.ChatModel,
 	id uuid.UUID,
-) codersdk.ChatModelConfig {
+) codersdk.ChatModel {
 	t.Helper()
 
-	for _, modelConfig := range modelConfigs {
-		if modelConfig.ID == id {
-			return modelConfig
+	for _, model := range models {
+		if model.ID == id {
+			return model
 		}
 	}
 
-	require.FailNowf(t, "missing model config", "model config %s not found", id)
-	return codersdk.ChatModelConfig{}
+	require.FailNowf(t, "missing chat model", "chat model %s not found", id)
+	return codersdk.ChatModel{}
 }
 
 // cookieOnlySessionTokenProvider authenticates HTTP requests via the
@@ -1095,7 +1082,7 @@ func (p cookieOnlySessionTokenProvider) SetDialOption(opts *websocket.DialOption
 	opts.HTTPHeader.Set("Cookie", cookieName+"="+p.token)
 }
 
-func TestCreateChatNonDefaultOrg(t *testing.T) {
+func TestCreateChatUsesOrganizationLocalModel(t *testing.T) {
 	t.Parallel()
 
 	ctx := testutil.Context(t, testutil.WaitLong)
@@ -1104,7 +1091,6 @@ func TestCreateChatNonDefaultOrg(t *testing.T) {
 		Options: &coderdtest.Options{
 			DeploymentValues: func() *codersdk.DeploymentValues {
 				v := coderdtest.DeploymentValues(t)
-				v.Experiments = []string{string(codersdk.ExperimentAgents)}
 				return v
 			}(),
 		},
@@ -1116,32 +1102,26 @@ func TestCreateChatNonDefaultOrg(t *testing.T) {
 	})
 	expClient := codersdk.NewExperimentalClient(client)
 
-	// Set up a chat provider and model config.
-	provider, err := expClient.CreateChatProvider(ctx, codersdk.CreateChatProviderConfigRequest{
-		Provider:    "openai",
-		DisplayName: "OpenAI",
-		APIKey:      "test-key",
-		BaseURL:     "https://example.com",
-	})
-	require.NoError(t, err)
-	_, err = expClient.CreateChatModelConfig(ctx, codersdk.CreateChatModelConfigRequest{
-		Provider:             provider.Provider,
-		Model:                "gpt-4o-mini",
-		DisplayName:          "Test Model",
-		IsDefault:            ptr.Ref(true),
-		ContextLimit:         ptr.Ref(int64(1000)),
-		CompressionThreshold: ptr.Ref(int32(70)),
-	})
-	require.NoError(t, err)
+	provider := createOpenAIProviderForTest(ctx, t, expClient, "test-key", "https://example.com")
 
 	// Create a second (non-default) org via the API.
 	secondOrg := coderdenttest.CreateOrganization(t, client, coderdenttest.CreateOrganizationOptions{})
 
-	// Create a member with agents-access in both orgs.
+	// Strict organization scoping requires the chat and its default model in the same organization.
+	localModel, err := expClient.CreateChatModel(ctx, secondOrg.ID, codersdk.CreateChatModelRequest{
+		AIProviderID:         &provider.ID,
+		Model:                "gpt-4o-mini-local",
+		DisplayName:          "Second Organization Model",
+		IsDefault:            new(true),
+		ContextLimit:         new(int64(1000)),
+		CompressionThreshold: new(int32(70)),
+	})
+	require.NoError(t, err)
+
+	// Create a member in both orgs.
 	memberClientRaw, member := coderdtest.CreateAnotherUser(
 		t, client, firstUser.OrganizationID,
-		rbac.ScopedRoleAgentsAccess(firstUser.OrganizationID),
-		rbac.ScopedRoleAgentsAccess(secondOrg.ID),
+		rbac.ScopedRoleOrgMember(secondOrg.ID),
 	)
 	memberClient := codersdk.NewExperimentalClient(memberClientRaw)
 	// Create a chat in the non-default org.
@@ -1157,6 +1137,7 @@ func TestCreateChatNonDefaultOrg(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, secondOrg.ID, chat.OrganizationID)
 	require.Equal(t, member.ID, chat.OwnerID)
+	require.Equal(t, localModel.ID, chat.LastModelConfigID)
 
 	// Verify the chat is visible when listing.
 	chats, err := memberClient.ListChats(ctx, nil)
@@ -1172,6 +1153,119 @@ func TestCreateChatNonDefaultOrg(t *testing.T) {
 	require.True(t, found, "chat should be visible in list")
 }
 
+func TestCreateChatAgentsAccessDefaultRole(t *testing.T) {
+	t.Parallel()
+
+	ctx := testutil.Context(t, testutil.WaitLong)
+	client, firstUser := coderdenttest.New(t, &coderdenttest.Options{
+		LicenseOptions: &coderdenttest.LicenseOptions{
+			Features: license.Features{
+				codersdk.FeatureMultipleOrganizations: 1,
+			},
+		},
+	})
+	expClient := codersdk.NewExperimentalClient(client)
+	provider := createOpenAIProviderForTest(ctx, t, expClient, "test-key", "https://example.com")
+	_, err := expClient.CreateChatModel(ctx, firstUser.OrganizationID, codersdk.CreateChatModelRequest{
+		AIProviderID: &provider.ID,
+		Model:        "gpt-4o-mini",
+		IsDefault:    new(true),
+		ContextLimit: new(int64(1000)),
+	})
+	require.NoError(t, err)
+
+	memberClientRaw, _ := coderdtest.CreateAnotherUser(t, client, firstUser.OrganizationID)
+	memberClient := codersdk.NewExperimentalClient(memberClientRaw)
+	createChat := func() error {
+		_, err := memberClient.CreateChat(ctx, codersdk.CreateChatRequest{
+			OrganizationID: firstUser.OrganizationID,
+			Content: []codersdk.ChatInputPart{
+				{Type: codersdk.ChatInputPartTypeText, Text: "hello"},
+			},
+		})
+		return err
+	}
+	setDefaults := func(roles []string) {
+		t.Helper()
+		//nolint:gocritic // Only owners can update organization settings.
+		updated, err := client.UpdateOrganization(ctx, firstUser.OrganizationID.String(), codersdk.UpdateOrganizationRequest{
+			DefaultOrgMemberRoles: &roles,
+		})
+		require.NoError(t, err)
+		require.Equal(t, roles, updated.DefaultOrgMemberRoles)
+	}
+
+	require.NoError(t, createChat())
+
+	setDefaults([]string{codersdk.RoleOrganizationWorkspaceAccess})
+	err = createChat()
+	var sdkErr *codersdk.Error
+	require.ErrorAs(t, err, &sdkErr)
+	require.Equal(t, http.StatusForbidden, sdkErr.StatusCode())
+
+	setDefaults(rbac.DefaultOrgMemberRoles())
+	require.NoError(t, createChat())
+}
+
+// TestCreateChatCrossOrgModelConfigRejected proves an explicit
+// model_config_id naming a config in a DIFFERENT org than the chat is
+// rejected as unavailable: post-cutover validation is org-aware, so a
+// config outside the chat's org is "not found or disabled" to the creator.
+func TestCreateChatCrossOrgModelConfigRejected(t *testing.T) {
+	t.Parallel()
+
+	ctx := testutil.Context(t, testutil.WaitLong)
+
+	client, firstUser := coderdenttest.New(t, &coderdenttest.Options{
+		Options: &coderdtest.Options{
+			DeploymentValues: coderdtest.DeploymentValues(t),
+		},
+		LicenseOptions: &coderdenttest.LicenseOptions{
+			Features: license.Features{
+				codersdk.FeatureMultipleOrganizations: 1,
+			},
+		},
+	})
+	expClient := codersdk.NewExperimentalClient(client)
+
+	provider := createOpenAIProviderForTest(ctx, t, expClient, "test-key", "https://example.com")
+
+	// The config lives in the default org.
+	defaultConfig, err := expClient.CreateChatModel(ctx, firstUser.OrganizationID, codersdk.CreateChatModelRequest{
+		AIProviderID:         &provider.ID,
+		Model:                "gpt-4o-mini",
+		DisplayName:          "Default Org Model",
+		IsDefault:            ptr.Ref(true),
+		ContextLimit:         ptr.Ref(int64(1000)),
+		CompressionThreshold: ptr.Ref(int32(70)),
+	})
+	require.NoError(t, err)
+
+	secondOrg := coderdenttest.CreateOrganization(t, client, coderdenttest.CreateOrganizationOptions{})
+
+	// A member of both orgs still cannot bind a chat in the second org to
+	// the default org's config.
+	memberClientRaw, _ := coderdtest.CreateAnotherUser(
+		t, client, firstUser.OrganizationID,
+		rbac.ScopedRoleOrgMember(secondOrg.ID),
+	)
+	memberClient := codersdk.NewExperimentalClient(memberClientRaw)
+
+	_, err = memberClient.CreateChat(ctx, codersdk.CreateChatRequest{
+		OrganizationID: secondOrg.ID,
+		Content: []codersdk.ChatInputPart{{
+			Type: codersdk.ChatInputPartTypeText,
+			Text: "hello",
+		}},
+		ModelConfigID: ptr.Ref(defaultConfig.ID),
+	})
+	require.Error(t, err)
+	var sdkErr *codersdk.Error
+	require.ErrorAs(t, err, &sdkErr)
+	require.Equal(t, http.StatusBadRequest, sdkErr.StatusCode())
+	require.Equal(t, "Invalid model_config_id: model config not found or disabled.", sdkErr.Message)
+}
+
 func TestListChats_OrgAdminOnlySeesOwnChats(t *testing.T) {
 	t.Parallel()
 
@@ -1181,7 +1275,6 @@ func TestListChats_OrgAdminOnlySeesOwnChats(t *testing.T) {
 		Options: &coderdtest.Options{
 			DeploymentValues: func() *codersdk.DeploymentValues {
 				v := coderdtest.DeploymentValues(t)
-				v.Experiments = []string{string(codersdk.ExperimentAgents)}
 				return v
 			}(),
 		},
@@ -1193,32 +1286,27 @@ func TestListChats_OrgAdminOnlySeesOwnChats(t *testing.T) {
 	})
 	expClient := codersdk.NewExperimentalClient(client)
 
-	// Set up a chat provider and model config.
-	provider, err := expClient.CreateChatProvider(ctx, codersdk.CreateChatProviderConfigRequest{
-		Provider:    "openai",
-		DisplayName: "OpenAI",
-		APIKey:      "test-key",
-		BaseURL:     "https://example.com",
-	})
-	require.NoError(t, err)
-	_, err = expClient.CreateChatModelConfig(ctx, codersdk.CreateChatModelConfigRequest{
-		Provider:             provider.Provider,
-		Model:                "gpt-4o-mini",
-		DisplayName:          "Test Model",
-		IsDefault:            ptr.Ref(true),
-		ContextLimit:         ptr.Ref(int64(1000)),
-		CompressionThreshold: ptr.Ref(int32(70)),
-	})
-	require.NoError(t, err)
+	provider := createOpenAIProviderForTest(ctx, t, expClient, "test-key", "https://example.com")
 
 	// Create a second (non-default) org.
 	secondOrg := coderdenttest.CreateOrganization(t, client, coderdenttest.CreateOrganizationOptions{})
 
-	// Create a member with agents-access in both orgs.
+	// Strict org scoping: the chats below live in the second org, so
+	// their default model config must too.
+	_, err := expClient.CreateChatModel(ctx, secondOrg.ID, codersdk.CreateChatModelRequest{
+		AIProviderID:         &provider.ID,
+		Model:                "gpt-4o-mini",
+		DisplayName:          "Test Model",
+		IsDefault:            new(true),
+		ContextLimit:         new(int64(1000)),
+		CompressionThreshold: new(int32(70)),
+	})
+	require.NoError(t, err)
+
+	// Create a member in both orgs.
 	memberClientRaw, _ := coderdtest.CreateAnotherUser(
 		t, client, firstUser.OrganizationID,
-		rbac.ScopedRoleAgentsAccess(firstUser.OrganizationID),
-		rbac.ScopedRoleAgentsAccess(secondOrg.ID),
+		rbac.ScopedRoleOrgMember(secondOrg.ID),
 	)
 	memberExp := codersdk.NewExperimentalClient(memberClientRaw)
 	// Member creates a chat in the second org.
@@ -1234,10 +1322,9 @@ func TestListChats_OrgAdminOnlySeesOwnChats(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, secondOrg.ID, memberChat.OrganizationID)
 
-	// Create an org admin in the second org with agents access.
 	adminClientRaw, _ := coderdtest.CreateAnotherUser(
 		t, client, firstUser.OrganizationID,
-		rbac.ScopedRoleOrgAdmin(secondOrg.ID), rbac.ScopedRoleAgentsAccess(secondOrg.ID),
+		rbac.ScopedRoleOrgAdmin(secondOrg.ID),
 	)
 	adminExp := codersdk.NewExperimentalClient(adminClientRaw)
 

@@ -1,9 +1,5 @@
 import type { Mock } from "vitest";
 import { API } from "#/api/api";
-import type {
-	DynamicParametersResponse,
-	PreviewParameter,
-} from "#/api/typesGenerated";
 import type { WebSocketEventType } from "#/utils/OneWayWebSocket";
 
 type SocketSendData = Parameters<WebSocket["send"]>[0];
@@ -22,7 +18,7 @@ type CallbackStore = {
 	[K in keyof WebSocketEventMap]: Set<(event: WebSocketEventMap[K]) => void>;
 };
 
-type MockWebSocket = Omit<WebSocket, "send"> & {
+export type MockWebSocket = Omit<WebSocket, "send"> & {
 	/**
 	 * A version of the WebSocket `send` method that has been pre-wrapped inside
 	 * a vitest mock.
@@ -57,6 +53,7 @@ export function createMockWebSocket(
 		: (protocol ?? "");
 
 	let isOpen = true;
+	let readyStateValue: 0 | 1 | 2 | 3 = 0; // CONNECTING
 	const store: CallbackStore = {
 		message: new Set(),
 		error: new Set(),
@@ -74,7 +71,9 @@ export function createMockWebSocket(
 
 		url,
 		protocol: activeProtocol,
-		readyState: 1,
+		get readyState() {
+			return readyStateValue;
+		},
 		binaryType: "blob",
 		bufferedAmount: 0,
 		extensions: "",
@@ -131,6 +130,7 @@ export function createMockWebSocket(
 			if (!isOpen) {
 				return;
 			}
+			readyStateValue = 1; // OPEN
 			for (const sub of store.open) {
 				sub(event);
 			}
@@ -167,22 +167,16 @@ export function createMockWebSocket(
 	return [mockSocket, publisher] as const;
 }
 
-export function mockDynamicParameterWebSocket(
-	response: DynamicParametersResponse | readonly PreviewParameter[],
-): readonly [MockWebSocket, MockWebSocketServer] {
-	let message: DynamicParametersResponse;
-	if (Array.isArray(response)) {
-		message = {
-			id: 0,
-			parameters: response,
-			diagnostics: [],
-		};
-	} else {
-		message = response as DynamicParametersResponse;
-	}
+export function mockDynamicParameterWebSocket(): readonly [
+	MockWebSocket,
+	MockWebSocketServer,
+] {
 	const [mockWebSocket, mockPublisher] = createMockWebSocket("ws://test");
 	vi.spyOn(API, "templateVersionDynamicParameters").mockImplementation(
 		(_versionId, _ownerId, callbacks) => {
+			mockWebSocket.addEventListener("open", () => {
+				callbacks.onOpen?.();
+			});
 			mockWebSocket.addEventListener("message", (event) => {
 				callbacks.onMessage(JSON.parse(event.data));
 			});
@@ -194,11 +188,6 @@ export function mockDynamicParameterWebSocket(
 			mockWebSocket.addEventListener("close", () => {
 				callbacks.onClose();
 			});
-			mockPublisher.publishOpen(new Event("open"));
-			mockPublisher.publishMessage(
-				new MessageEvent("message", { data: JSON.stringify(message) }),
-			);
-
 			return mockWebSocket;
 		},
 	);

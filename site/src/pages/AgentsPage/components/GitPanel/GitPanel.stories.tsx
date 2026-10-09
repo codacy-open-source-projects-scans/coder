@@ -1,11 +1,12 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, fn, spyOn, userEvent } from "storybook/test";
+import { fn, spyOn, userEvent, waitFor, within } from "storybook/test";
 import { API } from "#/api/api";
 import type {
 	ChatDiffContents,
 	ChatDiffStatus,
 	WorkspaceAgentRepoChanges,
 } from "#/api/typesGenerated";
+import { MockChatDiffStatus } from "#/testHelpers/chatEntities";
 import { generateLargeDiff } from "../DiffViewer/testHelpers";
 import { GitPanel } from "./GitPanel";
 
@@ -61,36 +62,34 @@ const makeRepo = (
 	...overrides,
 });
 
-const defaultDiffStatus: ChatDiffStatus = {
-	chat_id: "test-chat",
-	pull_request_title: "",
-	pull_request_draft: false,
-	changes_requested: false,
-	additions: 0,
-	deletions: 0,
-	changed_files: 0,
-};
-
-const defaultDiffContents: ChatDiffContents = {
+const mockDiffContents: ChatDiffContents = {
 	chat_id: "test-chat",
 };
 
-/** Reusable PR diff status with head/base branches. */
+// The default PR shown across GitPanel stories.
 const makePrStatus = (
 	overrides: Partial<ChatDiffStatus> = {},
 ): ChatDiffStatus => ({
-	...defaultDiffStatus,
+	...MockChatDiffStatus,
+	chat_id: "test-chat",
 	url: "https://github.com/coder/coder/pull/23020",
+	pr_number: 23020,
 	pull_request_title: "feat(agents): add MCP server configuration to agents",
 	pull_request_state: "open",
-	pull_request_draft: false,
 	base_branch: "main",
 	head_branch: "feat/add-mcp-config",
+	git_branch: "feat/add-mcp-config",
 	additions: 4037,
 	deletions: 7,
 	changed_files: 12,
 	...overrides,
 });
+
+// A chat that tracks one PR, which is then also the primary.
+const singlePrArgs = (overrides: Partial<ChatDiffStatus> = {}) => {
+	const status = makePrStatus(overrides);
+	return { remoteDiffStats: [status], primaryDiffStatus: status };
+};
 
 // ---------------------------------------------------------------------------
 // Meta
@@ -101,8 +100,11 @@ const meta: Meta<typeof GitPanel> = {
 	component: GitPanel,
 	args: {
 		onRefresh: fn().mockReturnValue(true),
-		onCommit: fn(),
 		repositories: new Map(),
+		everDirty: new Set(),
+		isGitStatusLoading: false,
+		isExpanded: false,
+		chatInputRef: { current: null },
 	},
 	decorators: [
 		(Story) => (
@@ -113,7 +115,7 @@ const meta: Meta<typeof GitPanel> = {
 	],
 	beforeEach: () => {
 		spyOn(API.experimental, "getChatDiffContents").mockResolvedValue(
-			defaultDiffContents,
+			mockDiffContents,
 		);
 	},
 };
@@ -128,23 +130,113 @@ type Story = StoryObj<typeof GitPanel>;
 /** PR is open with a title, head/base branches, and working changes. */
 export const PullRequestAndWorkingChanges: Story = {
 	args: {
-		prTab: { prNumber: 23020, chatId: "test-chat" },
-		remoteDiffStats: makePrStatus(),
+		chatId: "test-chat",
+		...singlePrArgs(),
 		repositories: new Map([["/home/coder/coder", makeRepo()]]),
 	},
 	beforeEach: () => {
 		spyOn(API.experimental, "getChatDiffContents").mockResolvedValue({
-			...defaultDiffContents,
+			...mockDiffContents,
 			diff: sampleDiff,
 		});
+	},
+};
+
+const mockFirstPullRequest = makePrStatus({
+	pull_request_title: "feat: first change",
+	head_branch: "feat/first",
+	git_branch: "feat/first",
+	pr_number: 23020,
+});
+
+/**
+ * Two tracked PRs on different branches, switching between them via
+ * the view switcher.
+ */
+export const MultiplePullRequests: Story = {
+	args: {
+		chatId: "test-chat",
+		primaryDiffStatus: mockFirstPullRequest,
+		remoteDiffStats: [
+			mockFirstPullRequest,
+			makePrStatus({
+				pull_request_title: "fix: second change",
+				head_branch: "fix/second",
+				git_branch: "fix/second",
+				pr_number: 23021,
+				url: "https://github.com/coder/coder/pull/23021",
+				pull_request_state: "merged",
+				additions: 12,
+				deletions: 3,
+				changed_files: 2,
+			}),
+		],
+	},
+	beforeEach: () => {
+		spyOn(API.experimental, "getChatDiffContents").mockResolvedValue({
+			...mockDiffContents,
+			diff: sampleDiff,
+		});
+	},
+	play: async ({ canvasElement }) => {
+		// Open the switcher and select the second PR so the screenshot
+		// shows the merged state. Behavior is asserted in Vitest.
+		const canvas = within(canvasElement);
+		await userEvent.click(canvas.getByTestId("git-panel-view-switcher"));
+		const menu = await within(document.body).findByRole("menu");
+		await userEvent.click(within(menu).getByText("PR #23021"));
+	},
+};
+
+/**
+ * Opens the dropdown, then clicks a working entry so the screenshot shows
+ * the swapped view.
+ */
+export const ViewSwitcherOpen: Story = {
+	args: {
+		chatId: "test-chat",
+		...singlePrArgs({
+			pull_request_title: "feat: multi-repo workspace support",
+			head_branch: "feat/multi-repo",
+		}),
+		repositories: new Map([
+			["/home/coder/coder", makeRepo()],
+			[
+				"/home/coder/other-project",
+				makeRepo({
+					repo_root: "/home/coder/other-project",
+					branch: "main",
+					remote_origin: "https://github.com/coder/other-project.git",
+					unified_diff: secondRepoDiff,
+				}),
+			],
+		]),
+	},
+	beforeEach: () => {
+		spyOn(API.experimental, "getChatDiffContents").mockResolvedValue({
+			...mockDiffContents,
+			diff: sampleDiff,
+		});
+	},
+	play: async ({ canvasElement }) => {
+		const canvas = within(canvasElement);
+		const switcher = canvas.getByTestId("git-panel-view-switcher");
+		await userEvent.click(switcher);
+
+		const menu = await within(document.body).findByRole("menu");
+
+		// Selecting a menu item swaps the active view and the trigger
+		// identifier reflects the new selection.
+		const otherProjectItem = within(menu).getByText("other-project");
+		await userEvent.click(otherProjectItem);
 	},
 };
 
 /** Draft PR with head/base branches. */
 export const DraftPullRequest: Story = {
 	args: {
-		prTab: { prNumber: 22950, chatId: "test-chat" },
-		remoteDiffStats: makePrStatus({
+		chatId: "test-chat",
+		...singlePrArgs({
 			url: "https://github.com/coder/coder/pull/22950",
 			pull_request_title: "fix: resolve race condition in workspace builds",
 			pull_request_draft: true,
@@ -159,7 +251,7 @@ export const DraftPullRequest: Story = {
 	},
 	beforeEach: () => {
 		spyOn(API.experimental, "getChatDiffContents").mockResolvedValue({
-			...defaultDiffContents,
+			...mockDiffContents,
 			diff: sampleDiff,
 		});
 	},
@@ -168,8 +260,8 @@ export const DraftPullRequest: Story = {
 /** Merged PR. */
 export const MergedPullRequest: Story = {
 	args: {
-		prTab: { prNumber: 23000, chatId: "test-chat" },
-		remoteDiffStats: makePrStatus({
+		chatId: "test-chat",
+		...singlePrArgs({
 			url: "https://github.com/coder/coder/pull/23000",
 			pull_request_title: "chore: update dependencies to latest",
 			pull_request_state: "merged",
@@ -181,7 +273,7 @@ export const MergedPullRequest: Story = {
 	},
 	beforeEach: () => {
 		spyOn(API.experimental, "getChatDiffContents").mockResolvedValue({
-			...defaultDiffContents,
+			...mockDiffContents,
 			diff: sampleDiff,
 		});
 	},
@@ -190,8 +282,8 @@ export const MergedPullRequest: Story = {
 /** Closed PR. */
 export const ClosedPullRequest: Story = {
 	args: {
-		prTab: { prNumber: 22800, chatId: "test-chat" },
-		remoteDiffStats: makePrStatus({
+		chatId: "test-chat",
+		...singlePrArgs({
 			url: "https://github.com/coder/coder/pull/22800",
 			pull_request_title: "feat: experimental websocket transport",
 			pull_request_state: "closed",
@@ -203,28 +295,75 @@ export const ClosedPullRequest: Story = {
 	},
 	beforeEach: () => {
 		spyOn(API.experimental, "getChatDiffContents").mockResolvedValue({
-			...defaultDiffContents,
+			...mockDiffContents,
 			diff: sampleDiff,
 		});
 	},
 };
 
+const mockBranchOnly: ChatDiffStatus = {
+	...MockChatDiffStatus,
+	chat_id: "test-chat",
+	git_branch: "feat/branch-only",
+	head_branch: "feat/branch-only",
+	url: "https://github.com/coder/coder/tree/feat/branch-only",
+	pr_number: undefined,
+	pull_request_state: undefined,
+	pull_request_title: "",
+	additions: 42,
+	deletions: 7,
+	changed_files: 3,
+};
+
 /** Branch pushed but no PR opened yet. */
 export const BranchOnly: Story = {
 	args: {
-		remoteDiffStats: {
-			...defaultDiffStatus,
-			additions: 42,
-			deletions: 7,
-			changed_files: 3,
-		},
+		chatId: "test-chat",
+		remoteDiffStats: [mockBranchOnly],
+		primaryDiffStatus: mockBranchOnly,
 		repositories: new Map([["/home/coder/coder", makeRepo()]]),
+	},
+};
+
+/**
+ * A branch-only primary with an older PR: selecting the PR makes the
+ * title row follow the selection instead of the branch-only primary.
+ */
+export const BranchPrimarySelectedPr: Story = {
+	args: {
+		chatId: "test-chat",
+		primaryDiffStatus: mockBranchOnly,
+		remoteDiffStats: [
+			makePrStatus({
+				pull_request_title: "fix: second change",
+				head_branch: "fix/second",
+				git_branch: "fix/second",
+				pr_number: 23021,
+				url: "https://github.com/coder/coder/pull/23021",
+			}),
+			mockBranchOnly,
+		],
+	},
+	beforeEach: () => {
+		spyOn(API.experimental, "getChatDiffContents").mockResolvedValue({
+			...mockDiffContents,
+			diff: sampleDiff,
+		});
+	},
+	play: async ({ canvasElement }) => {
+		// Open the switcher and select the older PR so the screenshot
+		// shows its title row. Behavior is asserted in Vitest.
+		const canvas = within(canvasElement);
+		await userEvent.click(canvas.getByTestId("git-panel-view-switcher"));
+		const menu = await within(document.body).findByRole("menu");
+		await userEvent.click(within(menu).getByText("PR #23021"));
 	},
 };
 
 /** Only local working changes, no remote/PR. */
 export const WorkingChangesOnly: Story = {
 	args: {
+		chatId: "test-chat",
 		repositories: new Map([["/home/coder/coder", makeRepo()]]),
 	},
 };
@@ -232,8 +371,8 @@ export const WorkingChangesOnly: Story = {
 /** Multiple repos with working changes. */
 export const MultipleRepos: Story = {
 	args: {
-		prTab: { prNumber: 23020, chatId: "test-chat" },
-		remoteDiffStats: makePrStatus({
+		chatId: "test-chat",
+		...singlePrArgs({
 			pull_request_title: "feat: multi-repo workspace support",
 			head_branch: "feat/multi-repo",
 			additions: 500,
@@ -255,16 +394,68 @@ export const MultipleRepos: Story = {
 	},
 	beforeEach: () => {
 		spyOn(API.experimental, "getChatDiffContents").mockResolvedValue({
-			...defaultDiffContents,
+			...mockDiffContents,
 			diff: sampleDiff,
 		});
 	},
 };
 
-/** No remote changes, no working changes — empty state. */
+const mockSharedBranch: ChatDiffStatus = {
+	...MockChatDiffStatus,
+	git_branch: "feature/shared",
+	remote_origin: "https://github.com/coder/coder.git",
+	pull_request_state: undefined,
+	pull_request_title: "",
+	pr_number: undefined,
+	url: undefined,
+};
+
+/** Refs across two origins share a branch name; entries name their repository. */
+export const MultipleOrigins: Story = {
+	args: {
+		chatId: "test-chat",
+		primaryDiffStatus: mockSharedBranch,
+		remoteDiffStats: [
+			mockSharedBranch,
+			{
+				...MockChatDiffStatus,
+				git_branch: "feature/shared",
+				remote_origin: "https://github.com/coder/other-project.git",
+				pull_request_state: undefined,
+				pull_request_title: "",
+				pr_number: undefined,
+				url: undefined,
+			},
+		],
+	},
+	play: async ({ canvasElement }) => {
+		const canvas = within(canvasElement);
+		await userEvent.click(canvas.getByTestId("git-panel-view-switcher"));
+		await within(document.body).findByRole("menu");
+	},
+};
+
+/** No remote changes and no working changes. */
 export const EmptyState: Story = {
 	args: {
-		prTab: { prNumber: 23020, chatId: "test-chat" },
+		chatId: "test-chat",
+	},
+};
+
+/** No repositories and no remote tab; Git controls should be disabled. */
+export const GitNotActive: Story = {
+	args: {
+		chatId: "test-chat",
+		repositories: new Map(),
+	},
+};
+
+/** Git watcher is loading its first repository update. */
+export const GitStatusLoading: Story = {
+	args: {
+		chatId: "test-chat",
+		repositories: new Map(),
+		isGitStatusLoading: true,
 	},
 };
 
@@ -275,8 +466,8 @@ export const EmptyState: Story = {
  */
 export const InlineCommentInput: Story = {
 	args: {
-		prTab: { prNumber: 23020, chatId: "test-chat" },
-		remoteDiffStats: makePrStatus(),
+		chatId: "test-chat",
+		...singlePrArgs(),
 	},
 	decorators: [
 		(Story) => (
@@ -287,45 +478,28 @@ export const InlineCommentInput: Story = {
 	],
 	beforeEach: () => {
 		spyOn(API.experimental, "getChatDiffContents").mockResolvedValue({
-			...defaultDiffContents,
+			...mockDiffContents,
 			diff: sampleDiff,
 		});
 	},
 	play: async ({ canvasElement }) => {
-		// Wait for the diff to load and render inside Shadow DOM.
-		// The line numbers live inside @pierre/diffs FileDiff web
-		// components, so we need to wait a bit for them to mount.
-		await new Promise((resolve) => setTimeout(resolve, 2000));
-
-		// Find a line number element inside a Shadow DOM diff viewer.
-		// The diff renders in shadow roots, so we look for the
-		// host elements and query inside their shadow DOMs.
-		const diffHosts = canvasElement.querySelectorAll("[data-diffs]");
-
-		for (const host of diffHosts) {
-			const shadow = host.shadowRoot;
-			if (!shadow) continue;
-
-			// Look for a line number cell — they have data-line-number.
-			const lineNumber = shadow.querySelector(
-				"[data-line-number]",
-			) as HTMLElement | null;
-			if (lineNumber) {
-				await userEvent.click(lineNumber);
-				break;
+		const lineNumber = await waitFor(() => {
+			for (const host of canvasElement.querySelectorAll("diffs-container")) {
+				const target = host.shadowRoot?.querySelector(
+					"[data-column-number]",
+				) as HTMLElement | null;
+				if (target) return target;
 			}
-		}
+			throw new Error("No rendered diff line number found");
+		});
 
-		// Verify the inline prompt appeared.
-		const textarea = canvasElement.querySelector("textarea");
-		if (textarea) {
-			expect(textarea).toBeInTheDocument();
-		}
+		await userEvent.click(lineNumber);
 	},
 };
 
 export const LargeDiff: Story = {
 	args: {
+		chatId: "test-chat",
 		repositories: new Map([
 			[
 				"/home/coder/large-project",
@@ -341,51 +515,30 @@ export const LargeDiff: Story = {
 };
 
 /**
- * Regression: when a repo was dirty during this session and then went
- * clean (empty unified_diff), the tab must remain visible. Before the
- * ever-dirty fix, the tab vanished the moment the diff became empty,
- * which is what users saw as "diff disappears between edit_files".
+ * Regression: a repo that was dirty earlier in the session must
+ * keep its switcher entry even after its unified_diff empties.
  */
 export const EverDirtyRepoGoneClean: Story = {
 	args: {
+		chatId: "test-chat",
 		repositories: new Map([
 			["/home/coder/coder", makeRepo({ unified_diff: "" })],
 		]),
 		everDirty: new Set(["/home/coder/coder"]),
 	},
-	play: async ({ canvasElement }) => {
-		// The repo tab is still present (identified by the 'Working'
-		// prefix used by GitPanel's tab-strip button) even though the
-		// current diff is empty, because it was dirty earlier in the
-		// session.
-		const tabs = Array.from(canvasElement.querySelectorAll("button")).filter(
-			(b) => (b.textContent ?? "").startsWith("Working"),
-		);
-		expect(tabs).toHaveLength(1);
-
-		// The content pane shows the diff viewer's empty-diff state.
-		expect(canvasElement.textContent ?? "").toContain("No file changes");
-	},
 };
 
 /**
  * Baseline: a repo reported clean from the start (never dirty in
- * this session) has no tab. Ensures the ever-dirty fix did not
- * regress the "nothing to show" case.
+ * this session) has no switcher entry. Ensures the ever-dirty fix
+ * did not regress the "nothing to show" case.
  */
 export const CleanRepoFromStart: Story = {
 	args: {
+		chatId: "test-chat",
 		repositories: new Map([
 			["/home/coder/coder", makeRepo({ unified_diff: "" })],
 		]),
 		everDirty: new Set(),
-	},
-	play: async ({ canvasElement }) => {
-		// No local repo tab should appear in the tab strip. The
-		// 'Working' prefix is GitPanel's tab-strip label contract.
-		const tabs = Array.from(canvasElement.querySelectorAll("button")).filter(
-			(b) => (b.textContent ?? "").startsWith("Working"),
-		);
-		expect(tabs).toHaveLength(0);
 	},
 };

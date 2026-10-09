@@ -1,7 +1,10 @@
+import { cn } from "cn";
 import { ChevronRightIcon, InfoIcon, LoaderIcon } from "lucide-react";
-import { type FC, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type {
+	AgentFirewallLog,
 	AIBridgeAgenticAction,
+	AIBridgeSessionNetworkCallSummary,
 	AIBridgeThread,
 	MinimalUser,
 } from "#/api/typesGenerated";
@@ -17,44 +20,60 @@ import {
 	TooltipProvider,
 	TooltipTrigger,
 } from "#/components/Tooltip/Tooltip";
-import { cn } from "#/utils/cn";
 import { docs } from "#/utils/docs";
 import { JsonPrettyPrinter } from "../../JsonPrettyPrinter";
 import { AgenticLoopTable } from "./AgenticLoopTable";
+import { HighlightText } from "./HighlightText";
+import { NetworkCallsTable } from "./NetworkCallsTable";
 import { PromptTable } from "./PromptTable";
+import {
+	classifyThreadSearch,
+	matchesNetworkCallSearch,
+} from "./sessionSearch";
 import { ToolCallTable } from "./ToolCallTable";
 
-interface ExpandableTextProps {
+type ExpandableTextProps = {
 	maxHeight: number;
 	text: string;
 	className?: string;
-}
+	/** Matches render in bold. */
+	highlight?: string;
+	/**
+	 * True when the query matched this text. A match reveals the full text so
+	 * the reason it surfaced is visible. Explicit user toggles still win.
+	 */
+	expandToMatch?: boolean;
+};
 
-const ExpandableText: FC<ExpandableTextProps> = ({
+const ExpandableText: React.FC<ExpandableTextProps> = ({
 	maxHeight,
 	text,
 	className,
+	highlight,
+	expandToMatch = false,
 }) => {
 	const contentRef = useRef<HTMLParagraphElement>(null);
-	const [isExpandable, setIsExpandable] = useState(false);
-	const [isExpanded, setIsExpanded] = useState(false);
+	// Only user toggles are stored, so expansion follows the search.
+	const [userToggled, setUserToggled] = useState<boolean | null>(null);
+	const isExpanded = userToggled ?? expandToMatch;
 
+	// The paragraph always renders its full text, so one scrollHeight
+	// measurement suffices for the collapse toggle.
+	const [fullHeight, setFullHeight] = useState(0);
 	useEffect(() => {
 		const el = contentRef.current;
 		if (!el) return;
 
-		const checkIsExpandable = () => {
-			setIsExpandable(el.scrollHeight > maxHeight);
-		};
+		const measure = () => setFullHeight(el.scrollHeight);
+		measure();
 
-		checkIsExpandable();
-
-		const observer = new ResizeObserver(checkIsExpandable);
-
+		const observer = new ResizeObserver(measure);
 		observer.observe(el);
 
 		return () => observer.disconnect();
-	}, [maxHeight]);
+	}, []);
+
+	const isExpandable = fullHeight > maxHeight;
 
 	return (
 		<div className="relative">
@@ -69,21 +88,20 @@ const ExpandableText: FC<ExpandableTextProps> = ({
 				}
 				className={cn(className, "overflow-hidden", isExpanded && "pb-9")}
 			>
-				{text}
+				<HighlightText text={text} highlight={highlight ?? ""} />
 			</p>
 			{isExpandable && (
 				<div
 					className={cn(
 						"flex justify-end mt-1 absolute bottom-0 right-0 left-0",
-						!isExpanded &&
-							"bg-gradient-to-t from-surface-primary to-transparent",
+						!isExpanded && "bg-linear-to-t from-surface-primary to-transparent",
 					)}
 				>
 					<Button
 						size="sm"
 						variant="outline"
-						className="bg-surface-primary shadow-sm"
-						onClick={() => setIsExpanded((v) => !v)}
+						className="bg-surface-primary shadow-xs"
+						onClick={() => setUserToggled((prev) => !(prev ?? expandToMatch))}
 					>
 						{isExpanded ? "Collapse" : "Show more"}
 					</Button>
@@ -93,14 +111,14 @@ const ExpandableText: FC<ExpandableTextProps> = ({
 	);
 };
 
-interface CollapseButtonProps {
+type CollapseButtonProps = {
 	isOpen: boolean;
 	onClick: () => void;
 	children: React.ReactNode;
 	className?: string;
-}
+};
 
-const CollapseButton: FC<CollapseButtonProps> = ({
+const CollapseButton: React.FC<CollapseButtonProps> = ({
 	isOpen,
 	onClick,
 	children,
@@ -125,14 +143,14 @@ const CollapseButton: FC<CollapseButtonProps> = ({
 
 // Wraps content with a visual left-bracket connector: two rounded corner lines
 // that flank the content row, creating an indented visual grouping.
-interface BracketConnectorProps {
+type BracketConnectorProps = {
 	children: React.ReactNode;
 	contentClassName?: string;
 	firstRowHeight?: "2rem" | "60px";
 	hideBottomLine?: boolean;
-}
+};
 
-const BracketConnector: FC<BracketConnectorProps> = ({
+const BracketConnector: React.FC<BracketConnectorProps> = ({
 	children,
 	contentClassName,
 	firstRowHeight = "2rem",
@@ -160,11 +178,11 @@ const BracketConnector: FC<BracketConnectorProps> = ({
 	</div>
 );
 
-interface ThinkingBlockProps {
+type ThinkingBlockProps = {
 	text: string;
-}
+};
 
-const ThinkingBlock: FC<ThinkingBlockProps> = ({ text }) => (
+const ThinkingBlock: React.FC<ThinkingBlockProps> = ({ text }) => (
 	<BracketConnector contentClassName="mt-5 pl-2 pr-4 text-sm text-content-secondary">
 		<div className="flex items-center">
 			<LoaderIcon className="size-icon-xs text-content-secondary" />
@@ -178,7 +196,7 @@ const ThinkingBlock: FC<ThinkingBlockProps> = ({ text }) => (
 	</BracketConnector>
 );
 
-interface ToolCallBlockProps {
+type ToolCallBlockProps = {
 	tool: string;
 	serverURL: string;
 	input: string;
@@ -187,9 +205,11 @@ interface ToolCallBlockProps {
 	timestamp: Date;
 	tokenUsageMetadata?: Record<string, unknown>;
 	expandedByDefault?: boolean;
-}
+	/** The active query, used to bold matches in the tool name and input. */
+	highlight: string;
+};
 
-const ToolCallBlock: FC<ToolCallBlockProps> = ({
+const ToolCallBlock: React.FC<ToolCallBlockProps> = ({
 	tool,
 	serverURL,
 	input,
@@ -198,16 +218,22 @@ const ToolCallBlock: FC<ToolCallBlockProps> = ({
 	timestamp,
 	tokenUsageMetadata,
 	expandedByDefault = false,
+	highlight,
 }) => {
-	const [isOpen, setIsOpen] = useState(expandedByDefault);
+	// Only user toggles are stored, so a later search match still reveals it.
+	const [userToggled, setUserToggled] = useState<boolean | null>(null);
+	const isOpen = userToggled ?? expandedByDefault;
 
 	return (
 		<BracketConnector contentClassName="mt-2 mr-4 border border-solid rounded-md overflow-x-auto">
 			<div className="flex items-center">
-				<CollapseButton isOpen={isOpen} onClick={() => setIsOpen(!isOpen)}>
+				<CollapseButton
+					isOpen={isOpen}
+					onClick={() => setUserToggled((prev) => !(prev ?? expandedByDefault))}
+				>
 					<span className="text-sm font-normal">Tool call</span>
 					<Badge size="xs" className="font-mono ml-1">
-						{tool}
+						<HighlightText text={tool} highlight={highlight} />
 					</Badge>
 				</CollapseButton>
 			</div>
@@ -222,7 +248,9 @@ const ToolCallBlock: FC<ToolCallBlockProps> = ({
 						tokenUsageMetadata={tokenUsageMetadata}
 					/>
 					<pre className="flex gap-4 bg-surface-secondary rounded-md m-4 p-4 text-sm font-mono text-content-primary overflow-x-auto m-0">
-						<span>{tool}</span>
+						<span>
+							<HighlightText text={tool} highlight={highlight} />
+						</span>
 						<span>
 							<JsonPrettyPrinter input={input} />
 						</span>
@@ -233,11 +261,30 @@ const ToolCallBlock: FC<ToolCallBlockProps> = ({
 	);
 };
 
-interface AgenticActionItemProps {
+type AgenticActionItemProps = {
 	action: AIBridgeAgenticAction;
-}
+	/**
+	 * When set with entries, only these tool calls render, and they start
+	 * expanded. A search that matched a tool name or input hides the others
+	 * and reveals these. An empty set means the search matched elsewhere, so
+	 * all tool calls render unchanged.
+	 */
+	matchedToolCallIds?: Set<string>;
+	/** The active query, used to bold matches in the tool calls. */
+	highlight: string;
+};
 
-const AgenticActionItem: FC<AgenticActionItemProps> = ({ action }) => {
+const AgenticActionItem: React.FC<AgenticActionItemProps> = ({
+	action,
+	matchedToolCallIds,
+	highlight,
+}) => {
+	const visibleToolCalls = matchedToolCallIds?.size
+		? action.tool_calls.filter((tool_call) =>
+				matchedToolCallIds.has(tool_call.id),
+			)
+		: action.tool_calls;
+
 	return (
 		<>
 			{/* thinking blocks */}
@@ -246,7 +293,7 @@ const AgenticActionItem: FC<AgenticActionItemProps> = ({ action }) => {
 			))}
 
 			{/* tool call blocks */}
-			{action.tool_calls.map((tool_call) => (
+			{visibleToolCalls.map((tool_call) => (
 				<ToolCallBlock
 					key={tool_call.id}
 					tool={tool_call.tool}
@@ -256,19 +303,48 @@ const AgenticActionItem: FC<AgenticActionItemProps> = ({ action }) => {
 					outputTokens={action.token_usage.output_tokens}
 					tokenUsageMetadata={tool_call.metadata}
 					timestamp={new Date(tool_call.created_at)}
+					expandedByDefault={(matchedToolCallIds?.size ?? 0) > 0}
+					highlight={highlight}
 				/>
 			))}
 		</>
 	);
 };
 
-interface ThreadItemProps {
+type ThreadItemProps = {
 	thread: AIBridgeThread;
 	initiator: MinimalUser;
-}
+	/**
+	 * True when the query matched this thread's prompt.
+	 */
+	searchPromptMatch: boolean;
+	/**
+	 * True when the query matched a tool name or input in this thread.
+	 */
+	searchToolMatch: boolean;
+	/**
+	 * The tool calls that matched the query. Empty when the search matched
+	 * something other than a tool call, so all tool calls render.
+	 */
+	matchedToolCallIds?: Set<string>;
+	/** The active query, used to bold matching prompt and tool text. */
+	highlight: string;
+};
 
-const ThreadItem: FC<ThreadItemProps> = ({ thread, initiator }) => {
-	const [agenticLoopOpen, setAgenticLoopOpen] = useState(false);
+const ThreadItem: React.FC<ThreadItemProps> = ({
+	thread,
+	initiator,
+	searchPromptMatch,
+	searchToolMatch,
+	matchedToolCallIds,
+	highlight,
+}) => {
+	// Only user toggles are stored, so the loop follows the search.
+	const [userToggled, setUserToggled] = useState<boolean | null>(null);
+	const agenticLoopOpen = userToggled ?? searchToolMatch;
+
+	const toggleAgenticLoop = () =>
+		setUserToggled((prev) => !(prev ?? searchToolMatch));
 
 	const durationInMs =
 		new Date(thread.ended_at ?? Date.now()).getTime() -
@@ -284,20 +360,6 @@ const ThreadItem: FC<ThreadItemProps> = ({ thread, initiator }) => {
 	return (
 		<>
 			<div className="border border-solid rounded-md flex flex-col items-start w-full lg:w-auto lg:flex-row gap-6 p-2">
-				{/* left column: avatar and username */}
-				<div className="flex flex-row items-center gap-1">
-					<Avatar
-						src={initiator.avatar_url}
-						fallback={initiator.name ?? initiator.username}
-						size="sm"
-						className="flex-shrink-0"
-					/>
-					<span className="text-sm text-content-secondary font-normal py-1">
-						{initiator.username}
-					</span>
-				</div>
-
-				{/* center column: prompt */}
 				<div className="flex flex-col gap-1 mb-2 min-w-0 flex-1 w-full">
 					{thread.prompt && (
 						<>
@@ -319,7 +381,7 @@ const ThreadItem: FC<ThreadItemProps> = ({ thread, initiator }) => {
 											</p>
 											<Link
 												href={docs(
-													"/ai-coder/ai-bridge/audit#human-vs-agent-attribution",
+													"/ai-coder/ai-gateway/audit#human-vs-agent-attribution",
 												)}
 												target="_blank"
 												className="text-sm"
@@ -333,20 +395,33 @@ const ThreadItem: FC<ThreadItemProps> = ({ thread, initiator }) => {
 							<ExpandableText
 								maxHeight={200}
 								text={thread.prompt}
+								highlight={highlight}
+								expandToMatch={searchPromptMatch}
 								className="text-sm text-content-secondary font-normal bg-surface-secondary leading-relaxed rounded-md p-3 m-0 text-pretty"
 							/>
 						</>
 					)}
 				</div>
-				{/* right column: details */}
-				<PromptTable
-					className="lg:max-w-64 flex-shrink-0 w-full lg:w-auto"
-					timestamp={new Date(thread.started_at)}
-					model={thread.model}
-					inputTokens={thread.token_usage.input_tokens}
-					outputTokens={thread.token_usage.output_tokens}
-					tokenUsageMetadata={thread.token_usage.metadata}
-				/>
+				<div className="flex flex-col gap-1 lg:max-w-64 min-w-0 shrink-0 w-full lg:w-auto">
+					<div className="flex items-center gap-1">
+						<Avatar
+							src={initiator.avatar_url}
+							fallback={initiator.name ?? initiator.username}
+							size="sm"
+							className="shrink-0"
+						/>
+						<span className="min-w-0 break-all text-sm text-content-secondary font-normal py-1">
+							{initiator.username}
+						</span>
+					</div>
+					<PromptTable
+						timestamp={new Date(thread.started_at)}
+						model={thread.model}
+						inputTokens={thread.token_usage.input_tokens}
+						outputTokens={thread.token_usage.output_tokens}
+						tokenUsageMetadata={thread.token_usage.metadata}
+					/>
+				</div>
 			</div>
 
 			{hasAgenticLoop ? (
@@ -359,7 +434,7 @@ const ThreadItem: FC<ThreadItemProps> = ({ thread, initiator }) => {
 						<div>
 							<CollapseButton
 								isOpen={agenticLoopOpen}
-								onClick={() => setAgenticLoopOpen(!agenticLoopOpen)}
+								onClick={toggleAgenticLoop}
 							>
 								<span className="text-sm font-normal">Agentic loop</span>
 							</CollapseButton>
@@ -368,7 +443,9 @@ const ThreadItem: FC<ThreadItemProps> = ({ thread, initiator }) => {
 						<AgenticLoopTable
 							className="lg:max-w-64 flex-1 my-3 mx-2"
 							duration={durationInMs}
-							toolCalls={toolCalls}
+							toolCalls={
+								matchedToolCallIds?.size ? matchedToolCallIds.size : toolCalls
+							}
 						/>
 					</div>
 
@@ -381,7 +458,12 @@ const ThreadItem: FC<ThreadItemProps> = ({ thread, initiator }) => {
 
 							{/* Agentic actions */}
 							{thread.agentic_actions?.map((action, i) => (
-								<AgenticActionItem key={`${thread.id}-${i}`} action={action} />
+								<AgenticActionItem
+									key={`${thread.id}-${i}`}
+									action={action}
+									matchedToolCallIds={matchedToolCallIds}
+									highlight={highlight}
+								/>
 							))}
 
 							{/* Agentic loop completed */}
@@ -405,27 +487,64 @@ const ThreadItem: FC<ThreadItemProps> = ({ thread, initiator }) => {
 	);
 };
 
-interface SessionTimelineProps {
+type SessionTimelineProps = {
 	initiator: MinimalUser;
 	threads: readonly AIBridgeThread[];
+	/**
+	 * Undefined when the session did not pass through Agent Firewall, in which
+	 * case the network calls panel is not rendered.
+	 */
+	networkCallSummary?: AIBridgeSessionNetworkCallSummary;
+	networkCalls: readonly AgentFirewallLog[];
+	/**
+	 * Filters threads (prompt text, tool names, tool inputs) and network
+	 * calls (destination) to matches. See sessionSearch.ts.
+	 */
+	searchQuery: string;
 	hasNextPage: boolean;
 	isFetchingNextPage: boolean;
 	onFetchNextPage: () => void;
-}
+};
 
-export const SessionTimeline: FC<SessionTimelineProps> = ({
+export const SessionTimeline: React.FC<SessionTimelineProps> = ({
 	initiator,
 	threads,
+	networkCallSummary,
+	networkCalls,
+	searchQuery,
 	hasNextPage,
 	isFetchingNextPage,
 	onFetchNextPage,
 }) => {
 	const sentinelRef = useRef<HTMLDivElement>(null);
 
+	const isSearching = searchQuery.trim() !== "";
+
+	// One walk per thread feeds filtering and search-driven expansion.
+	const threadItems = threads
+		.map((thread) => ({
+			thread,
+			classification: classifyThreadSearch(thread, searchQuery),
+		}))
+		.filter(
+			({ classification }) =>
+				classification.promptMatch || classification.toolCallIds.size > 0,
+		);
+
+	const filteredNetworkCalls = networkCalls.filter((call) =>
+		matchesNetworkCallSearch(call, searchQuery),
+	);
+
+	const hasAnyMatches =
+		threadItems.length > 0 || filteredNetworkCalls.length > 0;
+
 	useEffect(() => {
 		const sentinel = sentinelRef.current;
 
-		if (!sentinel || !hasNextPage) {
+		// A client-only search cannot be satisfied by fetching more pages, and an
+		// empty filtered list would keep the sentinel intersecting and cascade
+		// page loads. Stop paginating while a search is active.
+		if (!sentinel || !hasNextPage || isSearching) {
 			return;
 		}
 
@@ -443,7 +562,7 @@ export const SessionTimeline: FC<SessionTimelineProps> = ({
 		return () => {
 			observer.disconnect();
 		};
-	}, [hasNextPage, isFetchingNextPage, onFetchNextPage]);
+	}, [hasNextPage, isFetchingNextPage, isSearching, onFetchNextPage]);
 
 	return (
 		<div className="relative">
@@ -524,17 +643,55 @@ export const SessionTimeline: FC<SessionTimelineProps> = ({
 					{/* left vertical line */}
 				</div>
 				<div className="row-start-5 col-start-2 col-span-4">
+					{networkCallSummary && (
+						<div className="mb-4">
+							<NetworkCallsTable
+								summary={networkCallSummary}
+								calls={filteredNetworkCalls}
+								search={
+									isSearching
+										? { loaded: networkCalls.length, query: searchQuery }
+										: undefined
+								}
+							/>
+						</div>
+					)}
 					{/* threads */}
 					<div className="[&>.thread-gap:last-child]:hidden">
-						{threads.map((thread) => (
+						{threadItems.map(({ thread, classification }) => (
 							<ThreadItem
 								key={thread.id}
 								thread={thread}
 								initiator={initiator}
+								searchPromptMatch={isSearching && classification.promptMatch}
+								searchToolMatch={classification.toolCallIds.size > 0}
+								matchedToolCallIds={classification.toolCallIds}
+								highlight={searchQuery}
 							/>
 						))}
 					</div>
-					{/* infinite scroll sentinel — sits 200px below the last thread */}
+					{isSearching && !hasAnyMatches ? (
+						<p
+							className="m-0 py-4 text-sm font-normal text-content-secondary"
+							role="status"
+						>
+							No events match your search in the loaded events.
+							{hasNextPage &&
+								" More matches may exist; clear the search to load more."}
+						</p>
+					) : (
+						isSearching &&
+						hasNextPage && (
+							<p
+								className="m-0 py-2 text-xs font-normal text-content-secondary"
+								role="status"
+							>
+								Search covers only the loaded threads. More matches may exist;
+								clear the search to load more.
+							</p>
+						)
+					)}
+					{/* infinite scroll sentinel. Sits 200px below the last thread. */}
 					<div ref={sentinelRef} />
 					{isFetchingNextPage && (
 						<div className="flex items-center justify-center py-4 text-sm text-content-secondary">
@@ -563,23 +720,31 @@ export const SessionTimeline: FC<SessionTimelineProps> = ({
 					{/* bottom right rounded corner */}
 				</div>
 
-				{/* row 7: sized intentionally to create the visual space below the timeline border */}
-				<div className="row-start-7 col-start-3 border-0 border-l border-t border-solid h-4">
-					{/* vertical line */}
-				</div>
+				{/* rows 7-8: session end marker. Only rendered once every thread
+				    has loaded so "Session completed" cannot appear below
+				    still-loading threads and be mistaken for the end of the
+				    session. */}
+				{!hasNextPage && !isFetchingNextPage && (
+					<>
+						{/* row 7: sized intentionally to create the visual space below the timeline border */}
+						<div className="row-start-7 col-start-3 border-0 border-l border-t border-solid h-4">
+							{/* vertical line */}
+						</div>
 
-				{/* row 8: session completed */}
-				<div className="row-start-8 col-start-2 relative">
-					<StatusIndicatorDot
-						variant="success"
-						className="absolute right-0 translate-x-1/2 translate-y-1/2"
-					/>
-				</div>
-				<div className="row-start-8 col-start-4 flex items-center">
-					<span className="text-content-success font-normal ml-4 text-sm py-1">
-						Session completed
-					</span>
-				</div>
+						{/* row 8: session completed */}
+						<div className="row-start-8 col-start-2 relative">
+							<StatusIndicatorDot
+								variant="success"
+								className="absolute right-0 translate-x-1/2 translate-y-1/2"
+							/>
+						</div>
+						<div className="row-start-8 col-start-4 flex items-center">
+							<span className="text-content-success font-normal ml-4 text-sm py-1">
+								Session completed
+							</span>
+						</div>
+					</>
+				)}
 			</div>
 		</div>
 	);

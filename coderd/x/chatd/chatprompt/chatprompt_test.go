@@ -10,6 +10,7 @@ import (
 
 	"charm.land/fantasy"
 	fantasyanthropic "charm.land/fantasy/providers/anthropic"
+	fantasygoogle "charm.land/fantasy/providers/google"
 	"github.com/google/uuid"
 	"github.com/sqlc-dev/pqtype"
 	"github.com/stretchr/testify/assert"
@@ -38,6 +39,149 @@ func testMsg(role codersdk.ChatMessageRole, raw pqtype.NullRawMessage) database.
 	}
 }
 
+func TestConvertMessagesWithFilesPreservesEmptyRedactedReasoning(t *testing.T) {
+	t.Parallel()
+
+	metadata, err := json.Marshal(fantasy.ProviderMetadata{
+		fantasyanthropic.Name: &fantasyanthropic.ReasoningOptionMetadata{
+			RedactedData: "redacted-payload",
+		},
+	})
+	require.NoError(t, err)
+	content, err := chatprompt.MarshalParts([]codersdk.ChatMessagePart{
+		{
+			Type:             codersdk.ChatMessagePartTypeReasoning,
+			ProviderMetadata: metadata,
+		},
+		codersdk.ChatMessageText("done"),
+	})
+	require.NoError(t, err)
+
+	prompt, err := chatprompt.ConvertMessagesWithFiles(context.Background(), []database.ChatMessage{
+		{
+			Role:           database.ChatMessageRoleAssistant,
+			Visibility:     database.ChatMessageVisibilityBoth,
+			Content:        content,
+			ContentVersion: chatprompt.CurrentContentVersion,
+		},
+	}, nil, slogtest.Make(t, nil), nil, uuid.NullUUID{})
+	require.NoError(t, err)
+	require.Len(t, prompt, 1)
+	require.Len(t, prompt[0].Content, 2)
+
+	reasoning, ok := fantasy.AsMessagePart[fantasy.ReasoningPart](prompt[0].Content[0])
+	require.True(t, ok)
+	require.Empty(t, reasoning.Text)
+	reasoningMetadata := fantasyanthropic.GetReasoningMetadata(reasoning.ProviderOptions)
+	require.NotNil(t, reasoningMetadata)
+	require.Equal(t, "redacted-payload", reasoningMetadata.RedactedData)
+}
+
+func TestConvertMessagesWithFilesRoundTripsAnthropicInterleavedWebSearch(t *testing.T) {
+	t.Parallel()
+
+	content := []fantasy.Content{
+		fantasy.ReasoningContent{
+			Text: "thinking one",
+			ProviderMetadata: fantasy.ProviderMetadata{
+				fantasyanthropic.Name: &fantasyanthropic.ReasoningOptionMetadata{
+					Signature: "sig-1",
+				},
+			},
+		},
+		fantasy.ToolCallContent{
+			ToolCallID:       "srv-1",
+			ToolName:         "web_search",
+			Input:            `{"query":"coder"}`,
+			ProviderExecuted: true,
+		},
+		fantasy.ToolResultContent{
+			ToolCallID:       "srv-1",
+			ToolName:         "web_search",
+			ProviderExecuted: true,
+			ProviderMetadata: fantasy.ProviderMetadata{
+				fantasyanthropic.Name: &fantasyanthropic.WebSearchResultMetadata{
+					Results: []fantasyanthropic.WebSearchResultItem{
+						{
+							URL:              "https://coder.com",
+							Title:            "Coder",
+							EncryptedContent: "encrypted-1",
+						},
+					},
+				},
+			},
+		},
+		fantasy.ReasoningContent{
+			ProviderMetadata: fantasy.ProviderMetadata{
+				fantasyanthropic.Name: &fantasyanthropic.ReasoningOptionMetadata{
+					RedactedData: "redacted-payload",
+				},
+			},
+		},
+		fantasy.TextContent{Text: "answer"},
+	}
+	storedParts := make([]codersdk.ChatMessagePart, 0, len(content))
+	for _, block := range content {
+		storedParts = append(storedParts, chatprompt.PartFromContent(block))
+	}
+
+	storedContent, err := chatprompt.MarshalParts(storedParts)
+	require.NoError(t, err)
+	parsedParts, err := chatprompt.ParseContent(database.ChatMessage{
+		Role:           database.ChatMessageRoleAssistant,
+		Content:        storedContent,
+		ContentVersion: chatprompt.CurrentContentVersion,
+	})
+	require.NoError(t, err)
+	require.Len(t, parsedParts, 5)
+	require.Equal(t, codersdk.ChatMessagePartTypeReasoning, parsedParts[0].Type)
+	require.Equal(t, codersdk.ChatMessagePartTypeToolCall, parsedParts[1].Type)
+	require.Equal(t, codersdk.ChatMessagePartTypeToolResult, parsedParts[2].Type)
+	require.Equal(t, codersdk.ChatMessagePartTypeReasoning, parsedParts[3].Type)
+	require.Equal(t, codersdk.ChatMessagePartTypeText, parsedParts[4].Type)
+
+	prompt, err := chatprompt.ConvertMessagesWithFiles(context.Background(), []database.ChatMessage{
+		{
+			Role:           database.ChatMessageRoleAssistant,
+			Visibility:     database.ChatMessageVisibilityBoth,
+			Content:        storedContent,
+			ContentVersion: chatprompt.CurrentContentVersion,
+		},
+	}, nil, slogtest.Make(t, nil), nil, uuid.NullUUID{})
+	require.NoError(t, err)
+	require.Len(t, prompt, 1)
+	require.Len(t, prompt[0].Content, 5)
+
+	firstReasoning, ok := fantasy.AsMessagePart[fantasy.ReasoningPart](prompt[0].Content[0])
+	require.True(t, ok)
+	require.Equal(t, "thinking one", firstReasoning.Text)
+	require.Equal(t, "sig-1", fantasyanthropic.GetReasoningMetadata(firstReasoning.ProviderOptions).Signature)
+
+	call, ok := fantasy.AsMessagePart[fantasy.ToolCallPart](prompt[0].Content[1])
+	require.True(t, ok)
+	require.True(t, call.ProviderExecuted)
+	require.Equal(t, "srv-1", call.ToolCallID)
+	require.Equal(t, "web_search", call.ToolName)
+	require.JSONEq(t, `{"query":"coder"}`, call.Input)
+
+	result, ok := fantasy.AsMessagePart[fantasy.ToolResultPart](prompt[0].Content[2])
+	require.True(t, ok)
+	require.True(t, result.ProviderExecuted)
+	resultMetadata := result.ProviderOptions[fantasyanthropic.Name].(*fantasyanthropic.WebSearchResultMetadata)
+	require.Equal(t, "encrypted-1", resultMetadata.Results[0].EncryptedContent)
+
+	redactedReasoning, ok := fantasy.AsMessagePart[fantasy.ReasoningPart](prompt[0].Content[3])
+	require.True(t, ok)
+	require.Empty(t, redactedReasoning.Text)
+	reasoningMetadata := fantasyanthropic.GetReasoningMetadata(redactedReasoning.ProviderOptions)
+	require.NotNil(t, reasoningMetadata)
+	require.Equal(t, "redacted-payload", reasoningMetadata.RedactedData)
+
+	text, ok := fantasy.AsMessagePart[fantasy.TextPart](prompt[0].Content[4])
+	require.True(t, ok)
+	require.Equal(t, "answer", text.Text)
+}
+
 // testMsgV1 builds a database.ChatMessage with ContentVersion 1.
 func testMsgV1(role codersdk.ChatMessageRole, raw pqtype.NullRawMessage) database.ChatMessage {
 	return database.ChatMessage{
@@ -55,6 +199,8 @@ func convertMessagesWithoutFiles(t *testing.T, messages []database.ChatMessage) 
 		messages,
 		nil,
 		slogtest.Make(t, nil),
+		nil,
+		uuid.NullUUID{},
 	)
 	require.NoError(t, err)
 	return prompt
@@ -194,6 +340,8 @@ func TestConvertMessagesWithFiles_ResolvesFileData(t *testing.T) {
 		},
 		resolver,
 		slogtest.Make(t, nil),
+		nil,
+		uuid.NullUUID{},
 	)
 	require.NoError(t, err)
 	require.Len(t, prompt, 1)
@@ -252,6 +400,8 @@ func TestConvertMessagesWithFiles_MissingFileBackedAttachmentBecomesTextPart(t *
 				}},
 				resolver,
 				slogtest.Make(t, nil),
+				nil,
+				uuid.NullUUID{},
 			)
 			require.NoError(t, err)
 			require.Len(t, prompt, 1)
@@ -299,6 +449,8 @@ func TestConvertMessagesWithFiles_ResolvedZeroByteFileIsDropped(t *testing.T) {
 		}},
 		resolver,
 		slogtest.Make(t, nil),
+		nil,
+		uuid.NullUUID{},
 	)
 	require.NoError(t, err)
 	require.Empty(t, prompt)
@@ -351,6 +503,8 @@ func TestConvertMessagesWithFiles_MixedResolvedAndMissingFilePartsInSingleMessag
 		}},
 		resolver,
 		slogtest.Make(t, nil),
+		nil,
+		uuid.NullUUID{},
 	)
 	require.NoError(t, err)
 	require.Len(t, prompt, 1)
@@ -359,6 +513,7 @@ func TestConvertMessagesWithFiles_MixedResolvedAndMissingFilePartsInSingleMessag
 
 	filePart, ok := fantasy.AsMessagePart[fantasy.FilePart](prompt[0].Content[0])
 	require.True(t, ok, "expected first part to stay a FilePart")
+	require.Equal(t, "resolved.png", filePart.Filename)
 	require.Equal(t, resolvedData, filePart.Data)
 	require.Equal(t, "image/png", filePart.MediaType)
 
@@ -416,6 +571,8 @@ func TestConvertMessagesWithFiles_BackwardCompat(t *testing.T) {
 		},
 		resolver,
 		slogtest.Make(t, nil),
+		nil,
+		uuid.NullUUID{},
 	)
 	require.NoError(t, err)
 	require.Len(t, prompt, 1)
@@ -774,6 +931,44 @@ func TestInjectMissingToolUses_DropsProviderExecutedOrphans(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func TestInjectMissingToolResults_HookContextBetweenCallAndResult(t *testing.T) {
+	t.Parallel()
+
+	assistantContent := mustMarshalContent(t, []fantasy.Content{
+		fantasy.ToolCallContent{
+			ToolCallID: "toolu_gated",
+			ToolName:   "execute",
+			Input:      `{"command":"ls"}`,
+		},
+	})
+	hookContext := mustMarshalContent(t, []fantasy.Content{
+		fantasy.TextContent{Text: "hook approval context"},
+	})
+	result := mustMarshalToolResult(t,
+		"toolu_gated", "execute",
+		json.RawMessage(`{"output":"ok"}`),
+		false, false, false,
+	)
+
+	prompt := convertMessagesWithoutFiles(t, []database.ChatMessage{
+		{Role: database.ChatMessageRoleAssistant, Visibility: database.ChatMessageVisibilityBoth, Content: assistantContent},
+		{Role: database.ChatMessageRoleUser, Visibility: database.ChatMessageVisibilityModel, Content: hookContext},
+		{Role: database.ChatMessageRoleTool, Visibility: database.ChatMessageVisibilityBoth, Content: result},
+	})
+
+	require.Len(t, prompt, 3)
+	require.Equal(t, fantasy.MessageRoleAssistant, prompt[0].Role)
+	require.Equal(t, fantasy.MessageRoleTool, prompt[1].Role)
+	require.Equal(t, fantasy.MessageRoleUser, prompt[2].Role)
+	require.Equal(t, []string{"toolu_gated"}, extractToolResultIDs(t, prompt[1]))
+	for _, part := range prompt[1].Content {
+		tr, ok := asToolResultPartForTest(part)
+		require.True(t, ok)
+		_, isError := tr.Output.(fantasy.ToolResultOutputContentError)
+		require.False(t, isError, "expected no synthetic interrupted result")
 	}
 }
 
@@ -1341,6 +1536,8 @@ func TestProviderMetadataRoundTrip(t *testing.T) {
 		}},
 		nil,
 		slogtest.Make(t, nil),
+		nil,
+		uuid.NullUUID{},
 	)
 	require.NoError(t, err)
 	require.Len(t, prompt, 1)
@@ -1389,6 +1586,8 @@ func TestFileReferencePreservation(t *testing.T) {
 		}},
 		nil,
 		slogtest.Make(t, nil),
+		nil,
+		uuid.NullUUID{},
 	)
 	require.NoError(t, err)
 	require.Len(t, prompt, 1)
@@ -1444,6 +1643,8 @@ func TestAssistantWriteRoundTrip(t *testing.T) {
 		}},
 		nil,
 		slogtest.Make(t, nil),
+		nil,
+		uuid.NullUUID{},
 	)
 	require.NoError(t, err)
 	require.Len(t, prompt, 1)
@@ -1588,6 +1789,8 @@ func TestMixedFormatConversation(t *testing.T) {
 
 	prompt, err := chatprompt.ConvertMessagesWithFiles(
 		context.Background(), messages, resolver, slogtest.Make(t, nil),
+		nil,
+		uuid.NullUUID{},
 	)
 	require.NoError(t, err)
 	require.Len(t, prompt, 6, "all 6 messages should produce prompt entries")
@@ -1708,6 +1911,8 @@ func TestQueuedMessageRoundTrip(t *testing.T) {
 		}},
 		nil,
 		slogtest.Make(t, nil),
+		nil,
+		uuid.NullUUID{},
 	)
 	require.NoError(t, err)
 	require.Len(t, prompt, 1)
@@ -1814,36 +2019,17 @@ func extractToolResultIDs(t *testing.T, msgs ...fantasy.Message) []string {
 func TestNulEscapeRoundTrip(t *testing.T) {
 	t.Parallel()
 
-	db, _ := dbtestutil.NewDB(t)
-	ctx := testutil.Context(t, testutil.WaitShort)
+	db, _, sqlDB := dbtestutil.NewDBWithSQLDB(t)
 
 	// Seed minimal dependencies for the DB round-trip path:
 	// user, provider, model config, chat.
 	user := dbgen.User(t, db, database.User{})
 
-	_, err := db.InsertChatProvider(ctx, database.InsertChatProviderParams{
-		Provider:             "openai",
-		DisplayName:          "openai",
-		APIKey:               "test-key",
-		CreatedBy:            uuid.NullUUID{UUID: user.ID, Valid: true},
-		Enabled:              true,
-		CentralApiKeyEnabled: true,
-	})
-	require.NoError(t, err)
+	dbgen.ChatProvider(t, db, database.ChatProvider{})
 
-	model, err := db.InsertChatModelConfig(ctx, database.InsertChatModelConfigParams{
-		Provider:             "openai",
-		Model:                "gpt-4o-mini",
-		DisplayName:          "Test Model",
-		CreatedBy:            uuid.NullUUID{UUID: user.ID, Valid: true},
-		UpdatedBy:            uuid.NullUUID{UUID: user.ID, Valid: true},
-		Enabled:              true,
-		IsDefault:            true,
-		ContextLimit:         128000,
-		CompressionThreshold: 70,
-		Options:              json.RawMessage(`{}`),
+	model := dbgen.ChatModelConfig(t, db, database.ChatModelConfig{
+		IsDefault: true,
 	})
-	require.NoError(t, err)
 
 	org := dbgen.Organization(t, db, database.Organization{})
 	_ = dbgen.OrganizationMember(t, db, database.OrganizationMember{
@@ -1851,15 +2037,12 @@ func TestNulEscapeRoundTrip(t *testing.T) {
 		OrganizationID: org.ID,
 	})
 
-	chat, err := db.InsertChat(ctx, database.InsertChatParams{
+	chat := dbgen.Chat(t, db, database.Chat{
 		OrganizationID:    org.ID,
-		Status:            database.ChatStatusWaiting,
-		ClientType:        database.ChatClientTypeUi,
 		OwnerID:           user.ID,
 		LastModelConfigID: model.ID,
 		Title:             "nul-roundtrip-test",
 	})
-	require.NoError(t, err)
 
 	textTests := []struct {
 		name   string
@@ -1945,31 +2128,17 @@ func TestNulEscapeRoundTrip(t *testing.T) {
 			// Full DB round-trip: write to PostgreSQL jsonb, read
 			// back, and verify the value survives storage.
 			ctx := testutil.Context(t, testutil.WaitShort)
-			dbMsgs, err := db.InsertChatMessages(ctx, database.InsertChatMessagesParams{
-				ChatID:              chat.ID,
-				CreatedBy:           []uuid.UUID{user.ID},
-				ModelConfigID:       []uuid.UUID{model.ID},
-				Role:                []database.ChatMessageRole{database.ChatMessageRoleAssistant},
-				Content:             []string{string(encoded.RawMessage)},
-				ContentVersion:      []int16{chatprompt.CurrentContentVersion},
-				Visibility:          []database.ChatMessageVisibility{database.ChatMessageVisibilityBoth},
-				InputTokens:         []int64{0},
-				OutputTokens:        []int64{0},
-				TotalTokens:         []int64{0},
-				ReasoningTokens:     []int64{0},
-				CacheCreationTokens: []int64{0},
-				CacheReadTokens:     []int64{0},
-				ContextLimit:        []int64{0},
-				Compressed:          []bool{false},
-				TotalCostMicros:     []int64{0},
-				RuntimeMs:           []int64{0},
+			dbMsg := dbgen.ChatMessage(t, db, database.ChatMessage{
+				ChatID:         chat.ID,
+				CreatedBy:      uuid.NullUUID{UUID: user.ID, Valid: true},
+				ModelConfigID:  uuid.NullUUID{UUID: model.ID, Valid: true},
+				Role:           database.ChatMessageRoleAssistant,
+				Content:        encoded,
+				ContentVersion: chatprompt.CurrentContentVersion,
 			})
-			require.NoError(t, err)
-			require.Len(t, dbMsgs, 1)
 
-			readBack, err := db.GetChatMessageByID(ctx, dbMsgs[0].ID)
+			readBack, err := db.GetChatMessageByID(ctx, dbMsg.ID)
 			require.NoError(t, err)
-
 			dbDecoded, err := chatprompt.ParseContent(readBack)
 			require.NoError(t, err)
 			require.Len(t, dbDecoded, 1)
@@ -1998,6 +2167,98 @@ func TestNulEscapeRoundTrip(t *testing.T) {
 		// JSON re-serialization may reformat, so compare
 		// semantically.
 		assert.JSONEq(t, string(resultJSON), string(decoded[0].Result))
+	})
+
+	// Gemini thought signatures are binary data converted directly to a
+	// string by the Google provider. NUL bytes in the signature must survive
+	// the full persistence and provider-metadata round-trip.
+	t.Run("GeminiReasoningMetadataWithNul", func(t *testing.T) {
+		t.Parallel()
+
+		const signature = "binary\x00thought\x00signature"
+		part := chatprompt.PartFromContent(fantasy.ReasoningContent{
+			Text: "reasoning",
+			ProviderMetadata: fantasy.ProviderMetadata{
+				fantasygoogle.Name: &fantasygoogle.ReasoningMetadata{
+					Signature: signature,
+					ToolID:    "tool-1",
+				},
+			},
+		})
+		encoded, err := chatprompt.MarshalParts([]codersdk.ChatMessagePart{part})
+		require.NoError(t, err)
+		require.NotContains(t, string(encoded.RawMessage), `\u0000`)
+
+		ctx := testutil.Context(t, testutil.WaitShort)
+		dbMsg := dbgen.ChatMessage(t, db, database.ChatMessage{
+			ChatID:         chat.ID,
+			CreatedBy:      uuid.NullUUID{UUID: user.ID, Valid: true},
+			ModelConfigID:  uuid.NullUUID{UUID: model.ID, Valid: true},
+			Role:           database.ChatMessageRoleAssistant,
+			Content:        encoded,
+			ContentVersion: chatprompt.CurrentContentVersion,
+		})
+		readBack, err := db.GetChatMessageByID(ctx, dbMsg.ID)
+		require.NoError(t, err)
+
+		// Physical evidence of the encoding: the stored jsonb row contains
+		// one sentinel pair per NUL byte and no \u0000 escape.
+		var stored string
+		require.NoError(t, sqlDB.QueryRowContext(ctx,
+			"SELECT content::text FROM chat_messages WHERE id = $1", dbMsg.ID,
+		).Scan(&stored))
+		require.NotContains(t, stored, `\u0000`)
+		require.Equal(t, 2, strings.Count(stored, "\uE000\uE001"))
+
+		prompt, err := chatprompt.ConvertMessagesWithFiles(
+			ctx,
+			[]database.ChatMessage{readBack},
+			nil,
+			slogtest.Make(t, nil),
+			nil,
+			uuid.NullUUID{},
+		)
+		require.NoError(t, err)
+		require.Len(t, prompt, 1)
+		require.Len(t, prompt[0].Content, 1)
+		reasoning, ok := fantasy.AsMessagePart[fantasy.ReasoningPart](prompt[0].Content[0])
+		require.True(t, ok)
+		metadata := fantasygoogle.GetReasoningMetadata(reasoning.ProviderOptions)
+		require.NotNil(t, metadata)
+		require.Equal(t, signature, metadata.Signature)
+	})
+
+	// PostgreSQL rejects lone UTF-16 surrogate escapes. The RawMessage
+	// encoder normalizes them through encoding/json before persistence.
+	t.Run("ToolArgsWithLoneSurrogate", func(t *testing.T) {
+		t.Parallel()
+
+		parts := []codersdk.ChatMessagePart{{
+			Type: codersdk.ChatMessagePartTypeToolCall,
+			Args: json.RawMessage(`{"value":"before\uD800after","pair":"\uD83D\uDE00","literal":"\\uD800"}`),
+		}}
+		encoded, err := chatprompt.MarshalParts(parts)
+		require.NoError(t, err)
+		require.NotContains(t, string(encoded.RawMessage), `\uD800after`)
+
+		ctx := testutil.Context(t, testutil.WaitShort)
+		dbMsg := dbgen.ChatMessage(t, db, database.ChatMessage{
+			ChatID:         chat.ID,
+			CreatedBy:      uuid.NullUUID{UUID: user.ID, Valid: true},
+			ModelConfigID:  uuid.NullUUID{UUID: model.ID, Valid: true},
+			Role:           database.ChatMessageRoleAssistant,
+			Content:        encoded,
+			ContentVersion: chatprompt.CurrentContentVersion,
+		})
+		readBack, err := db.GetChatMessageByID(ctx, dbMsg.ID)
+		require.NoError(t, err)
+		decoded, err := chatprompt.ParseContent(readBack)
+		require.NoError(t, err)
+		require.Len(t, decoded, 1)
+		assert.JSONEq(t,
+			`{"value":"before�after","pair":"😀","literal":"\\uD800"}`,
+			string(decoded[0].Args),
+		)
 	})
 
 	// Multiple parts in one message: one with NUL, one without.
@@ -2059,6 +2320,8 @@ func TestConvertMessagesWithFiles_FiltersEmptyTextAndReasoningParts(t *testing.T
 			[]database.ChatMessage{makeMsg(t, database.ChatMessageRoleUser, parts)},
 			nil,
 			slogtest.Make(t, nil),
+			nil,
+			uuid.NullUUID{},
 		)
 		require.NoError(t, err)
 		require.Len(t, prompt, 1)
@@ -2105,6 +2368,8 @@ func TestConvertMessagesWithFiles_FiltersEmptyTextAndReasoningParts(t *testing.T
 			[]database.ChatMessage{makeMsg(t, database.ChatMessageRoleAssistant, parts)},
 			nil,
 			slogtest.Make(t, nil),
+			nil,
+			uuid.NullUUID{},
 		)
 		require.NoError(t, err)
 		// 2 messages: assistant + synthetic tool result injected
@@ -2139,6 +2404,8 @@ func TestConvertMessagesWithFiles_FiltersEmptyTextAndReasoningParts(t *testing.T
 			[]database.ChatMessage{makeMsg(t, database.ChatMessageRoleAssistant, parts)},
 			nil,
 			slogtest.Make(t, nil),
+			nil,
+			uuid.NullUUID{},
 		)
 		require.NoError(t, err)
 		require.Empty(t, prompt, "all-empty message should be dropped entirely")
@@ -2249,6 +2516,7 @@ func TestConvertMessagesWithFiles_IsSyntheticPaste(t *testing.T) {
 		{name: "plain text", fileName: "pasted-text-2025-01-01-12-00-00.txt", mediaType: "text/plain", want: true},
 		{name: "markdown", fileName: "pasted-text-2025-01-01-12-00-00.txt", mediaType: "text/markdown", want: true},
 		{name: "json", fileName: "pasted-text-2025-01-01-12-00-00.txt", mediaType: "application/json", want: true},
+		{name: "svg source", fileName: "pasted-text-2025-01-01-12-00-00.txt", mediaType: "image/svg+xml", want: true},
 		{name: "binary mime", fileName: "pasted-text-2025-01-01-12-00-00.txt", mediaType: "image/png", want: false},
 		{name: "non synthetic name", fileName: "report.txt", mediaType: "text/plain", want: false},
 		{name: "malformed timestamp", fileName: "pasted-text-2025-01-01.txt", mediaType: "text/plain", want: false},
@@ -2260,7 +2528,7 @@ func TestConvertMessagesWithFiles_IsSyntheticPaste(t *testing.T) {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			require.Equal(t, tt.want, chatprompt.IsSyntheticPasteForTest(tt.fileName, tt.mediaType))
+			require.Equal(t, tt.want, chatprompt.IsSyntheticPaste(tt.fileName, tt.mediaType))
 		})
 	}
 }
@@ -2317,6 +2585,8 @@ func TestConvertMessagesWithFiles_AssistantAttachmentIsNotReplayed(t *testing.T)
 		},
 		resolver,
 		slogtest.Make(t, nil),
+		nil,
+		uuid.NullUUID{},
 	)
 	require.NoError(t, err)
 	require.Len(t, resolverCalls, 1)
@@ -2370,6 +2640,8 @@ func convertSingleResolvedFileMessage(t *testing.T, fileID uuid.UUID, fileData c
 		}},
 		resolver,
 		slogtest.Make(t, nil),
+		nil,
+		uuid.NullUUID{},
 	)
 	require.NoError(t, err)
 	return prompt
@@ -2392,29 +2664,16 @@ func TestMediaToolResultRoundTrip(t *testing.T) {
 		OrganizationID: org.ID,
 	})
 
-	_, err := db.InsertChatProvider(ctx, database.InsertChatProviderParams{
-		Provider:             "anthropic",
-		DisplayName:          "anthropic",
-		APIKey:               "test-key",
-		CreatedBy:            uuid.NullUUID{UUID: user.ID, Valid: true},
-		Enabled:              true,
-		CentralApiKeyEnabled: true,
+	anthropicProvider := dbgen.ChatProvider(t, db, database.ChatProvider{
+		Provider: "anthropic",
 	})
-	require.NoError(t, err)
 
-	model, err := db.InsertChatModelConfig(ctx, database.InsertChatModelConfigParams{
-		Provider:             "anthropic",
-		Model:                "test-model",
-		DisplayName:          "Test Model",
-		CreatedBy:            uuid.NullUUID{UUID: user.ID, Valid: true},
-		UpdatedBy:            uuid.NullUUID{UUID: user.ID, Valid: true},
-		Enabled:              true,
-		IsDefault:            true,
-		ContextLimit:         200000,
-		CompressionThreshold: 70,
-		Options:              json.RawMessage(`{}`),
+	model := dbgen.ChatModelConfig(t, db, database.ChatModelConfig{
+		AIProviderID: uuid.NullUUID{UUID: anthropicProvider.ID, Valid: true},
+		Model:        "test-model",
+		IsDefault:    true,
+		ContextLimit: 200000,
 	})
-	require.NoError(t, err)
 
 	// Small base64 payload standing in for a real screenshot.
 	const imageData = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVQI12NgAAIABQAB"
@@ -2429,15 +2688,12 @@ func TestMediaToolResultRoundTrip(t *testing.T) {
 	) database.Chat {
 		t.Helper()
 
-		chat, chatErr := db.InsertChat(ctx, database.InsertChatParams{
+		chat := dbgen.Chat(t, db, database.Chat{
 			OrganizationID:    org.ID,
-			Status:            database.ChatStatusWaiting,
-			ClientType:        database.ChatClientTypeUi,
 			OwnerID:           user.ID,
 			LastModelConfigID: model.ID,
 			Title:             "media-roundtrip-" + callID,
 		})
-		require.NoError(t, chatErr)
 
 		// Assistant message with the tool call.
 		callPart := codersdk.ChatMessageToolCall(callID, toolName, json.RawMessage(`{}`))
@@ -2448,26 +2704,22 @@ func TestMediaToolResultRoundTrip(t *testing.T) {
 		resultEncoded, encErr := chatprompt.MarshalParts(resultParts)
 		require.NoError(t, encErr)
 
-		_, insertErr := db.InsertChatMessages(ctx, database.InsertChatMessagesParams{
-			ChatID:              chat.ID,
-			CreatedBy:           []uuid.UUID{user.ID, user.ID},
-			ModelConfigID:       []uuid.UUID{model.ID, model.ID},
-			Role:                []database.ChatMessageRole{database.ChatMessageRoleAssistant, database.ChatMessageRoleTool},
-			Content:             []string{string(assistantEncoded.RawMessage), string(resultEncoded.RawMessage)},
-			ContentVersion:      []int16{chatprompt.CurrentContentVersion, chatprompt.CurrentContentVersion},
-			Visibility:          []database.ChatMessageVisibility{database.ChatMessageVisibilityBoth, database.ChatMessageVisibilityBoth},
-			InputTokens:         []int64{0, 0},
-			OutputTokens:        []int64{0, 0},
-			TotalTokens:         []int64{0, 0},
-			ReasoningTokens:     []int64{0, 0},
-			CacheCreationTokens: []int64{0, 0},
-			CacheReadTokens:     []int64{0, 0},
-			ContextLimit:        []int64{0, 0},
-			Compressed:          []bool{false, false},
-			TotalCostMicros:     []int64{0, 0},
-			RuntimeMs:           []int64{0, 0},
+		_ = dbgen.ChatMessage(t, db, database.ChatMessage{
+			ChatID:         chat.ID,
+			CreatedBy:      uuid.NullUUID{UUID: user.ID, Valid: true},
+			ModelConfigID:  uuid.NullUUID{UUID: model.ID, Valid: true},
+			Role:           database.ChatMessageRoleAssistant,
+			Content:        assistantEncoded,
+			ContentVersion: chatprompt.CurrentContentVersion,
 		})
-		require.NoError(t, insertErr)
+		_ = dbgen.ChatMessage(t, db, database.ChatMessage{
+			ChatID:         chat.ID,
+			CreatedBy:      uuid.NullUUID{UUID: user.ID, Valid: true},
+			ModelConfigID:  uuid.NullUUID{UUID: model.ID, Valid: true},
+			Role:           database.ChatMessageRoleTool,
+			Content:        resultEncoded,
+			ContentVersion: chatprompt.CurrentContentVersion,
+		})
 		return chat
 	}
 
@@ -2479,6 +2731,8 @@ func TestMediaToolResultRoundTrip(t *testing.T) {
 		require.NoError(t, loadErr)
 		prompt, convErr := chatprompt.ConvertMessagesWithFiles(
 			ctx, dbMsgs, nil, slogtest.Make(t, nil),
+			nil,
+			uuid.NullUUID{},
 		)
 		require.NoError(t, convErr)
 		return prompt
@@ -2921,6 +3175,22 @@ func TestPartFromContent_CreatedAtNotStamped(t *testing.T) {
 		part := chatprompt.PartFromContent(fantasy.TextContent{Text: "hello"})
 		assert.Nil(t, part.CreatedAt)
 	})
+
+	t.Run("ReasoningHasNilCreatedAndCompletedAt", func(t *testing.T) {
+		t.Parallel()
+		// Same rationale as ToolCall: the chatloop layer records
+		// reasoning timestamps separately and the persistence
+		// layer applies them. PartFromContent is called in
+		// multiple contexts so stamping here would yield
+		// incorrect durations.
+		part := chatprompt.PartFromContent(fantasy.ReasoningContent{Text: "thinking"})
+		assert.Nil(t, part.CreatedAt)
+		assert.Nil(t, part.CompletedAt)
+
+		partPtr := chatprompt.PartFromContent(&fantasy.ReasoningContent{Text: "thinking"})
+		assert.Nil(t, partPtr.CreatedAt)
+		assert.Nil(t, partPtr.CompletedAt)
+	})
 }
 
 func TestToolResultAntivenom(t *testing.T) {
@@ -3133,4 +3403,72 @@ func TestToolResultContentToPart_UTF8Sanitization(t *testing.T) {
 		require.Contains(t, media.Text, "screenshot")
 		require.Contains(t, media.Text, "done")
 	})
+}
+
+func TestPartFromContent_ExecuteToolParsedCommands(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		toolName string
+		input    string
+		want     [][]string
+	}{
+		{
+			name:     "execute-chained-git",
+			toolName: chattool.ExecuteToolName,
+			input:    `{"command":"cd /repo && git pull && git commit -m fix"}`,
+			want: [][]string{
+				{"cd", "/repo"},
+				{"git", "pull"},
+				{"git", "commit"},
+			},
+		},
+		{
+			name:     "execute-empty-command",
+			toolName: chattool.ExecuteToolName,
+			input:    `{"command":""}`,
+			want:     nil,
+		},
+		{
+			name:     "execute-no-command-key",
+			toolName: chattool.ExecuteToolName,
+			input:    `{"other":"x"}`,
+			want:     nil,
+		},
+		{
+			name:     "execute-invalid-json-args",
+			toolName: chattool.ExecuteToolName,
+			input:    `not-json`,
+			want:     nil,
+		},
+		{
+			name:     "execute-command-parses-to-error",
+			toolName: chattool.ExecuteToolName,
+			// Unterminated double-quoted string fails the shell parser.
+			// Even if shellparse returns partial results, we expect nil
+			// here so the UI falls back to the raw command.
+			input: `{"command":"echo \"unterminated"}`,
+			want:  nil,
+		},
+		{
+			name:     "other-tool-ignored",
+			toolName: "read_file",
+			input:    `{"command":"cd /tmp && ls"}`,
+			want:     nil,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			part := chatprompt.PartFromContent(fantasy.ToolCallContent{
+				ToolCallID: "call-1",
+				ToolName:   tc.toolName,
+				Input:      tc.input,
+			})
+			require.Equal(t, codersdk.ChatMessagePartTypeToolCall, part.Type)
+			assert.Equal(t, tc.want, part.ParsedCommands)
+		})
+	}
 }

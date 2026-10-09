@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"charm.land/fantasy"
 	"github.com/stretchr/testify/assert"
@@ -19,6 +20,19 @@ import (
 
 func TestExecuteTool(t *testing.T) {
 	t.Parallel()
+
+	t.Run("SchemaDisclosesShell", func(t *testing.T) {
+		t.Parallel()
+
+		tool := chattool.Execute(chattool.ExecuteOptions{})
+		info := tool.Info()
+		assert.Contains(t, info.Description, `Runs under "sh -c" (POSIX)`)
+
+		commandParam, ok := info.Parameters["command"].(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, "string", commandParam["type"])
+		assert.Contains(t, commandParam["description"], `Runs under "sh -c" (POSIX)`)
+	})
 
 	t.Run("EmptyCommand", func(t *testing.T) {
 		t.Parallel()
@@ -201,6 +215,44 @@ func TestExecuteTool(t *testing.T) {
 		assert.Equal(t, "hello world", result.Output)
 		assert.Empty(t, result.BackgroundProcessID)
 		assert.Equal(t, "true", capturedReq.Env["CODER_CHAT_AGENT"])
+		assert.NotContains(t, capturedReq.Env, "AGENT_BROWSER_SESSION")
+	})
+
+	t.Run("AgentBrowserSessionEnv", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		mockConn := agentconnmock.NewMockAgentConn(ctrl)
+
+		var capturedReq workspacesdk.StartProcessRequest
+		mockConn.EXPECT().
+			StartProcess(gomock.Any(), gomock.Any()).
+			DoAndReturn(func(_ context.Context, req workspacesdk.StartProcessRequest) (workspacesdk.StartProcessResponse, error) {
+				capturedReq = req
+				return workspacesdk.StartProcessResponse{ID: "proc-1"}, nil
+			})
+		exitCode := 0
+		mockConn.EXPECT().
+			ProcessOutput(gomock.Any(), "proc-1", gomock.Any()).
+			Return(workspacesdk.ProcessOutputResponse{
+				Running:  false,
+				ExitCode: &exitCode,
+			}, nil)
+
+		tool := chattool.Execute(chattool.ExecuteOptions{
+			GetWorkspaceConn: func(_ context.Context) (workspacesdk.AgentConn, error) {
+				return mockConn, nil
+			},
+			AgentBrowserSession: "chat-123",
+		})
+		ctx := testutil.Context(t, testutil.WaitMedium)
+		resp, err := tool.Run(ctx, fantasy.ToolCall{
+			ID:    "call-1",
+			Name:  "execute",
+			Input: `{"command":"echo hello"}`,
+		})
+		require.NoError(t, err)
+		assert.False(t, resp.IsError)
+		assert.Equal(t, "chat-123", capturedReq.Env["AGENT_BROWSER_SESSION"])
 	})
 
 	t.Run("ForegroundNonZeroExit", func(t *testing.T) {
@@ -275,7 +327,8 @@ func TestExecuteTool(t *testing.T) {
 			Return(workspacesdk.StartProcessResponse{ID: "proc-1"}, nil)
 
 		// First call (blocking wait) returns context error
-		// because the 50ms timeout expires.
+		// because the 50ms timeout expires. An old agent ignores
+		// timeout_ms.
 		mockConn.EXPECT().
 			ProcessOutput(gomock.Any(), "proc-1", gomock.Any()).
 			DoAndReturn(func(ctx context.Context, _ string, _ *workspacesdk.ProcessOutputOptions) (workspacesdk.ProcessOutputResponse, error) {
@@ -308,6 +361,46 @@ func TestExecuteTool(t *testing.T) {
 		assert.Equal(t, "partial output", result.Output)
 	})
 
+	t.Run("StopsAtAgentExecuteTimeout", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		mockConn := agentconnmock.NewMockAgentConn(ctrl)
+
+		// On a retry, the agent's execute timeout, counted from the first
+		// start, passes before chatd's own.
+		var executeTimeout time.Duration
+		mockConn.EXPECT().
+			StartProcess(gomock.Any(), gomock.Any()).
+			DoAndReturn(func(_ context.Context, req workspacesdk.StartProcessRequest) (workspacesdk.StartProcessResponse, error) {
+				executeTimeout = time.Duration(req.TimeoutMs) * time.Millisecond
+				return workspacesdk.StartProcessResponse{ID: "proc-1"}, nil
+			})
+		mockConn.EXPECT().
+			ProcessOutput(gomock.Any(), "proc-1", gomock.Any()).
+			DoAndReturn(func(ctx context.Context, _ string, opts *workspacesdk.ProcessOutputOptions) (workspacesdk.ProcessOutputResponse, error) {
+				if executeTimeout == 10*time.Minute && opts != nil && opts.TimeoutFromStartProcess {
+					return workspacesdk.ProcessOutputResponse{Running: true, TimedOut: true, Output: "partial output"}, nil
+				}
+				<-ctx.Done()
+				return workspacesdk.ProcessOutputResponse{}, ctx.Err()
+			})
+
+		tool := newExecuteTool(t, mockConn)
+		ctx := testutil.Context(t, testutil.WaitMedium)
+		resp, err := tool.Run(ctx, fantasy.ToolCall{
+			ID:    "call-1",
+			Name:  "execute",
+			Input: `{"command":"make test","timeout":"10m"}`,
+		})
+		require.NoError(t, err)
+
+		var result chattool.ExecuteResult
+		require.NoError(t, json.Unmarshal([]byte(resp.Content), &result))
+		assert.Equal(t, "command timed out after 10m0s", result.Error)
+		assert.Equal(t, "partial output", result.Output)
+		assert.Equal(t, "proc-1", result.BackgroundProcessID)
+	})
+
 	t.Run("StartProcessError", func(t *testing.T) {
 		t.Parallel()
 		ctrl := gomock.NewController(t)
@@ -333,6 +426,168 @@ func TestExecuteTool(t *testing.T) {
 		require.NoError(t, json.Unmarshal([]byte(resp.Content), &result))
 		assert.False(t, result.Success)
 		assert.Contains(t, result.Error, "connection lost")
+		// Unrelated errors must not trigger the missing-shell
+		// guidance.
+		assert.NotContains(t, result.Error, "Git Bash")
+		assert.NotContains(t, result.Error, "coder.com/docs")
+	})
+
+	t.Run("MissingShellError", func(t *testing.T) {
+		t.Parallel()
+
+		// OS rendering differs (%PATH% vs $PATH); the fragment
+		// omits the suffix to match both.
+		tests := []struct {
+			name       string
+			input      string
+			agentErr   string
+			wantPrefix string
+		}{
+			{
+				name:       "ForegroundWindows",
+				input:      `{"command":"echo hi"}`,
+				agentErr:   "unexpected status code 500: Failed to start process.\n\tError: start process: exec: \"sh\": executable file not found in %PATH%",
+				wantPrefix: "start process:",
+			},
+			{
+				name:       "BackgroundWindows",
+				input:      `{"command":"echo hi","run_in_background":true}`,
+				agentErr:   "unexpected status code 500: Failed to start process.\n\tError: start process: exec: \"sh\": executable file not found in %PATH%",
+				wantPrefix: "start background process:",
+			},
+			{
+				name:       "ForegroundPOSIX",
+				input:      `{"command":"echo hi"}`,
+				agentErr:   "unexpected status code 500: Failed to start process.\n\tError: start process: exec: \"sh\": executable file not found in $PATH",
+				wantPrefix: "start process:",
+			},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
+				ctrl := gomock.NewController(t)
+				mockConn := agentconnmock.NewMockAgentConn(ctrl)
+
+				mockConn.EXPECT().
+					StartProcess(gomock.Any(), gomock.Any()).
+					Return(workspacesdk.StartProcessResponse{}, xerrors.New(tt.agentErr))
+
+				tool := newExecuteTool(t, mockConn)
+				ctx := testutil.Context(t, testutil.WaitMedium)
+				resp, err := tool.Run(ctx, fantasy.ToolCall{
+					ID:    "call-1",
+					Name:  "execute",
+					Input: tt.input,
+				})
+				require.NoError(t, err)
+				assert.False(t, resp.IsError)
+
+				var result chattool.ExecuteResult
+				require.NoError(t, json.Unmarshal([]byte(resp.Content), &result))
+				assert.False(t, result.Success)
+				// The result keeps the original error for debugging.
+				assert.Contains(t, result.Error, tt.wantPrefix)
+				assert.Contains(t, result.Error, `exec: "sh": executable file not found`)
+				assert.Contains(t, result.Error, "Git Bash")
+				assert.Contains(t, result.Error, "https://coder.com/docs/ai-coder/agents/architecture#windows-workspace-shell-requirement")
+			})
+		}
+	})
+
+	t.Run("BackgroundedFlagOnlyOnIntentionalLaunch", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		mockConn := agentconnmock.NewMockAgentConn(ctrl)
+
+		mockConn.EXPECT().
+			StartProcess(gomock.Any(), gomock.Any()).
+			Return(workspacesdk.StartProcessResponse{ID: "proc-bg"}, nil)
+
+		tool := newExecuteTool(t, mockConn)
+		ctx := testutil.Context(t, testutil.WaitMedium)
+		resp, err := tool.Run(ctx, fantasy.ToolCall{
+			ID:    "call-1",
+			Name:  "execute",
+			Input: `{"command":"npm start","run_in_background":true}`,
+		})
+		require.NoError(t, err)
+		assert.False(t, resp.IsError)
+
+		var result chattool.ExecuteResult
+		require.NoError(t, json.Unmarshal([]byte(resp.Content), &result))
+		assert.True(t, result.Backgrounded)
+		assert.Equal(t, "proc-bg", result.BackgroundProcessID)
+	})
+
+	t.Run("ProcessOutputStillRunningSetsRunningFlag", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		mockConn := agentconnmock.NewMockAgentConn(ctrl)
+
+		mockConn.EXPECT().
+			ProcessOutput(gomock.Any(), "proc-1", gomock.Any()).
+			Return(workspacesdk.ProcessOutputResponse{
+				Running: true,
+				Output:  "starting...",
+				Command: "npm start",
+			}, nil)
+
+		tool := chattool.ProcessOutput(chattool.ProcessToolOptions{
+			GetWorkspaceConn: func(_ context.Context) (workspacesdk.AgentConn, error) {
+				return mockConn, nil
+			},
+		})
+		ctx := testutil.Context(t, testutil.WaitMedium)
+		resp, err := tool.Run(ctx, fantasy.ToolCall{
+			ID:    "call-1",
+			Name:  "process_output",
+			Input: `{"process_id":"proc-1","wait_timeout":"0s"}`,
+		})
+		require.NoError(t, err)
+		assert.False(t, resp.IsError)
+
+		var result chattool.ExecuteResult
+		require.NoError(t, json.Unmarshal([]byte(resp.Content), &result))
+		assert.True(t, result.Success)
+		assert.True(t, result.Running)
+		assert.Equal(t, "process is still running", result.Note)
+		assert.Equal(t, "npm start", result.Command)
+	})
+
+	t.Run("ProcessOutputCommandPropagated", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		mockConn := agentconnmock.NewMockAgentConn(ctrl)
+
+		exitCode := 1
+		mockConn.EXPECT().
+			ProcessOutput(gomock.Any(), "proc-1", gomock.Any()).
+			Return(workspacesdk.ProcessOutputResponse{
+				Running:  false,
+				ExitCode: &exitCode,
+				Output:   "server exited: EADDRINUSE",
+				Command:  "npm start",
+			}, nil)
+
+		tool := chattool.ProcessOutput(chattool.ProcessToolOptions{
+			GetWorkspaceConn: func(_ context.Context) (workspacesdk.AgentConn, error) {
+				return mockConn, nil
+			},
+		})
+		ctx := testutil.Context(t, testutil.WaitMedium)
+		resp, err := tool.Run(ctx, fantasy.ToolCall{
+			ID:    "call-1",
+			Name:  "process_output",
+			Input: `{"process_id":"proc-1","wait_timeout":"0s"}`,
+		})
+		require.NoError(t, err)
+		assert.False(t, resp.IsError)
+
+		var result chattool.ExecuteResult
+		require.NoError(t, json.Unmarshal([]byte(resp.Content), &result))
+		assert.False(t, result.Success)
+		assert.Equal(t, 1, result.ExitCode)
+		assert.Equal(t, "npm start", result.Command)
 	})
 
 	t.Run("ProcessOutputError", func(t *testing.T) {

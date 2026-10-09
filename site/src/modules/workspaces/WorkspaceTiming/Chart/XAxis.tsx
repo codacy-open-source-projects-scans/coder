@@ -1,15 +1,15 @@
-import { type FC, type HTMLProps, useLayoutEffect, useRef } from "react";
-import { cn } from "#/utils/cn";
+import { cn } from "cn";
+import { useLayoutEffect, useRef } from "react";
 import { formatTime } from "./utils";
 
 const XAxisMinWidth = 130;
 
-type XAxisProps = HTMLProps<HTMLDivElement> & {
+type XAxisProps = React.HTMLProps<HTMLDivElement> & {
 	ticks: number[];
 	scale: number;
 };
 
-export const XAxis: FC<XAxisProps> = ({ ticks, scale, ...htmlProps }) => {
+export const XAxis: React.FC<XAxisProps> = ({ ticks, scale, ...htmlProps }) => {
 	const rootRef = useRef<HTMLDivElement>(null);
 
 	// The X axis should occupy all available space. If there is extra space,
@@ -48,13 +48,13 @@ export const XAxis: FC<XAxisProps> = ({ ticks, scale, ...htmlProps }) => {
 	);
 };
 
-const XAxisLabels: FC<HTMLProps<HTMLUListElement>> = (props) => {
+const XAxisLabels: React.FC<React.HTMLProps<HTMLUListElement>> = (props) => {
 	return (
 		<ul
 			{...props}
 			className={cn(
-				"sticky top-0 z-[2] bg-surface-primary",
-				"flex items-center flex-shrink-0 list-none m-0",
+				"sticky top-0 z-2 bg-surface-primary",
+				"flex items-center shrink-0 list-none m-0",
 				"w-fit p-0 min-w-full",
 				"border-solid border-0 border-b",
 				props.className,
@@ -66,37 +66,39 @@ const XAxisLabels: FC<HTMLProps<HTMLUListElement>> = (props) => {
 	);
 };
 
-const XAxisLabel: FC<HTMLProps<HTMLLIElement>> = (props) => {
+const XAxisLabel: React.FC<React.HTMLProps<HTMLLIElement>> = (props) => {
 	return (
 		<li
 			{...props}
 			className={cn(
-				"flex justify-center flex-shrink-0 text-content-secondary",
+				"flex justify-center shrink-0 text-content-secondary",
 				// To centralize the labels between columns, we need to:
 				// 1. Set the label width to twice the column width.
 				// 2. Shift the label to the left by half of the column width.
 				// Note: This adjustment is not applied to the first element,
 				// as the 0 label/value is not displayed in the chart.
-				"w-[calc(var(--x-axis-width)_*_2)]",
-				"[&:not(:first-of-type)]:ml-[calc(-1*var(--x-axis-width))]",
+				"w-[calc(var(--x-axis-width)*2)]",
+				"not-first-of-type:-ml-(--x-axis-width)",
 				props.className,
 			)}
 		/>
 	);
 };
 
-export const XAxisSection: FC<HTMLProps<HTMLDivElement>> = (props) => {
+export const XAxisSection: React.FC<React.HTMLProps<HTMLDivElement>> = (
+	props,
+) => {
 	return (
 		<section
 			{...props}
 			className={cn(
 				"flex flex-col",
 				// Elevate this section to make it more prominent than the column dashes.
-				"relative z-[1]",
-				"[&:not(:first-of-type)]:pt-[calc(var(--section-padding)_+_var(--header-height))]",
-				"[&:not(:first-of-type)]:border-solid",
-				"[&:not(:first-of-type)]:border-0",
-				"[&:not(:first-of-type)]:border-t",
+				"relative z-1",
+				"not-first-of-type:pt-[calc(var(--section-padding)+var(--header-height))]",
+				"not-first-of-type:border-solid",
+				"not-first-of-type:border-0",
+				"not-first-of-type:border-t",
 				props.className,
 			)}
 			style={{
@@ -108,11 +110,14 @@ export const XAxisSection: FC<HTMLProps<HTMLDivElement>> = (props) => {
 	);
 };
 
-type XAxisRowProps = HTMLProps<HTMLDivElement> & {
+type XAxisRowProps = React.HTMLProps<HTMLDivElement> & {
 	yAxisLabelId: string;
 };
 
-export const XAxisRow: FC<XAxisRowProps> = ({ yAxisLabelId, ...htmlProps }) => {
+export const XAxisRow: React.FC<XAxisRowProps> = ({
+	yAxisLabelId,
+	...htmlProps
+}) => {
 	const syncYAxisLabelHeightToXAxisRow = (rowEl: HTMLDivElement | null) => {
 		if (!rowEl) {
 			return;
@@ -140,11 +145,11 @@ export const XAxisRow: FC<XAxisRowProps> = ({ yAxisLabelId, ...htmlProps }) => {
 	);
 };
 
-type XGridProps = HTMLProps<HTMLDivElement> & {
+type XGridProps = React.HTMLProps<HTMLDivElement> & {
 	columns: number;
 };
 
-const XGrid: FC<XGridProps> = ({ columns, ...htmlProps }) => {
+const XGrid: React.FC<XGridProps> = ({ columns, ...htmlProps }) => {
 	const borderDefault =
 		typeof document === "undefined"
 			? "hsl(var(--border-default))"
@@ -161,10 +166,10 @@ const XGrid: FC<XGridProps> = ({ columns, ...htmlProps }) => {
 				htmlProps.className,
 			)}
 		>
-			{[...Array(columns).keys()].map((key) => (
+			{Array.from({ length: columns }, (_, key) => (
 				<div
 					key={key}
-					className="flex-shrink-0 bg-repeat-y bg-right"
+					className="shrink-0 bg-repeat-y bg-right"
 					style={{
 						width: "var(--x-axis-width)",
 						backgroundImage: `url("${dashedLine(borderDefault)}")`,

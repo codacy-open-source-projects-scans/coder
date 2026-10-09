@@ -1,4 +1,4 @@
-import { cn } from "#/utils/cn";
+import { cn } from "cn";
 export type BarColors = {
 	stroke: string;
 	fill: string;
@@ -21,7 +21,7 @@ type BaseBarProps<T> = Omit<T, "size" | "color"> & {
 	colors?: BarColors;
 };
 
-type BarProps = BaseBarProps<React.ComponentPropsWithRef<"div">>;
+type BarProps = BaseBarProps<React.ComponentProps<"div">>;
 
 export const Bar: React.FC<BarProps> = ({
 	colors,
@@ -43,7 +43,7 @@ export const Bar: React.FC<BarProps> = ({
 	);
 };
 
-type ClickableBarProps = BaseBarProps<React.ComponentPropsWithRef<"button">>;
+type ClickableBarProps = BaseBarProps<React.ComponentProps<"button">>;
 
 export const ClickableBar: React.FC<ClickableBarProps> = ({
 	colors,
@@ -59,7 +59,7 @@ export const ClickableBar: React.FC<ClickableBarProps> = ({
 			className={cn(
 				"relative flex h-inherit min-w-[34px] cursor-pointer rounded-lg border border-border bg-surface-primary p-[7px]",
 				"after:absolute after:inset-y-[-2px] after:left-[-8px] after:right-[-8px] after:content-['']",
-				"outline-none hover:border-content-link focus-visible:border-content-link active:border-content-link",
+				"outline-hidden hover:border-content-link focus-visible:border-content-link active:border-content-link",
 				htmlProps.className,
 			)}
 			style={barStyle({ colors, scale, value, offset, style: htmlProps.style })}

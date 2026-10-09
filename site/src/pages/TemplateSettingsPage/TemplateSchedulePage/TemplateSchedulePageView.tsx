@@ -1,24 +1,26 @@
-import type { ComponentProps, FC } from "react";
 import type { Template, UpdateTemplateMeta } from "#/api/typesGenerated";
 import {
-	PageHeader,
-	PageHeaderTitle,
-} from "#/components/PageHeader/PageHeader";
+	SettingsHeader,
+	SettingsHeaderDescription,
+	SettingsHeaderTitle,
+} from "#/components/SettingsHeader/SettingsHeader";
 import { TemplateScheduleForm } from "./TemplateScheduleForm";
 
-interface TemplateSchedulePageViewProps {
+type TemplateSchedulePageViewProps = {
 	template: Template;
 	onSubmit: (data: UpdateTemplateMeta) => void;
 	onCancel: () => void;
 	isSubmitting: boolean;
 	submitError?: unknown;
-	initialTouched?: ComponentProps<
+	initialTouched?: React.ComponentProps<
 		typeof TemplateScheduleForm
 	>["initialTouched"];
 	allowAdvancedScheduling: boolean;
-}
+};
 
-export const TemplateSchedulePageView: FC<TemplateSchedulePageViewProps> = ({
+export const TemplateSchedulePageView: React.FC<
+	TemplateSchedulePageViewProps
+> = ({
 	template,
 	onCancel,
 	onSubmit,
@@ -28,10 +30,13 @@ export const TemplateSchedulePageView: FC<TemplateSchedulePageViewProps> = ({
 	initialTouched,
 }) => {
 	return (
-		<>
-			<PageHeader className="pt-0">
-				<PageHeaderTitle>Template schedule</PageHeaderTitle>
-			</PageHeader>
+		<div className="flex flex-col gap-12">
+			<SettingsHeader>
+				<SettingsHeaderTitle>Schedule</SettingsHeaderTitle>
+				<SettingsHeaderDescription>
+					Configure workspace schedule defaults for this template.
+				</SettingsHeaderDescription>
+			</SettingsHeader>
 
 			<TemplateScheduleForm
 				allowAdvancedScheduling={allowAdvancedScheduling}
@@ -42,6 +47,6 @@ export const TemplateSchedulePageView: FC<TemplateSchedulePageViewProps> = ({
 				onCancel={onCancel}
 				error={submitError}
 			/>
-		</>
+		</div>
 	);
 };

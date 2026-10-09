@@ -18,13 +18,12 @@ import (
 	"github.com/coder/coder/v2/coderd/database/dbfake"
 	"github.com/coder/coder/v2/coderd/database/dbgen"
 	"github.com/coder/coder/v2/coderd/database/dbtime"
-	"github.com/coder/coder/v2/coderd/util/ptr"
 	"github.com/coder/coder/v2/codersdk"
 	"github.com/coder/coder/v2/enterprise/coderd/coderdenttest"
 	"github.com/coder/coder/v2/enterprise/coderd/license"
 	"github.com/coder/coder/v2/provisionersdk/proto"
-	"github.com/coder/coder/v2/pty/ptytest"
 	"github.com/coder/coder/v2/testutil"
+	"github.com/coder/coder/v2/testutil/expecter"
 	"github.com/coder/quartz"
 )
 
@@ -448,7 +447,6 @@ func TestSchedulePrebuilds(t *testing.T) {
 			// When: running the schedule command over a prebuilt workspace
 			inv, root := clitest.New(t, tc.cmdArgs(prebuild.OwnerName+"/"+prebuild.Name)...)
 			clitest.SetupConfig(t, client, root)
-			ptytest.New(t).Attach(inv)
 			doneChan := make(chan struct{})
 			var runErr error
 			go func() {
@@ -470,7 +468,7 @@ func TestSchedulePrebuilds(t *testing.T) {
 				Name:                    coderdtest.RandomUsername(t),
 				// The 'extend' command requires the workspace to have an existing deadline.
 				// To ensure this, we set the workspace's TTL to 1 hour.
-				TTLMillis: ptr.Ref[int64](time.Hour.Milliseconds()),
+				TTLMillis: new(time.Hour.Milliseconds()),
 			})
 			require.NoError(t, err)
 			coderdtest.AwaitWorkspaceBuildJobCompleted(t, client, claimedWorkspace.LatestBuild.ID)
@@ -480,11 +478,11 @@ func TestSchedulePrebuilds(t *testing.T) {
 			// When: running the schedule command over the claimed workspace
 			inv, root = clitest.New(t, tc.cmdArgs(workspace.OwnerName+"/"+workspace.Name)...)
 			clitest.SetupConfig(t, client, root)
-			pty := ptytest.New(t).Attach(inv)
+			stdout := expecter.NewAttachedToInvocation(t, inv)
 			require.NoError(t, inv.Run())
 
 			// Then: the updated schedule should be shown
-			pty.ExpectMatch(workspace.OwnerName + "/" + workspace.Name)
+			stdout.ExpectMatch(ctx, workspace.OwnerName+"/"+workspace.Name)
 		})
 	}
 }

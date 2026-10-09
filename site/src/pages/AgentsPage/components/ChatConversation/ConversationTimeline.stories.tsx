@@ -1,4 +1,4 @@
-import type { Meta, StoryObj } from "@storybook/react-vite";
+import type { Decorator, Meta, StoryObj } from "@storybook/react-vite";
 import {
 	expect,
 	fireEvent,
@@ -9,11 +9,47 @@ import {
 	waitFor,
 	within,
 } from "storybook/test";
+import { defaultUrlTransform } from "streamdown";
+import { preferenceSettingsKey } from "#/api/queries/users";
 import type * as TypesGen from "#/api/typesGenerated";
+import {
+	MockChatAutomation,
+	MockChatFileMetadata,
+} from "#/testHelpers/chatEntities";
+import { MockUserPreferenceSettings } from "#/testHelpers/entities";
+import { MessageScroller } from "#/vendor/message-scroller";
 import { getChatFileURL } from "../../utils/chatAttachments";
-import { encodeInlineTextAttachment } from "../../utils/fetchTextAttachment";
+import { ChatMessageScroller } from "../ChatMessageScroller";
 import { ConversationTimeline } from "./ConversationTimeline";
 import { parseMessagesWithMergedTools } from "./messageParsing";
+import { buildLiveStatus } from "./storyFixtures";
+import type { ParsedMessageEntry } from "./types";
+
+// The timeline renders scroller items, so every story needs the scroller
+// around it. Stories that exercise scrolling set `messageScrollerHeight` to
+// bound the viewport; the rest render at their natural height.
+const withMessageScroller: Decorator = (Story, { parameters }) => {
+	const height =
+		typeof parameters.messageScrollerHeight === "number"
+			? parameters.messageScrollerHeight
+			: undefined;
+	return (
+		<div className="flex flex-col" style={{ height }}>
+			<MessageScroller.Provider autoScroll defaultScrollPosition="end">
+				<ChatMessageScroller
+					hasMoreMessages={false}
+					isFetchingMoreMessages={false}
+					isHydratingMessages={false}
+					hasFetchMoreError={false}
+					hasTranscriptRows={true}
+					onFetchMoreMessages={async () => {}}
+				>
+					<Story />
+				</ChatMessageScroller>
+			</MessageScroller.Provider>
+		</div>
+	);
+};
 
 // 1×1 solid coral (#FF6B6B) PNG encoded as base64.
 const TEST_PNG_B64 =
@@ -77,9 +113,6 @@ type AttachmentResponse = {
 
 const FAILED_ATTACHMENT_API_MESSAGE = "Failed to get chat file.";
 
-const UNDISPLAYABLE_REMOTE_ATTACHMENT_MESSAGE =
-	"File exists but could not be displayed.";
-
 const ATTACHMENT_RESPONSES = new Map<string, AttachmentResponse>([
 	[
 		"storybook-test-text",
@@ -134,6 +167,7 @@ const ATTACHMENT_RESPONSES = new Map<string, AttachmentResponse>([
 		},
 	],
 	["storybook-expired-text", { status: 404, body: "" }],
+	["storybook-expired-file", { status: 404, body: "" }],
 	[
 		"storybook-failed-text",
 		{
@@ -146,6 +180,11 @@ const ATTACHMENT_RESPONSES = new Map<string, AttachmentResponse>([
 		},
 	],
 	["storybook-text-error", { body: "Temporary failure", status: 503 }],
+	[
+		"storybook-ios-share-report",
+		{ status: 200, body: "pdf-bytes", contentType: "application/pdf" },
+	],
+	["storybook-ios-error-report", { status: 500, body: "" }],
 ]);
 
 let attachmentFetchCounts = new Map<string, number>();
@@ -235,13 +274,133 @@ const buildStoryArgs = (...messages: TypesGen.ChatMessage[]) => ({
 	parsedMessages: buildMessages(messages),
 });
 
-const findAttachmentTile = async (
-	canvas: ReturnType<typeof within>,
-	label: string,
-) => {
-	const tile = await canvas.findByRole("img", { name: label });
-	expect(canvas.getByText(label)).toBeInTheDocument();
-	return tile;
+const buildChatFiles = (...fileIds: string[]): TypesGen.ChatFileMetadata[] =>
+	fileIds.map((id) => ({ ...MockChatFileMetadata, id }));
+
+const buildParsedReadFileEntry = ({
+	messageId,
+	toolId,
+	path,
+	status,
+	content = "",
+	errorMessage,
+	isError = status === "error",
+	hookRewritten = false,
+}: {
+	messageId: number;
+	toolId: string;
+	path: string;
+	status: "completed" | "error" | "running";
+	content?: string;
+	errorMessage?: string;
+	isError?: boolean;
+	hookRewritten?: boolean;
+}): ParsedMessageEntry => {
+	const args = { path };
+	const result =
+		content || errorMessage
+			? {
+					...(content ? { content } : {}),
+					...(errorMessage ? { error: errorMessage } : {}),
+				}
+			: undefined;
+
+	return {
+		message: {
+			...baseMessage,
+			id: messageId,
+			role: "assistant",
+			content: [
+				{
+					type: "tool-call",
+					tool_call_id: toolId,
+					tool_name: "read_file",
+					args,
+				},
+			],
+		},
+		parsed: {
+			markdown: "",
+			reasoning: "",
+			toolCalls: [{ id: toolId, name: "read_file", args }],
+			toolResults: [],
+			tools: [
+				{
+					id: toolId,
+					name: "read_file",
+					args,
+					result,
+					isError,
+					status,
+					hookRewritten,
+				},
+			],
+			blocks: [{ type: "tool", id: toolId }],
+			sources: [],
+			hookNotices: [],
+		},
+	};
+};
+
+const buildReadFileExchange = (
+	callMessageId: number,
+	toolId: string,
+	path: string,
+	content: string,
+): TypesGen.ChatMessage[] => {
+	const args = { path };
+	return [
+		{
+			...baseMessage,
+			id: callMessageId,
+			role: "assistant",
+			content: [
+				{
+					type: "tool-call",
+					tool_call_id: toolId,
+					tool_name: "read_file",
+					args,
+				},
+			],
+		},
+		{
+			...baseMessage,
+			id: callMessageId + 1,
+			role: "tool",
+			content: [
+				{
+					type: "tool-result",
+					tool_call_id: toolId,
+					tool_name: "read_file",
+					result: { content },
+				},
+			],
+		},
+	];
+};
+
+const LONG_USER_MESSAGE = [
+	"This is a deliberately long user message that should stay pinned to the",
+	"right edge while the bubble stops short of filling the entire timeline",
+	"column. It gives the Storybook test enough content to exercise the",
+	"maximum width cap.",
+].join(" ");
+
+const expectNoCopyMessageButtonForElement = (element: HTMLElement) => {
+	const messageRow = element.closest(
+		'[data-role="user"], [data-role="assistant"]',
+	);
+	expect(messageRow).not.toBeNull();
+	const messageWrapper = messageRow?.parentElement;
+	expect(messageWrapper).not.toBeNull();
+	if (!messageWrapper) {
+		return;
+	}
+	expect(
+		within(messageWrapper).queryByRole("button", {
+			name: "Copy message",
+		}),
+	).not.toBeInTheDocument();
 };
 
 const hoverAndExpectTooltip = async (
@@ -254,15 +413,23 @@ const hoverAndExpectTooltip = async (
 	return tooltip;
 };
 
-const waitForTooltipWrappedAttachmentTile = async (
+const hoverAttachmentTile = async (element: HTMLElement) => {
+	await userEvent.hover(element);
+	await screen.findByRole("tooltip");
+};
+
+// A failed tile renders before the probe settles and its DOM node is
+// replaced when the Tooltip wrapper mounts, so wait for the
+// Radix-stamped data-state attribute and re-query before hovering.
+const findTooltipWrappedAttachmentTile = async (
 	canvas: ReturnType<typeof within>,
 	label: string,
 ) => {
-	await waitFor(() =>
-		expect(canvas.getByRole("img", { name: label })).toHaveAttribute(
-			"data-state",
-		),
-	);
+	await waitFor(() => {
+		if (!canvas.getByRole("img", { name: label }).dataset.state) {
+			throw new Error("Expected the attachment tooltip wrapper to mount.");
+		}
+	});
 	return canvas.getByRole("img", { name: label });
 };
 
@@ -270,19 +437,30 @@ const defaultArgs: Omit<
 	React.ComponentProps<typeof ConversationTimeline>,
 	"parsedMessages"
 > = {
+	organizationId: "organization-id",
+	urlTransform: defaultUrlTransform,
+	mcpServers: [],
+	streamTools: [],
+	liveStatus: buildLiveStatus(),
+	subagentStatusOverrides: new Map(),
 	subagentTitles: new Map(),
+	subagentVariants: new Map(),
+	isChatCompleted: true,
+	showDesktopPreviews: false,
+	hasActiveStream: false,
+	isAwaitingFirstStreamChunk: false,
+	automationNames: { names: new Map(), status: "settled" },
+	chatStatus: null,
+	hasMoreMessages: false,
 };
 
 const meta: Meta<typeof ConversationTimeline> = {
 	title: "pages/AgentsPage/ChatConversation/ConversationTimeline",
 	component: ConversationTimeline,
-	decorators: [
-		(Story) => (
-			<div className="mx-auto w-full max-w-3xl py-6">
-				<Story />
-			</div>
-		),
-	],
+	decorators: [withMessageScroller],
+	parameters: {
+		queries: [{ key: preferenceSettingsKey, data: MockUserPreferenceSettings }],
+	},
 	beforeEach: () => {
 		attachmentFetchCounts = new Map();
 		mockAttachmentFetch();
@@ -290,6 +468,363 @@ const meta: Meta<typeof ConversationTimeline> = {
 };
 export default meta;
 type Story = StoryObj<typeof ConversationTimeline>;
+
+export const LifecycleHookNotice: Story = {
+	args: {
+		...defaultArgs,
+		parsedMessages: buildMessages([
+			{
+				...baseMessage,
+				id: 1,
+				role: "system",
+				content: [
+					{
+						type: "hook-notice",
+						text: "Your organization requires an approval before deployment.",
+					},
+				],
+			},
+		]),
+	},
+};
+
+export const SystemMessageWithoutHookNotice: Story = {
+	args: {
+		...defaultArgs,
+		parsedMessages: buildMessages([
+			{
+				...baseMessage,
+				id: 1,
+				role: "system",
+				content: [{ type: "text", text: "Maintenance starts in ten minutes." }],
+			},
+		]),
+	},
+};
+
+export const LifecycleHookNoticeOnUserMessage: Story = {
+	args: {
+		...defaultArgs,
+		urlTransform: (url) =>
+			url.replace("http://localhost:3000", "https://proxy.example.com"),
+		parsedMessages: buildMessages([
+			{
+				...baseMessage,
+				id: 1,
+				role: "user",
+				content: [
+					{ type: "text", text: "original prompt" },
+					{
+						type: "hook-notice",
+						text: "Deployment context was added: [policy](http://localhost:3000/policy)",
+					},
+				],
+			},
+		]),
+	},
+	play: async ({ canvasElement }) => {
+		const canvas = within(canvasElement);
+		const notice = canvas.getByRole("note");
+		expect(notice).toBeVisible();
+		expect(within(notice).getByText("Lifecycle hook")).toBeVisible();
+		const prompt = canvas.getByText("original prompt");
+		expect(prompt).toBeVisible();
+		expect(
+			prompt.compareDocumentPosition(notice) & Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
+		const link = within(notice).getByRole("link", { name: "policy" });
+		expect(link).toHaveAttribute("href", "https://proxy.example.com/policy");
+	},
+};
+
+export const LifecycleHookNoticeAfterEditedMessage: Story = {
+	args: {
+		...defaultArgs,
+		editingMessageId: 1,
+		parsedMessages: buildMessages([
+			{
+				...baseMessage,
+				id: 1,
+				role: "user",
+				content: [{ type: "text", text: "prompt being edited" }],
+			},
+			{
+				...baseMessage,
+				id: 2,
+				role: "user",
+				content: [
+					{ type: "text", text: "later prompt" },
+					{
+						type: "hook-notice",
+						text: "Deployment context was added: [policy](http://localhost:3000/policy)",
+					},
+				],
+			},
+		]),
+	},
+	play: async ({ canvasElement }) => {
+		const canvas = within(canvasElement);
+		expect(canvas.getByText("prompt being edited")).toBeVisible();
+		const link = canvas.getByRole("link", { name: "policy" });
+		link.focus();
+		expect(link).not.toHaveFocus();
+	},
+};
+
+export const FindToolsSearchResult: Story = {
+	args: {
+		...defaultArgs,
+		parsedMessages: buildMessages([
+			{
+				...baseMessage,
+				id: 1,
+				role: "assistant",
+				content: [
+					{
+						type: "tool-call",
+						tool_call_id: "find-tools-1",
+						tool_name: "find_tools",
+						args: {
+							queries: JSON.stringify(["github issues", "pull requests"]),
+							names: JSON.stringify(["github__list_issues"]),
+						},
+					},
+				],
+			},
+			{
+				...baseMessage,
+				id: 2,
+				role: "tool",
+				content: [
+					{
+						type: "tool-result",
+						tool_call_id: "find-tools-1",
+						tool_name: "find_tools",
+						result: {
+							matches: JSON.stringify([
+								{
+									name: "github__list_issues",
+									description: "List issues in a GitHub repository.",
+								},
+								{
+									name: "github__list_pull_requests",
+									description: "List pull requests in a GitHub repository.",
+								},
+							]),
+							activated: JSON.stringify([
+								"github__list_issues",
+								"github__list_pull_requests",
+							]),
+							total_deferred: "24",
+						},
+					},
+				],
+			},
+		]),
+	},
+	play: async ({ canvasElement }) => {
+		const canvas = within(canvasElement);
+		const summary = canvas.getByRole("button", {
+			name: "Matched 2 tools: github__list_issues, github__list_pull_requests",
+		});
+		await userEvent.click(summary);
+	},
+};
+
+export const FindToolsEmptyResult: Story = {
+	args: {
+		...defaultArgs,
+		parsedMessages: buildMessages([
+			{
+				...baseMessage,
+				id: 1,
+				role: "assistant",
+				content: [
+					{
+						type: "tool-call",
+						tool_call_id: "find-tools-empty",
+						tool_name: "find_tools",
+						args: { queries: JSON.stringify(["nonexistent capability"]) },
+					},
+				],
+			},
+			{
+				...baseMessage,
+				id: 2,
+				role: "tool",
+				content: [
+					{
+						type: "tool-result",
+						tool_call_id: "find-tools-empty",
+						tool_name: "find_tools",
+						result: {
+							matches: JSON.stringify([]),
+							activated: JSON.stringify([]),
+							total_deferred: "24",
+						},
+					},
+				],
+			},
+		]),
+	},
+};
+
+export const FindToolsErrorResult: Story = {
+	args: {
+		...defaultArgs,
+		parsedMessages: buildMessages([
+			{
+				...baseMessage,
+				id: 1,
+				role: "assistant",
+				content: [
+					{
+						type: "tool-call",
+						tool_call_id: "find-tools-error",
+						tool_name: "find_tools",
+						args: { queries: JSON.stringify(["github issues"]) },
+					},
+				],
+			},
+			{
+				...baseMessage,
+				id: 2,
+				role: "tool",
+				content: [
+					{
+						type: "tool-result",
+						tool_call_id: "find-tools-error",
+						tool_name: "find_tools",
+						is_error: true,
+						result: {
+							error:
+								"The schema budget for this step is exhausted; call the tools already activated or retry next step.",
+						},
+					},
+				],
+			},
+		]),
+	},
+};
+
+export const FindToolsMalformedResultUsesDefaultRenderer: Story = {
+	args: {
+		...defaultArgs,
+		parsedMessages: buildMessages([
+			{
+				...baseMessage,
+				id: 1,
+				role: "assistant",
+				content: [
+					{
+						type: "tool-call",
+						tool_call_id: "find-tools-invalid",
+						tool_name: "find_tools",
+						args: { queries: JSON.stringify(["github"]) },
+					},
+				],
+			},
+			{
+				...baseMessage,
+				id: 2,
+				role: "tool",
+				content: [
+					{
+						type: "tool-result",
+						tool_call_id: "find-tools-invalid",
+						tool_name: "find_tools",
+						result: { matches: "not-json" },
+					},
+				],
+			},
+		]),
+	},
+};
+
+export const DurableListTemplatesToolLifecycle: Story = {
+	args: {
+		...defaultArgs,
+		parsedMessages: buildMessages([
+			{
+				...baseMessage,
+				id: 1,
+				role: "user",
+				content: [{ type: "text", text: "Show me available templates" }],
+			},
+			{
+				...baseMessage,
+				id: 2,
+				role: "assistant",
+				content: [
+					{
+						type: "tool-call",
+						tool_call_id: "list-templates-1",
+						tool_name: "list_templates",
+						args: {},
+					},
+				],
+			},
+			{
+				...baseMessage,
+				id: 3,
+				role: "tool",
+				content: [
+					{
+						type: "tool-result",
+						tool_call_id: "list-templates-1",
+						tool_name: "list_templates",
+						result: {
+							count: "1",
+							templates:
+								'[{"id":"template-1","name":"docker","display_name":"Docker"}]',
+						},
+					},
+				],
+			},
+		]),
+	},
+};
+
+/**
+ * User bubbles should stay right-aligned, shrink to fit short content,
+ * and cap long content so the timeline keeps some breathing room.
+ */
+export const UserMessageBubbleAlignment: Story = {
+	args: buildStoryArgs(
+		buildUserMessage({
+			text: LONG_USER_MESSAGE,
+		}),
+	),
+	play: async ({ canvasElement }) => {
+		const canvas = within(canvasElement);
+		const messageText = canvas.getByText(/deliberately long user message/i);
+		const userRow = messageText.closest('[data-role="user"]');
+
+		await userEvent.hover(userRow?.parentElement as HTMLElement);
+	},
+};
+
+export const AutomationUserMessages: Story = {
+	args: {
+		...buildStoryArgs(
+			{
+				...buildUserMessage({ id: 1, text: "Check the nightly build." }),
+				automation_id: MockChatAutomation.id,
+				input_id: "0b6c4e2a-1f3d-4b5c-8a9e-7d6c5b4a3f2e",
+			},
+			buildUserMessage({ id: 2, text: "Thanks, anything else?" }),
+			{
+				...buildUserMessage({ id: 3, text: "Summarize open issues." }),
+				automation_id: "3e9d8c7b-6a5f-4e3d-8c2b-1a0f9e8d7c6b",
+				input_id: "9a8b7c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d",
+			},
+		),
+		automationNames: {
+			names: new Map([[MockChatAutomation.id, MockChatAutomation.name]]),
+			status: "settled",
+		},
+	},
+};
 
 /** Regression guard: a single image attachment must not be duplicated. */
 export const UserMessageWithSingleImage: Story = {
@@ -321,11 +856,6 @@ export const UserMessageWithSingleImage: Story = {
 				],
 			},
 		]),
-	},
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		const images = canvas.getAllByRole("img", { name: "Attached image" });
-		expect(images).toHaveLength(1);
 	},
 };
 
@@ -359,11 +889,6 @@ export const UserMessageWithMultipleImages: Story = {
 			},
 		]),
 	},
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		const images = canvas.getAllByRole("img", { name: "Attached image" });
-		expect(images).toHaveLength(3);
-	},
 };
 
 /** File-id images use a server URL instead of inline base64 data. */
@@ -383,6 +908,7 @@ export const UserMessageWithFileIdImage: Story = {
 			"src",
 			getChatFileURL("storybook-test-image"),
 		);
+		expectNoCopyMessageButtonForElement(images[0]);
 	},
 };
 
@@ -398,18 +924,11 @@ export const UserMessageWithExpiredImage: Story = {
 		const canvas = within(canvasElement);
 		const image = canvas.getByRole("img", { name: "Attached image" });
 		fireEvent.error(image);
-		const expiredTile = await findAttachmentTile(canvas, "Image expired");
-		expect(canvas.getByText("This upload has expired")).toBeInTheDocument();
-		expect(
-			canvas.queryByRole("button", { name: "View Attached image" }),
-		).not.toBeInTheDocument();
+		const expiredTile = await canvas.findByRole("img", {
+			name: "Image expired",
+		});
 
-		// The tooltip explains the retention policy generically so the
-		// copy survives any operator-chosen retention window.
-		await hoverAndExpectTooltip(
-			expiredTile,
-			/deleted after the retention window/i,
-		);
+		await hoverAttachmentTile(expiredTile);
 	},
 };
 
@@ -432,6 +951,7 @@ export const UserMessageWithRepeatedExpiredImage: Story = {
 		const images = canvas.getAllByRole("img", { name: "Attached image" });
 		expect(images).toHaveLength(2);
 		fireEvent.error(images[0]);
+		fireEvent.error(images[1]);
 		await waitFor(() =>
 			expect(
 				canvas.getAllByRole("img", { name: "Image expired" }),
@@ -441,6 +961,53 @@ export const UserMessageWithRepeatedExpiredImage: Story = {
 		expect(
 			canvas.queryByRole("button", { name: "View Attached image" }),
 		).not.toBeInTheDocument();
+		for (const tile of canvas.getAllByRole("img", { name: "Image expired" })) {
+			expectNoCopyMessageButtonForElement(tile);
+		}
+	},
+};
+
+/** Duplicate file IDs with a non-expired probe reuse the first result. */
+export const UserMessageWithRepeatedFailedImage: Story = {
+	args: buildStoryArgs(
+		buildUserMessage({
+			id: 1,
+			text: "First reference to the failed upload",
+			files: [buildImageAttachmentPart("storybook-failed-image")],
+		}),
+		buildUserMessage({
+			id: 2,
+			text: "Second reference to the same failed upload",
+			files: [buildImageAttachmentPart("storybook-failed-image")],
+		}),
+	),
+	play: async ({ canvasElement }) => {
+		const canvas = within(canvasElement);
+		const images = canvas.getAllByRole("img", { name: "Attached image" });
+		expect(images).toHaveLength(2);
+		fireEvent.error(images[0]);
+		fireEvent.error(images[1]);
+		await waitFor(() =>
+			expect(
+				canvas.getAllByRole("img", { name: "Image failed to load" }),
+			).toHaveLength(2),
+		);
+		expect(getAttachmentFetchCount("storybook-failed-image")).toBe(1);
+		expect(
+			canvas.queryByRole("button", { name: "View Attached image" }),
+		).not.toBeInTheDocument();
+
+		const tiles = await waitFor(() => {
+			const t = canvas.getAllByRole("img", { name: "Image failed to load" });
+			for (const tile of t) {
+				expect(tile).toHaveAttribute("data-state");
+			}
+			return t;
+		});
+		for (const tile of tiles) {
+			expectNoCopyMessageButtonForElement(tile);
+			await hoverAndExpectTooltip(tile, FAILED_ATTACHMENT_API_MESSAGE);
+		}
 	},
 };
 
@@ -456,22 +1023,12 @@ export const UserMessageWithFailedRemoteImage: Story = {
 		const canvas = within(canvasElement);
 		const image = canvas.getByRole("img", { name: "Attached image" });
 		fireEvent.error(image);
-		await findAttachmentTile(canvas, "Image failed to load");
-		expect(canvas.getByText("This image failed to load")).toBeInTheDocument();
-		expect(
-			canvas.queryByRole("button", { name: "View Attached image" }),
-		).not.toBeInTheDocument();
 
 		// When the probe returns a structured error body, the tooltip
 		// surfaces the API's message so the viewer has something
-		// actionable instead of a bare "failed to load". The label
-		// doesn't change when the probe settles (still "Image failed
-		// to load"), and the tile's DOM node is replaced when the
-		// Tooltip wrapper mounts, so re-query each time and wait for
-		// the Radix-stamped data-state attribute before hovering.
-		await hoverAndExpectTooltip(
-			await waitForTooltipWrappedAttachmentTile(canvas, "Image failed to load"),
-			FAILED_ATTACHMENT_API_MESSAGE,
+		// actionable instead of a bare "failed to load".
+		await hoverAttachmentTile(
+			await findTooltipWrappedAttachmentTile(canvas, "Image failed to load"),
 		);
 	},
 };
@@ -488,10 +1045,8 @@ export const UserMessageWithUndisplayableRemoteImage: Story = {
 		const canvas = within(canvasElement);
 		const image = canvas.getByRole("img", { name: "Attached image" });
 		fireEvent.error(image);
-		await findAttachmentTile(canvas, "Image failed to load");
-		await hoverAndExpectTooltip(
-			await waitForTooltipWrappedAttachmentTile(canvas, "Image failed to load"),
-			UNDISPLAYABLE_REMOTE_ATTACHMENT_MESSAGE,
+		await hoverAttachmentTile(
+			await findTooltipWrappedAttachmentTile(canvas, "Image failed to load"),
 		);
 	},
 };
@@ -508,13 +1063,7 @@ export const UserMessageWithInvalidInlineImage: Story = {
 		const canvas = within(canvasElement);
 		const image = canvas.getByRole("img", { name: "Attached image" });
 		fireEvent.error(image);
-		await findAttachmentTile(canvas, "Image failed to load");
-		expect(
-			canvas.getByText("Inline image data is corrupt"),
-		).toBeInTheDocument();
-		expect(
-			canvas.queryByRole("button", { name: "View Attached image" }),
-		).not.toBeInTheDocument();
+		await canvas.findByRole("img", { name: "Image failed to load" });
 	},
 };
 
@@ -530,12 +1079,8 @@ export const UserMessageWithTextAttachment: Story = {
 		const textButton = await canvas.findByRole("button", {
 			name: "View text attachment",
 		});
-		expect(textButton).toBeInTheDocument();
-		expect(textButton).toHaveTextContent(/Pasted text/i);
 		await userEvent.click(textButton);
-		expect(
-			await canvas.findByText(/Quarterly revenue increased 18%/i),
-		).toBeInTheDocument();
+		await canvas.findByText(/Quarterly revenue increased 18%/i);
 	},
 };
 
@@ -564,9 +1109,8 @@ export const UserMessageWithJSONAttachment: Story = {
 		const textButton = await canvas.findByRole("button", {
 			name: "View report.json",
 		});
-		expect(textButton).toHaveTextContent("report.json");
 		await userEvent.click(textButton);
-		expect(await canvas.findByText(/"status":"ok"/i)).toBeInTheDocument();
+		await canvas.findByText(/"status":"ok"/i);
 	},
 };
 
@@ -597,9 +1141,12 @@ export const UserMessageWithDownloadableFile: Story = {
 		});
 		expect(downloadLink).toHaveAttribute(
 			"href",
-			"/api/experimental/chats/files/storybook-user-deployment-report",
+			"/api/v2/chats/files/storybook-user-deployment-report",
 		);
 		expect(canvas.getByText("deployment-report.pdf")).toBeInTheDocument();
+		expect(
+			canvas.queryByRole("button", { name: "Copy message" }),
+		).not.toBeInTheDocument();
 	},
 };
 
@@ -615,13 +1162,6 @@ export const UserMessageWithMultipleTextAttachments: Story = {
 			],
 		}),
 	),
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		const textButtons = await canvas.findAllByRole("button", {
-			name: "View text attachment",
-		});
-		expect(textButtons).toHaveLength(3);
-	},
 };
 
 export const UserMessageWithTextAttachmentOnly: Story = {
@@ -635,39 +1175,69 @@ export const UserMessageWithTextAttachmentOnly: Story = {
 		const textButton = await canvas.findByRole("button", {
 			name: "View text attachment",
 		});
-		expect(textButton).toHaveTextContent(/Pasted text/i);
 		await userEvent.click(textButton);
-		expect(
-			await canvas.findByText(/Runbook note: restart the worker/i),
-		).toBeInTheDocument();
+		await canvas.findByText(/Runbook note: restart the worker/i);
 	},
 };
 
+/**
+ * A text attachment the chat record no longer lists, referenced before a
+ * remaining one, renders the placeholder on load without fetching the file.
+ */
 export const UserMessageWithExpiredTextAttachment: Story = {
-	args: buildStoryArgs(
-		buildUserMessage({
-			text: "This pasted context has expired",
-			files: [buildTextAttachmentPart("storybook-expired-text")],
-		}),
-	),
+	args: {
+		...buildStoryArgs(
+			buildUserMessage({
+				id: 1,
+				text: "This pasted context has expired",
+				files: [buildTextAttachmentPart("storybook-expired-text")],
+			}),
+			buildUserMessage({
+				id: 2,
+				text: "This newer context is still available",
+				files: [buildTextAttachmentPart("storybook-test-text")],
+			}),
+		),
+		chatFiles: buildChatFiles("storybook-test-text"),
+	},
 	play: async ({ canvasElement }) => {
 		const canvas = within(canvasElement);
-		const textButton = await canvas.findByRole("button", {
-			name: "View text attachment",
+		const expiredTile = await canvas.findByRole("img", {
+			name: "Attachment expired",
 		});
-		await userEvent.click(textButton);
-		const expiredTile = await findAttachmentTile(canvas, "Attachment expired");
-		expect(
-			canvas.getByText("This pasted context has expired"),
-		).toBeInTheDocument();
-		expect(
-			canvas.queryByRole("button", { name: "View text attachment" }),
-		).not.toBeInTheDocument();
 
-		await hoverAndExpectTooltip(
-			expiredTile,
-			/deleted after the retention window/i,
-		);
+		await hoverAttachmentTile(expiredTile);
+	},
+};
+
+/** An evicted downloadable file renders the placeholder instead of a dead link. */
+export const UserMessageWithExpiredDownloadableFile: Story = {
+	args: {
+		...buildStoryArgs(
+			buildUserMessage({
+				id: 1,
+				text: "The attached report has expired.",
+				files: [
+					buildFilePart({
+						media_type: "application/pdf",
+						file_id: "storybook-expired-file",
+						name: "old-report.pdf",
+					}),
+				],
+			}),
+			buildUserMessage({
+				id: 2,
+				text: "The newer report is still available.",
+				files: [
+					buildFilePart({
+						media_type: "application/pdf",
+						file_id: "storybook-current-file",
+						name: "new-report.pdf",
+					}),
+				],
+			}),
+		),
+		chatFiles: buildChatFiles("storybook-current-file"),
 	},
 };
 
@@ -684,55 +1254,13 @@ export const UserMessageWithFailedTextAttachment: Story = {
 			name: "View text attachment",
 		});
 		await userEvent.click(textButton);
-		await findAttachmentTile(canvas, "Attachment failed to load");
-		expect(
-			canvas.getByText("This pasted context failed to load"),
-		).toBeInTheDocument();
-		expect(
-			canvas.queryByRole("button", { name: "View text attachment" }),
-		).not.toBeInTheDocument();
 
-		await hoverAndExpectTooltip(
-			await waitForTooltipWrappedAttachmentTile(
+		await hoverAttachmentTile(
+			await findTooltipWrappedAttachmentTile(
 				canvas,
 				"Attachment failed to load",
 			),
-			FAILED_ATTACHMENT_API_MESSAGE,
 		);
-	},
-};
-
-export const UserMessageWithInlineTextAttachment: Story = {
-	args: {
-		...defaultArgs,
-		parsedMessages: parseMessagesWithMergedTools([
-			{
-				...baseMessage,
-				id: 1,
-				role: "user",
-				content: [
-					{ type: "text", text: "Here is inline context:" },
-					{
-						type: "file",
-						media_type: "text/plain",
-						data: encodeInlineTextAttachment(
-							"Inline deployment note: verify the feature flag before rollout.",
-						),
-					},
-				],
-			},
-		]),
-	},
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		const textButton = await canvas.findByRole("button", {
-			name: "View text attachment",
-		});
-		expect(textButton).toHaveTextContent(/Pasted text/i);
-		await userEvent.click(textButton);
-		expect(
-			await canvas.findByText(/Inline deployment note/i),
-		).toBeInTheDocument();
 	},
 };
 
@@ -767,11 +1295,7 @@ export const UserMessageWithFailedTextAttachmentNonJSONBody: Story = {
 			name: "View preview.txt",
 		});
 		await userEvent.click(textButton);
-		await findAttachmentTile(canvas, "Attachment failed to load");
-		expect(
-			canvas.queryByRole("button", { name: "View preview.txt" }),
-		).not.toBeInTheDocument();
-		expect(canvas.queryByText(/Temporary failure/i)).not.toBeInTheDocument();
+		await canvas.findByRole("img", { name: "Attachment failed to load" });
 	},
 };
 
@@ -786,15 +1310,6 @@ export const UserMessageWithMixedAttachments: Story = {
 			],
 		}),
 	),
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		const images = canvas.getAllByRole("img", { name: "Attached image" });
-		expect(images).toHaveLength(1);
-		const textButtons = await canvas.findAllByRole("button", {
-			name: "View text attachment",
-		});
-		expect(textButtons).toHaveLength(1);
-	},
 };
 
 /** Text-only messages must not produce spurious image thumbnails. */
@@ -809,12 +1324,6 @@ export const UserMessageTextOnly: Story = {
 				content: [{ type: "text", text: "Just a plain text message" }],
 			},
 		]),
-	},
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		const images = canvas.queryAllByRole("img", { name: "Attached image" });
-		expect(images).toHaveLength(0);
-		expect(canvas.getByText("Just a plain text message")).toBeInTheDocument();
 	},
 };
 
@@ -849,6 +1358,9 @@ export const AssistantMessageWithImage: Story = {
 		);
 		expect(
 			canvas.queryByRole("link", { name: "Download generated-image.png" }),
+		).not.toBeInTheDocument();
+		expect(
+			canvas.queryByRole("button", { name: "Copy message" }),
 		).not.toBeInTheDocument();
 		const viewButton = canvas.getByRole("button", {
 			name: "View generated-image.png",
@@ -890,6 +1402,38 @@ export const AssistantMessageWithUnnamedDownloadableFile: Story = {
 		expect(downloadLink).toBeInTheDocument();
 		expect(downloadLink).toHaveAttribute("download", "attachment.pdf");
 		expect(canvas.getByText("Attached file")).toBeInTheDocument();
+		expect(
+			canvas.queryByRole("button", { name: "Copy message" }),
+		).not.toBeInTheDocument();
+	},
+};
+
+export const AssistantMessageWithMismatchedExtensionFile: Story = {
+	args: {
+		...defaultArgs,
+		parsedMessages: buildMessages([
+			{
+				...baseMessage,
+				id: 1,
+				role: "assistant",
+				content: [
+					{ type: "text", text: "Here are the release notes." },
+					{
+						type: "file",
+						media_type: "application/pdf",
+						file_id: "storybook-mismatched-notes",
+						name: "release-notes.txt",
+					},
+				],
+			},
+		]),
+	},
+	play: async ({ canvasElement }) => {
+		const canvas = within(canvasElement);
+		const downloadLink = canvas.getByRole("link", {
+			name: "Download release-notes.txt",
+		});
+		expect(downloadLink).toHaveAttribute("download", "release-notes.txt");
 	},
 };
 
@@ -919,12 +1463,6 @@ export const UserMessageWithImagesAndFileRefs: Story = {
 				],
 			},
 		]),
-	},
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		const images = canvas.getAllByRole("img", { name: "Attached image" });
-		expect(images).toHaveLength(1);
-		expect(canvas.getByText(/main\.go/)).toBeInTheDocument();
 	},
 };
 
@@ -962,62 +1500,44 @@ export const UserMessageWithInlineFileRef: Story = {
 			},
 		]),
 	},
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		expect(canvas.getByText(/Button\.tsx/)).toBeInTheDocument();
-		expect(canvas.getByText(/Can you refactor/)).toBeInTheDocument();
-		expect(canvas.getByText(/to use the new API/)).toBeInTheDocument();
-	},
 };
 
-/** Multiple file references render inline, no separate section. */
-export const UserMessageWithMultipleInlineFileRefs: Story = {
+export const MetadataOnlyUserMessageRendersNoRow: Story = {
 	args: {
 		...defaultArgs,
 		parsedMessages: buildMessages([
 			{
 				...baseMessage,
 				id: 1,
+				role: "assistant",
+				content: [{ type: "text", text: "Before hidden metadata." }],
+			},
+			{
+				...baseMessage,
+				id: 2,
 				role: "user",
 				content: [
-					{ type: "text", text: "Compare " },
 					{
-						type: "file-reference",
-						file_name: "api/handler.go",
-						start_line: 1,
-						end_line: 50,
-						content: "...",
-					},
-					{ type: "text", text: " with " },
-					{
-						type: "file-reference",
-						file_name: "api/handler_test.go",
-						start_line: 10,
-						end_line: 30,
-						content: "...",
+						type: "context-file",
+						context_file_path: "/home/coder/coder/AGENTS.md",
 					},
 				],
 			},
+			{
+				...baseMessage,
+				id: 3,
+				role: "assistant",
+				content: [{ type: "text", text: "After hidden metadata." }],
+			},
 		]),
-	},
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		expect(canvas.getByText(/handler\.go/)).toBeInTheDocument();
-		expect(canvas.getByText(/handler_test\.go/)).toBeInTheDocument();
 	},
 };
 
 /**
- * Verifies the structural requirements for sticky user messages
- * in the flat (section-less) message list:
- * - Each user message renders a data-user-sentinel marker so
- *   the push-up logic can find the next user message via DOM
- *   traversal.
- * - The user message container gets position:sticky.
- * - Sentinels appear in the correct order (matching user
- *   message order).
+ * Each user prompt is a single transcript row. The scroller anchors on those
+ * rows, so nothing renders a second, pinned copy of the prompt.
  */
-export const StickyUserMessageStructure: Story = {
+export const UserMessagesRenderAsSingleRows: Story = {
 	args: {
 		...defaultArgs,
 		parsedMessages: buildMessages([
@@ -1047,37 +1567,98 @@ export const StickyUserMessageStructure: Story = {
 			},
 		]),
 	},
-	play: async ({ canvasElement }) => {
-		// Each user message should produce a data-user-sentinel
-		// marker that the push-up scroll logic relies on.
-		const sentinels = canvasElement.querySelectorAll("[data-user-sentinel]");
-		expect(sentinels.length).toBe(2);
+};
 
-		// Each sentinel should be immediately followed by a sticky
-		// container (the user message itself).
-		for (const sentinel of sentinels) {
-			const container = sentinel.nextElementSibling;
-			expect(container).not.toBeNull();
-			const style = window.getComputedStyle(container!);
-			expect(style.position).toBe("sticky");
+/**
+ * Each user message exposes left/right chevron buttons in its action row so
+ * users can jump the transcript between user prompts. They are disabled at the
+ * ends of the conversation; clicking one hands the neighbouring prompt's row
+ * key to the scroller, which owns the scroll itself.
+ */
+export const UserMessageJumpArrows: Story = {
+	parameters: { messageScrollerHeight: 320 },
+	args: {
+		...defaultArgs,
+		parsedMessages: buildMessages([
+			{
+				...baseMessage,
+				id: 1,
+				role: "user",
+				content: [{ type: "text", text: "First prompt" }],
+			},
+			{
+				...baseMessage,
+				id: 2,
+				role: "assistant",
+				content: [
+					{
+						type: "text",
+						text: "a".repeat(800),
+					},
+				],
+			},
+			{
+				...baseMessage,
+				id: 3,
+				role: "user",
+				content: [{ type: "text", text: "Second prompt" }],
+			},
+			{
+				...baseMessage,
+				id: 4,
+				role: "assistant",
+				content: [
+					{
+						type: "text",
+						text: "b".repeat(800),
+					},
+				],
+			},
+			{
+				...baseMessage,
+				id: 5,
+				role: "user",
+				content: [{ type: "text", text: "Third prompt" }],
+			},
+		]),
+		onEditUserMessage: fn(),
+	},
+	play: async ({ canvasElement }) => {
+		const canvas = within(canvasElement);
+
+		// Reveal the hover-only action rows so we can interact with
+		// the chevron buttons without dispatching real hover events.
+		for (const el of canvasElement.querySelectorAll("[class]")) {
+			if (
+				el instanceof HTMLElement &&
+				el.className.includes("group-hover/msg:opacity-100")
+			) {
+				el.style.opacity = "1";
+			}
 		}
 
-		// Sentinels must appear in DOM order matching the message
-		// order so nextElementSibling traversal finds the correct
-		// next user message.
-		const allElements = Array.from(
-			canvasElement.querySelectorAll("[data-user-sentinel], [class*='sticky']"),
-		);
-		const sentinelIndices = Array.from(sentinels).map((s) =>
-			allElements.indexOf(s),
-		);
-		// Sentinels should be in ascending DOM order.
-		expect(sentinelIndices[0]).toBeLessThan(sentinelIndices[1]);
+		const prevButtons = canvas.getAllByRole("button", {
+			name: "Jump to previous user message",
+		});
+		const nextButtons = canvas.getAllByRole("button", {
+			name: "Jump to next user message",
+		});
+		expect(prevButtons).toHaveLength(3);
+		expect(nextButtons).toHaveLength(3);
 
-		// Both user messages should be visible.
-		const canvas = within(canvasElement);
-		expect(canvas.getByText("First prompt")).toBeVisible();
-		expect(canvas.getByText("Second prompt")).toBeVisible();
+		// First user prompt: previous disabled, next enabled.
+		expect(prevButtons[0]).toBeDisabled();
+		expect(nextButtons[0]).toBeEnabled();
+
+		// Middle user prompt: both directions enabled.
+		expect(prevButtons[1]).toBeEnabled();
+		expect(nextButtons[1]).toBeEnabled();
+
+		// Last user prompt: previous enabled, next disabled.
+		expect(prevButtons[2]).toBeEnabled();
+		expect(nextButtons[2]).toBeDisabled();
+
+		await userEvent.click(nextButtons[0]);
 	},
 };
 
@@ -1097,7 +1678,6 @@ export const UserMessageCopyButton: Story = {
 	},
 	play: async ({ args, canvasElement }) => {
 		const canvas = within(canvasElement);
-		// Force the hover-reveal toolbar visible for the screenshot.
 		for (const el of canvasElement.querySelectorAll("[class]")) {
 			if (
 				el instanceof HTMLElement &&
@@ -1171,7 +1751,6 @@ export const AssistantMessageCopyButton: Story = {
 		]),
 	},
 	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
 		// Force the hover-reveal toolbar visible.
 		for (const el of canvasElement.querySelectorAll("[class]")) {
 			if (
@@ -1181,14 +1760,6 @@ export const AssistantMessageCopyButton: Story = {
 				el.style.opacity = "1";
 			}
 		}
-		const actions = canvas.getAllByTestId("message-actions");
-		expect(actions.length).toBeGreaterThanOrEqual(1);
-		// The last message-actions belongs to the assistant.
-		const assistantActions = actions[actions.length - 1];
-		const copyBtn = within(assistantActions).getByRole("button", {
-			name: "Copy message",
-		});
-		expect(copyBtn).toBeInTheDocument();
 	},
 };
 
@@ -1237,87 +1808,6 @@ export const AskUserQuestionSubmittedAnswer: Story = {
 				content: [{ type: "text", text: askUserQuestionSubmittedResponse }],
 			},
 		]),
-	},
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-
-		// The submitted-answer summary is hidden after the follow-up user message.
-		expect(
-			canvas.getByText("How should we structure the database migration?"),
-		).toBeInTheDocument();
-		expect(canvas.queryAllByRole("radio")).toHaveLength(0);
-		expect(
-			canvas.queryByRole("button", { name: "Submit" }),
-		).not.toBeInTheDocument();
-		const userMessages = canvasElement.querySelectorAll('[data-role="user"]');
-		const latestUserMessage = userMessages[userMessages.length - 1];
-		if (!(latestUserMessage instanceof HTMLElement)) {
-			throw new Error("Expected a submitted user message bubble.");
-		}
-		expect(
-			within(latestUserMessage).getByText(
-				/Implementation Approach: Incremental migrations/,
-			),
-		).toBeInTheDocument();
-		expect(
-			within(latestUserMessage).getByText(/Release Plan: Small beta/),
-		).toBeInTheDocument();
-	},
-};
-
-/** No copy button when assistant message has no markdown content. */
-export const AssistantMessageNoCopyWhenToolOnly: Story = {
-	args: {
-		...defaultArgs,
-		parsedMessages: buildMessages([
-			{
-				...baseMessage,
-				id: 1,
-				role: "user",
-				content: [{ type: "text", text: "Run the tests" }],
-			},
-			{
-				...baseMessage,
-				id: 2,
-				role: "assistant",
-				content: [
-					{
-						type: "tool-call",
-						tool_call_id: "tool-1",
-						tool_name: "execute",
-						args: { command: "go test ./..." },
-					},
-				],
-			},
-			{
-				...baseMessage,
-				id: 3,
-				role: "tool",
-				content: [
-					{
-						type: "tool-result",
-						tool_call_id: "tool-1",
-						result: { output: "PASS" },
-					},
-				],
-			},
-		]),
-	},
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		// Force the hover-reveal toolbar visible.
-		for (const el of canvasElement.querySelectorAll("[class]")) {
-			if (
-				el instanceof HTMLElement &&
-				el.className.includes("group-hover/msg:opacity-100")
-			) {
-				el.style.opacity = "1";
-			}
-		}
-		// Only the user message should have actions; the tool-only
-		// assistant message has no copyable content.
-		const actions = canvas.getAllByTestId("message-actions");
-		expect(actions).toHaveLength(1);
 	},
 };
 
@@ -1378,151 +1868,6 @@ export const CopyButtonWritesToClipboard: Story = {
 	},
 };
 
-/** All messages get copy actions regardless of turn state. */
-export const CopyButtonDuringActiveTurn: Story = {
-	args: {
-		...defaultArgs,
-		parsedMessages: buildMessages([
-			{
-				...baseMessage,
-				id: 1,
-				role: "user",
-				content: [{ type: "text", text: "Fix the bug" }],
-			},
-			{
-				...baseMessage,
-				id: 2,
-				role: "assistant",
-				content: [{ type: "text", text: "Let me look at the code." }],
-			},
-		]),
-	},
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		// Force the hover-reveal toolbar visible.
-		for (const el of canvasElement.querySelectorAll("[class]")) {
-			if (
-				el instanceof HTMLElement &&
-				el.className.includes("group-hover/msg:opacity-100")
-			) {
-				el.style.opacity = "1";
-			}
-		}
-		// Both user and assistant messages should have actions.
-		const actions = canvas.getAllByTestId("message-actions");
-		expect(actions).toHaveLength(2);
-	},
-};
-
-/** All assistant messages with text content get a copy button. */
-export const MultiAssistantTurnCopyButton: Story = {
-	args: {
-		...defaultArgs,
-		parsedMessages: buildMessages([
-			{
-				...baseMessage,
-				id: 1,
-				role: "user",
-				content: [{ type: "text", text: "Help me refactor" }],
-			},
-			{
-				...baseMessage,
-				id: 2,
-				role: "assistant",
-				content: [
-					{ type: "text", text: "Let me check the code first." },
-					{
-						type: "tool-call",
-						tool_call_id: "tool-1",
-						tool_name: "read_file",
-						args: { path: "main.go" },
-					},
-				],
-			},
-			{
-				...baseMessage,
-				id: 3,
-				role: "tool",
-				content: [
-					{
-						type: "tool-result",
-						tool_call_id: "tool-1",
-						result: { output: "package main" },
-					},
-				],
-			},
-			{
-				...baseMessage,
-				id: 4,
-				role: "assistant",
-				content: [
-					{ type: "text", text: "Here is the **refactored** version." },
-				],
-			},
-		]),
-	},
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		// Force the hover-reveal toolbar visible.
-		for (const el of canvasElement.querySelectorAll("[class]")) {
-			if (
-				el instanceof HTMLElement &&
-				el.className.includes("group-hover/msg:opacity-100")
-			) {
-				el.style.opacity = "1";
-			}
-		}
-		// The first assistant message (id=2) is mid-chain so its
-		// actions are hidden. Only the user and the last assistant
-		// (id=4) get action bars.
-		const actions = canvas.getAllByTestId("message-actions");
-		expect(actions).toHaveLength(2);
-	},
-};
-
-/**
- * Regression: thinking-only assistant messages must have consistent
- * bottom spacing before the next user bubble. A spacer div fills the
- * gap that would normally come from the invisible action bar.
- */
-export const ThinkingOnlyAssistantSpacing: Story = {
-	args: {
-		...defaultArgs,
-		parsedMessages: buildMessages([
-			{
-				...baseMessage,
-				id: 1,
-				role: "user",
-				content: [{ type: "text", text: "Explain this code" }],
-			},
-			{
-				...baseMessage,
-				id: 2,
-				role: "assistant",
-				content: [
-					{
-						type: "reasoning",
-						text: "Let me think about this step by step. The user wants me to explain the code they shared.",
-					},
-				],
-			},
-			{
-				...baseMessage,
-				id: 3,
-				role: "user",
-				content: [{ type: "text", text: "Any progress?" }],
-			},
-		]),
-	},
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		// The thinking-only assistant message has no action bar, but
-		// it should still have visible text and a spacer element.
-		expect(canvas.getByText("Explain this code")).toBeInTheDocument();
-		expect(canvas.getByText("Any progress?")).toBeInTheDocument();
-	},
-};
-
 /**
  * Regression: sources-only assistant messages must have consistent
  * bottom spacing before the next user bubble. A spacer div fills the
@@ -1565,46 +1910,9 @@ export const SourcesOnlyAssistantSpacing: Story = {
 	},
 	play: async ({ canvasElement }) => {
 		const canvas = within(canvasElement);
-		expect(canvas.getByText("Can you share your sources?")).toBeInTheDocument();
-		expect(canvas.getByText("Thanks!")).toBeInTheDocument();
 		await userEvent.click(
 			canvas.getByRole("button", { name: /searched 2 results/i }),
 		);
-		expect(
-			canvas.getByRole("link", { name: "Documentation" }),
-		).toBeInTheDocument();
-		expect(
-			canvas.getByRole("link", { name: "API Reference" }),
-		).toBeInTheDocument();
-	},
-};
-
-export const NoRenderableContentFallbackSpacing: Story = {
-	args: {
-		...defaultArgs,
-		parsedMessages: buildMessages([
-			{
-				...baseMessage,
-				id: 101,
-				role: "assistant",
-				content: [],
-			},
-			{
-				...baseMessage,
-				id: 102,
-				role: "user",
-				content: [{ type: "text", text: "Thanks for trying!" }],
-			},
-		]),
-	},
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		expect(
-			canvas.getByText("Message has no renderable content."),
-		).toBeInTheDocument();
-		expect(
-			document.querySelector('[data-testid="assistant-bottom-spacer"]'),
-		).toBeInTheDocument();
 	},
 };
 
@@ -1653,8 +1961,9 @@ export const AssistantActionBarAfterHiddenMessages: Story = {
 		]),
 	},
 	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
 		// Force the hover-reveal action bars visible using stable test IDs.
+		// The invisible provider-executed tool-result message (id=3)
+		// must not prevent the assistant (id=2) from showing its bar.
 		for (const el of canvasElement.querySelectorAll(
 			'[data-testid="message-actions"]',
 		)) {
@@ -1662,11 +1971,91 @@ export const AssistantActionBarAfterHiddenMessages: Story = {
 				el.style.opacity = "1";
 			}
 		}
-		// 2 user messages + 1 visible assistant = 3 action bars.
-		// The invisible provider-executed tool-result message (id=3)
-		// must not prevent the assistant (id=2) from showing its bar.
-		const actions = canvas.getAllByTestId("message-actions");
-		expect(actions).toHaveLength(3);
+	},
+};
+
+export const ToolDisplayModesFromPreferences: Story = {
+	parameters: {
+		queries: [
+			{
+				key: ["me", "preferences"],
+				data: {
+					thinking_display_mode: "auto" as const,
+					shell_tool_display_mode: "always_collapsed" as const,
+					code_diff_display_mode: "always_collapsed" as const,
+					agent_chat_send_shortcut: "enter" as const,
+				},
+			},
+		],
+	},
+	args: {
+		...defaultArgs,
+		parsedMessages: [
+			{
+				message: {
+					...baseMessage,
+					id: 1,
+					role: "assistant",
+					content: [],
+				},
+				parsed: {
+					markdown: "",
+					reasoning: "",
+					toolCalls: [],
+					toolResults: [],
+					tools: [
+						{
+							id: "execute-tool",
+							name: "execute",
+							args: { command: "pnpm test" },
+							result: { output: "tests passed" },
+							isError: false,
+							status: "completed",
+						},
+						{
+							id: "edit-tool",
+							name: "edit_files",
+							args: {
+								files: [
+									{
+										path: "src/config.ts",
+										edits: [
+											{
+												search: "const timeout = 30;",
+												replace: "const timeout = 60;",
+											},
+										],
+									},
+								],
+							},
+							result: { ok: true },
+							isError: false,
+							status: "completed",
+						},
+					],
+					blocks: [
+						{ type: "tool", id: "execute-tool" },
+						{ type: "tool", id: "edit-tool" },
+					],
+					sources: [],
+					hookNotices: [],
+				},
+			},
+		] satisfies ParsedMessageEntry[],
+	},
+	play: async ({ canvasElement }) => {
+		const canvas = within(canvasElement);
+		const commandOutputButton = canvas.getByRole("button", {
+			name: "Expand command",
+		});
+		await userEvent.click(commandOutputButton);
+		await canvas.findByText("tests passed");
+
+		const editFilesButton = canvas.getByRole("button", {
+			name: /Edited config\.ts/,
+		});
+		await userEvent.click(editFilesButton);
+		await canvas.findByTestId("edit-file-diff");
 	},
 };
 
@@ -1680,8 +2069,10 @@ export const ThinkingBlockAlwaysExpanded: Story = {
 			{
 				key: ["me", "preferences"],
 				data: {
-					task_notification_alert_dismissed: false,
 					thinking_display_mode: "always_expanded" as const,
+					shell_tool_display_mode: "auto" as const,
+					code_diff_display_mode: "auto" as const,
+					agent_chat_send_shortcut: "enter" as const,
 				},
 			},
 		],
@@ -1696,7 +2087,7 @@ export const ThinkingBlockAlwaysExpanded: Story = {
 				content: [
 					{
 						type: "reasoning",
-						text: "Let me think about this step by step.",
+						text: "**Configuring model settings**\n\nLet me think about this step by step.",
 					},
 					{
 						type: "text",
@@ -1705,15 +2096,6 @@ export const ThinkingBlockAlwaysExpanded: Story = {
 				],
 			},
 		]),
-	},
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		expect(canvas.getByText("Thinking")).toBeInTheDocument();
-		await waitFor(() => {
-			expect(
-				canvas.getByText(/Let me think about this step by step/),
-			).toBeVisible();
-		});
 	},
 };
 
@@ -1727,8 +2109,10 @@ export const ThinkingBlockAlwaysCollapsed: Story = {
 			{
 				key: ["me", "preferences"],
 				data: {
-					task_notification_alert_dismissed: false,
 					thinking_display_mode: "always_collapsed" as const,
+					shell_tool_display_mode: "auto" as const,
+					code_diff_display_mode: "auto" as const,
+					agent_chat_send_shortcut: "enter" as const,
 				},
 			},
 		],
@@ -1755,16 +2139,218 @@ export const ThinkingBlockAlwaysCollapsed: Story = {
 	},
 	play: async ({ canvasElement }) => {
 		const canvas = within(canvasElement);
-		expect(canvas.getByText("Thinking")).toBeInTheDocument();
-		expect(
-			canvas.queryByText(/Let me think about this step by step/),
-		).not.toBeInTheDocument();
-		await userEvent.click(canvas.getByText("Thinking"));
-		await waitFor(() => {
-			expect(
-				canvas.getByText(/Let me think about this step by step/),
-			).toBeVisible();
+		await userEvent.click(
+			canvas.getByRole("button", {
+				name: /Let me think about this step by step/,
+			}),
+		);
+		await canvas.findByText(/Let me think about this step by step/, {
+			selector: "p",
 		});
+	},
+};
+
+export const ThinkingBlockLongPreview: Story = {
+	parameters: {
+		queries: [
+			{
+				key: preferenceSettingsKey,
+				data: {
+					...MockUserPreferenceSettings,
+					thinking_display_mode: "always_collapsed",
+				},
+			},
+		],
+	},
+	args: {
+		...defaultArgs,
+		parsedMessages: buildMessages([
+			{
+				...baseMessage,
+				id: 1,
+				role: "assistant",
+				content: [
+					{
+						type: "reasoning",
+						text: "This pattern looks like stacked merges through a merge queue or Graphite-style tool, where commits land in order once each parent branch is merged.",
+					},
+					{
+						type: "text",
+						text: "Here is the answer.",
+					},
+				],
+			},
+		]),
+	},
+};
+
+export const SequentialReadFilesCollapsed: Story = {
+	args: {
+		...defaultArgs,
+		parsedMessages: buildMessages([
+			{
+				...baseMessage,
+				id: 1,
+				role: "assistant",
+				content: [{ type: "text", text: "I'll inspect the relevant files." }],
+			},
+			...buildReadFileExchange(
+				2,
+				"read-1",
+				"site/src/a.ts",
+				"export const a = 1;",
+			),
+			...buildReadFileExchange(
+				4,
+				"read-2",
+				"site/src/b.ts",
+				"export const b = 2;",
+			),
+			...buildReadFileExchange(
+				6,
+				"read-3",
+				"site/src/c.ts",
+				"export const c = 3;",
+			),
+		]),
+	},
+	play: async ({ canvasElement }) => {
+		const canvas = within(canvasElement);
+		const groupButton = canvas.getByRole("button", { name: /read 3 files/i });
+		await userEvent.click(groupButton);
+		const firstFileButton = await canvas.findByRole("button", {
+			name: /read a\.ts/i,
+		});
+		await userEvent.click(firstFileButton);
+	},
+};
+
+export const ReadFileRewrittenByHook: Story = {
+	args: {
+		...defaultArgs,
+		parsedMessages: [
+			buildParsedReadFileEntry({
+				messageId: 1,
+				toolId: "read-rewritten-1",
+				path: "site/src/redacted.ts",
+				status: "completed",
+				content: "export const redacted = true;\n",
+				hookRewritten: true,
+			}),
+		],
+	},
+};
+
+export const GroupedReadFilesRewrittenByHook: Story = {
+	args: {
+		...defaultArgs,
+		parsedMessages: [
+			buildParsedReadFileEntry({
+				messageId: 1,
+				toolId: "read-grouped-1",
+				path: "site/src/a.ts",
+				status: "completed",
+				content: "export const a = 1;\n",
+			}),
+			buildParsedReadFileEntry({
+				messageId: 2,
+				toolId: "read-grouped-2",
+				path: "site/src/b.ts",
+				status: "completed",
+				content: "export const b = 2;\n",
+				hookRewritten: true,
+			}),
+		],
+	},
+	play: async ({ canvasElement }) => {
+		const canvas = within(canvasElement);
+		await userEvent.click(
+			await canvas.findByRole("button", { name: /Read 2 files/ }),
+		);
+		await canvas.findByRole("button", { name: /Read b\.ts/ });
+	},
+};
+
+export const SequentialReadFilesEmptyAndErrorStates: Story = {
+	args: {
+		...defaultArgs,
+		parsedMessages: [
+			buildParsedReadFileEntry({
+				messageId: 1,
+				toolId: "read-empty-1",
+				path: "site/src/empty-a.ts",
+				status: "completed",
+			}),
+			buildParsedReadFileEntry({
+				messageId: 2,
+				toolId: "read-empty-2",
+				path: "site/src/empty-b.ts",
+				status: "completed",
+			}),
+			...buildMessages([
+				{
+					...baseMessage,
+					id: 3,
+					role: "assistant",
+					content: [{ type: "text", text: "Trying a different file set." }],
+				},
+			]),
+			buildParsedReadFileEntry({
+				messageId: 4,
+				toolId: "read-error-1",
+				path: "site/src/missing-a.ts",
+				status: "error",
+				errorMessage: "ENOENT: no such file or directory",
+			}),
+			buildParsedReadFileEntry({
+				messageId: 5,
+				toolId: "read-error-2",
+				path: "site/src/missing-b.ts",
+				status: "error",
+				errorMessage: "permission denied",
+			}),
+		] satisfies ParsedMessageEntry[],
+	},
+	play: async ({ canvasElement }) => {
+		const canvas = within(canvasElement);
+		const buttons = canvas.getAllByRole("button", { name: /read 2 files/i });
+
+		await userEvent.click(buttons[0]);
+		await canvas.findByText("Read empty-a.ts");
+
+		await userEvent.click(buttons[1]);
+		await canvas.findByRole("button", { name: /read missing-a\.ts/i });
+
+		await userEvent.click(
+			canvas.getByRole("button", { name: /read missing-a\.ts/i }),
+		);
+		await canvas.findByText("ENOENT: no such file or directory");
+	},
+};
+
+export const SequentialReadFilesRunningState: Story = {
+	args: {
+		...defaultArgs,
+		parsedMessages: [
+			buildParsedReadFileEntry({
+				messageId: 1,
+				toolId: "read-running-1",
+				path: "site/src/one.ts",
+				status: "running",
+			}),
+			buildParsedReadFileEntry({
+				messageId: 2,
+				toolId: "read-running-2",
+				path: "site/src/two.ts",
+				status: "running",
+			}),
+			buildParsedReadFileEntry({
+				messageId: 3,
+				toolId: "read-running-3",
+				path: "site/src/three.ts",
+				status: "running",
+			}),
+		] satisfies ParsedMessageEntry[],
 	},
 };
 
@@ -1775,8 +2361,10 @@ export const ThinkingBlockWithToolCall: Story = {
 			{
 				key: ["me", "preferences"],
 				data: {
-					task_notification_alert_dismissed: false,
 					thinking_display_mode: "always_collapsed" as const,
+					shell_tool_display_mode: "auto" as const,
+					code_diff_display_mode: "auto" as const,
+					agent_chat_send_shortcut: "enter" as const,
 				},
 			},
 		],
@@ -1815,29 +2403,19 @@ export const ThinkingBlockWithToolCall: Story = {
 			},
 		]),
 	},
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		expect(
-			canvas.getByRole("button", { name: /thinking/i }),
-		).toBeInTheDocument();
-		expect(
-			canvas.getByRole("button", { name: /read package\.json/i }),
-		).toBeInTheDocument();
-	},
 };
 
-/**
- * A completed thinking block with auto mode should be collapsed
- * (non-streaming state means auto collapses).
- */
-export const ThinkingBlockAutoMode: Story = {
+/** Shell-style tool rows should keep the same collapsed height as Thinking. */
+export const ThinkingBlockWithShellTools: Story = {
 	parameters: {
 		queries: [
 			{
 				key: ["me", "preferences"],
 				data: {
-					task_notification_alert_dismissed: false,
-					thinking_display_mode: "auto" as const,
+					thinking_display_mode: "always_collapsed" as const,
+					shell_tool_display_mode: "always_collapsed" as const,
+					code_diff_display_mode: "auto" as const,
+					agent_chat_send_shortcut: "enter" as const,
 				},
 			},
 		],
@@ -1852,78 +2430,73 @@ export const ThinkingBlockAutoMode: Story = {
 				content: [
 					{
 						type: "reasoning",
-						text: "Let me think about this step by step.",
+						text: "I should inspect the current chat spacing before patching it.",
 					},
 					{
-						type: "text",
-						text: "Here is the answer.",
+						type: "tool-call",
+						tool_call_id: "tool-1",
+						tool_name: "execute",
+						args: { command: "pnpm test" },
+					},
+					{
+						type: "tool-call",
+						tool_call_id: "tool-2",
+						tool_name: "process_output",
+						args: { process_id: "process-1" },
+					},
+				],
+			},
+			{
+				...baseMessage,
+				id: 2,
+				role: "tool",
+				content: [
+					{
+						type: "tool-result",
+						tool_call_id: "tool-1",
+						tool_name: "execute",
+						result: { output: "", wall_duration_ms: "667" },
+					},
+				],
+			},
+			{
+				...baseMessage,
+				id: 3,
+				role: "tool",
+				content: [
+					{
+						type: "tool-result",
+						tool_call_id: "tool-2",
+						tool_name: "process_output",
+						result: { output: "Spacing looks stable." },
 					},
 				],
 			},
 		]),
 	},
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		expect(canvas.getByText("Thinking")).toBeInTheDocument();
-		expect(
-			canvas.queryByText(/Let me think about this step by step/),
-		).not.toBeInTheDocument();
-		await userEvent.click(canvas.getByText("Thinking"));
-		await waitFor(() => {
-			expect(
-				canvas.getByText(/Let me think about this step by step/),
-			).toBeVisible();
-		});
-	},
 };
 
-/**
- * A completed thinking block with preview mode should be collapsed
- * (non-streaming state means preview collapses).
- */
-export const ThinkingBlockPreviewMode: Story = {
-	parameters: {
-		queries: [
-			{
-				key: ["me", "preferences"],
-				data: {
-					task_notification_alert_dismissed: false,
-					thinking_display_mode: "preview" as const,
-				},
-			},
-		],
-	},
+export const UserMessageWithWorkspaceFileReference: Story = {
 	args: {
 		...defaultArgs,
 		parsedMessages: buildMessages([
 			{
 				...baseMessage,
 				id: 1,
-				role: "assistant",
+				role: "user",
 				content: [
+					{ type: "text", text: "Unzip this in my workspace" },
 					{
-						type: "reasoning",
-						text: "Let me think about this step by step.",
-					},
-					{
-						type: "text",
-						text: "Here is the answer.",
+						type: "workspace-file-reference",
+						workspace_file_path:
+							"/home/coder/.coder/chats/story-chat/files/dataset.zip",
+						workspace_file_name: "dataset.zip",
+						workspace_file_size: 4096,
+						workspace_file_media_type: "application/zip",
+						workspace_file_workspace_id: "ws-1",
 					},
 				],
 			},
 		]),
-	},
-	play: async ({ canvasElement }) => {
-		const canvas = within(canvasElement);
-		expect(canvas.getByText("Thinking")).toBeInTheDocument();
-		expect(
-			canvas.queryByText(/Let me think about this step by step/),
-		).not.toBeInTheDocument();
-		await userEvent.click(canvas.getByText("Thinking"));
-		await waitFor(() => {
-			expect(
-				canvas.getByText(/Let me think about this step by step/),
-			).toBeVisible();
-		});
 	},
 };

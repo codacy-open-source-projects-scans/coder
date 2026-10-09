@@ -45,11 +45,12 @@ WHERE
 		ELSE true
 	END
 	-- Start filters
-	-- Filter by email or username
+	-- Filter by email, username, or name (display name)
 	AND CASE
 		WHEN @search :: text != '' THEN (
 			user_email ILIKE concat('%', @search, '%')
 			OR user_username ILIKE concat('%', @search, '%')
+			OR user_name ILIKE concat('%', @search, '%')
 		)
 		ELSE true
 	END
@@ -57,6 +58,18 @@ WHERE
 	AND CASE
 		WHEN @name :: text != '' THEN
 			user_name ILIKE concat('%', @name, '%')
+		ELSE true
+	END
+	-- Filter by exact username
+	AND CASE
+		WHEN @exact_username :: text != '' THEN
+			lower(user_username) = lower(@exact_username)
+		ELSE true
+	END
+	-- Filter by exact email
+	AND CASE
+		WHEN @exact_email :: text != '' THEN
+			lower(user_email) = lower(@exact_email)
 		ELSE true
 	END
 	-- Filter by status
@@ -141,6 +154,22 @@ WHERE group_id = @group_id
       ELSE
         user_is_system = false
         END;
+
+-- name: GetGroupMembersCountByGroupIDs :many
+-- Returns the total member count for each of the given group IDs in a
+-- single query. Used to avoid N+1 lookups when listing many groups. Like
+-- GetGroupMembersCountByGroupID, the count is returned even when the
+-- caller does not have read access to individual group members.
+SELECT
+	group_id,
+	COUNT(*) AS member_count
+FROM group_members_expanded
+WHERE group_id = ANY(@group_ids :: uuid[])
+	AND CASE
+		WHEN @include_system::bool THEN TRUE
+		ELSE user_is_system = false
+	END
+GROUP BY group_id;
 
 -- InsertUserGroupsByID adds a user to all provided groups, if they exist.
 -- name: InsertUserGroupsByID :many

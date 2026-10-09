@@ -3,6 +3,7 @@ package chatd
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -20,6 +21,7 @@ import (
 	"golang.org/x/xerrors"
 
 	"github.com/coder/coder/v2/coderd/database"
+	"github.com/coder/coder/v2/coderd/database/dbgen"
 	"github.com/coder/coder/v2/coderd/database/dbtestutil"
 	"github.com/coder/coder/v2/coderd/x/chatd/chatprovider"
 	"github.com/coder/coder/v2/codersdk"
@@ -84,7 +86,6 @@ func validRecordingJPEG(extra int, fill byte) []byte {
 // background processing (which would try to call the LLM and
 // use the agent connection mock).
 func createComputerUseParentChild(
-	ctx context.Context,
 	t *testing.T,
 	server *Server,
 	user database.User,
@@ -98,22 +99,20 @@ func createComputerUseParentChild(
 
 	// Insert the parent chat directly via DB to avoid triggering
 	// the server's background processing.
-	parent, err := server.db.InsertChat(ctx, database.InsertChatParams{
+	parent = dbgen.Chat(t, server.db, database.Chat{
 		OrganizationID:    org.ID,
 		OwnerID:           user.ID,
 		WorkspaceID:       uuid.NullUUID{UUID: workspace.ID, Valid: true},
 		AgentID:           uuid.NullUUID{UUID: agent.ID, Valid: true},
 		LastModelConfigID: model.ID,
 		Title:             parentTitle,
-		Status:            database.ChatStatusPending,
-		ClientType:        database.ChatClientTypeUi,
+		Status:            database.ChatStatusRunning,
 	})
-	require.NoError(t, err)
 
 	// Insert the child chat directly via DB to avoid triggering
 	// the server's background processing (which would try to run
 	// the chat without an LLM and get stuck).
-	child, err = server.db.InsertChat(ctx, database.InsertChatParams{
+	child = dbgen.Chat(t, server.db, database.Chat{
 		OrganizationID:    org.ID,
 		OwnerID:           user.ID,
 		WorkspaceID:       uuid.NullUUID{UUID: workspace.ID, Valid: true},
@@ -123,10 +122,8 @@ func createComputerUseParentChild(
 		LastModelConfigID: model.ID,
 		Title:             childTitle,
 		Mode:              database.NullChatMode{ChatMode: database.ChatModeComputerUse, Valid: true},
-		Status:            database.ChatStatusPending,
-		ClientType:        database.ChatClientTypeUi,
+		Status:            database.ChatStatusRunning,
 	})
-	require.NoError(t, err)
 
 	return parent, child
 }
@@ -178,7 +175,7 @@ func TestWaitAgentComputerUseRecording(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	mockConn := agentconnmock.NewMockAgentConn(ctrl)
 
-	user, org, model := seedInternalChatDeps(ctx, t, db)
+	user, org, model := seedInternalChatDeps(t, db)
 	workspace, _, agent := seedWorkspaceBinding(t, db, user.ID)
 
 	// Create the server WITHOUT agentConnFn so the background
@@ -186,13 +183,13 @@ func TestWaitAgentComputerUseRecording(t *testing.T) {
 	server := newInternalTestServer(t, db, ps, chatprovider.ProviderAPIKeys{})
 
 	parent, child := createComputerUseParentChild(
-		ctx, t, server, user, org, model, workspace, agent,
+		t, server, user, org, model, workspace, agent,
 		"parent-recording", "computer-use-child",
 	)
 
 	// Wait for background processing triggered by CreateChat to
 	// settle before setting up the mock agent connection.
-	server.drainInflight()
+	WaitUntilIdleForTest(server)
 
 	// Now wire up the mock agent connection.
 	server.agentConnFn = func(_ context.Context, agentID uuid.UUID) (workspacesdk.AgentConn, func(), error) {
@@ -201,7 +198,7 @@ func TestWaitAgentComputerUseRecording(t *testing.T) {
 	}
 
 	// Add an assistant message so the report is extracted.
-	insertAssistantMessage(ctx, t, db, child.ID, model.ID, "I opened Firefox.")
+	insertAssistantMessage(t, db, child.ID, model.ID, "I opened Firefox.")
 
 	// Set child to waiting (terminal success state).
 	setChatStatus(ctx, t, db, child.ID, database.ChatStatusWaiting, "")
@@ -268,24 +265,24 @@ func TestWaitAgentComputerUseRecordingWithThumbnail(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	mockConn := agentconnmock.NewMockAgentConn(ctrl)
 
-	user, org, model := seedInternalChatDeps(ctx, t, db)
+	user, org, model := seedInternalChatDeps(t, db)
 	workspace, _, agent := seedWorkspaceBinding(t, db, user.ID)
 
 	server := newInternalTestServer(t, db, ps, chatprovider.ProviderAPIKeys{})
 
 	parent, child := createComputerUseParentChild(
-		ctx, t, server, user, org, model, workspace, agent,
+		t, server, user, org, model, workspace, agent,
 		"parent-recording-thumb", "computer-use-child-thumb",
 	)
 
-	server.drainInflight()
+	WaitUntilIdleForTest(server)
 
 	server.agentConnFn = func(_ context.Context, agentID uuid.UUID) (workspacesdk.AgentConn, func(), error) {
 		require.Equal(t, agent.ID, agentID)
 		return mockConn, func() {}, nil
 	}
 
-	insertAssistantMessage(ctx, t, db, child.ID, model.ID, "I opened Firefox and took a screenshot.")
+	insertAssistantMessage(t, db, child.ID, model.ID, "I opened Firefox and took a screenshot.")
 
 	setChatStatus(ctx, t, db, child.ID, database.ChatStatusWaiting, "")
 
@@ -360,7 +357,7 @@ func TestWaitAgentNonComputerUseNoRecording(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	mockConn := agentconnmock.NewMockAgentConn(ctrl)
 
-	user, org, model := seedInternalChatDeps(ctx, t, db)
+	user, org, model := seedInternalChatDeps(t, db)
 
 	server := newInternalTestServer(t, db, ps, chatprovider.ProviderAPIKeys{})
 
@@ -368,11 +365,11 @@ func TestWaitAgentNonComputerUseNoRecording(t *testing.T) {
 	parent, child := createParentChildChats(ctx, t, server, user, org, model)
 
 	// Add an assistant message so the report is extracted.
-	insertAssistantMessage(ctx, t, db, child.ID, model.ID, "Done.")
+	insertAssistantMessage(t, db, child.ID, model.ID, "Done.")
 
 	// Wait for background processing triggered by CreateChat to
 	// settle before setting up the mock agent connection.
-	server.drainInflight()
+	WaitUntilIdleForTest(server)
 
 	// Wire up the mock agent connection. The mock has zero
 	// expectations — gomock will fail if StartDesktopRecording
@@ -411,7 +408,7 @@ func TestWaitAgentRecordingStartFails(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	mockConn := agentconnmock.NewMockAgentConn(ctrl)
 
-	user, org, model := seedInternalChatDeps(ctx, t, db)
+	user, org, model := seedInternalChatDeps(t, db)
 	workspace, _, agent := seedWorkspaceBinding(t, db, user.ID)
 
 	// Create the server WITHOUT agentConnFn so the background
@@ -420,7 +417,7 @@ func TestWaitAgentRecordingStartFails(t *testing.T) {
 
 	// Create parent + computer_use child.
 	parent, child := createComputerUseParentChild(
-		ctx, t, server, user, org, model, workspace, agent,
+		t, server, user, org, model, workspace, agent,
 		"parent-start-fail", "computer-use-start-fail",
 	)
 
@@ -429,7 +426,7 @@ func TestWaitAgentRecordingStartFails(t *testing.T) {
 		return mockConn, func() {}, nil
 	}
 
-	insertAssistantMessage(ctx, t, db, child.ID, model.ID, "Opened the browser.")
+	insertAssistantMessage(t, db, child.ID, model.ID, "Opened the browser.")
 	setChatStatus(ctx, t, db, child.ID, database.ChatStatusWaiting, "")
 
 	// StartDesktopRecording fails. StopDesktopRecording must NOT
@@ -465,7 +462,7 @@ func TestWaitAgentRecordingStopFails(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	mockConn := agentconnmock.NewMockAgentConn(ctrl)
 
-	user, org, model := seedInternalChatDeps(ctx, t, db)
+	user, org, model := seedInternalChatDeps(t, db)
 	workspace, _, agent := seedWorkspaceBinding(t, db, user.ID)
 
 	// Create the server WITHOUT agentConnFn so the background
@@ -474,7 +471,7 @@ func TestWaitAgentRecordingStopFails(t *testing.T) {
 
 	// Create parent + computer_use child.
 	parent, child := createComputerUseParentChild(
-		ctx, t, server, user, org, model, workspace, agent,
+		t, server, user, org, model, workspace, agent,
 		"parent-stop-fail", "computer-use-stop-fail",
 	)
 
@@ -483,7 +480,7 @@ func TestWaitAgentRecordingStopFails(t *testing.T) {
 		return mockConn, func() {}, nil
 	}
 
-	insertAssistantMessage(ctx, t, db, child.ID, model.ID, "Checked settings.")
+	insertAssistantMessage(t, db, child.ID, model.ID, "Checked settings.")
 	setChatStatus(ctx, t, db, child.ID, database.ChatStatusWaiting, "")
 
 	// Start succeeds, stop fails.
@@ -524,14 +521,14 @@ func TestWaitAgentTimeoutLeavesRecordingRunning(t *testing.T) {
 	mockConn := agentconnmock.NewMockAgentConn(ctrl)
 
 	// Use the mock clock server; don't set agentConnFn yet.
-	server := newInternalTestServerWithClock(t, db, ps, chatprovider.ProviderAPIKeys{}, mClock)
+	server := newInternalTestServer(t, db, ps, chatprovider.ProviderAPIKeys{}, withInternalTestServerClock(mClock))
 
-	user, org, model := seedInternalChatDeps(ctx, t, db)
+	user, org, model := seedInternalChatDeps(t, db)
 	workspace, _, agent := seedWorkspaceBinding(t, db, user.ID)
 
 	// Create parent + computer_use child.
 	_, child := createComputerUseParentChild(
-		ctx, t, server, user, org, model, workspace, agent,
+		t, server, user, org, model, workspace, agent,
 		"parent-timeout", "computer-use-timeout",
 	)
 
@@ -594,8 +591,12 @@ func TestWaitAgentTimeoutLeavesRecordingRunning(t *testing.T) {
 
 	result := testutil.RequireReceive(ctx, t, resultCh)
 	require.NoError(t, result.err)
-	assert.True(t, result.resp.IsError, "expected error response on timeout")
-	assert.Contains(t, result.resp.Content, "timed out")
+	// On timeout the agent is still working, so wait_agent now
+	// returns a non-error payload rather than a tool error. The
+	// recording is intentionally left running: the gomock controller
+	// fails the test if StopDesktopRecording is called.
+	require.False(t, result.resp.IsError, "timeout must return a non-error payload, not an error")
+	assert.Contains(t, result.resp.Content, `"timed_out":true`)
 }
 
 // TestStopAndStoreRecording_Oversized verifies that when the
@@ -610,7 +611,7 @@ func TestStopAndStoreRecording_Oversized(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	mockConn := agentconnmock.NewMockAgentConn(ctrl)
 
-	user, org, model := seedInternalChatDeps(ctx, t, db)
+	user, org, model := seedInternalChatDeps(t, db)
 	workspace, _, _ := seedWorkspaceBinding(t, db, user.ID)
 
 	server := newInternalTestServer(t, db, ps, chatprovider.ProviderAPIKeys{})
@@ -659,7 +660,7 @@ func TestStopAndStoreRecording_OversizedThumbnail(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	mockConn := agentconnmock.NewMockAgentConn(ctrl)
 
-	user, org, model := seedInternalChatDeps(ctx, t, db)
+	user, org, model := seedInternalChatDeps(t, db)
 	workspace, _, _ := seedWorkspaceBinding(t, db, user.ID)
 
 	server := newInternalTestServer(t, db, ps, chatprovider.ProviderAPIKeys{})
@@ -723,7 +724,7 @@ func TestStopAndStoreRecording_DuplicatePartsIgnored(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	mockConn := agentconnmock.NewMockAgentConn(ctrl)
 
-	user, org, model := seedInternalChatDeps(ctx, t, db)
+	user, org, model := seedInternalChatDeps(t, db)
 	workspace, _, _ := seedWorkspaceBinding(t, db, user.ID)
 
 	server := newInternalTestServer(t, db, ps, chatprovider.ProviderAPIKeys{})
@@ -766,7 +767,7 @@ func TestStopAndStoreRecording_Empty(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	mockConn := agentconnmock.NewMockAgentConn(ctrl)
 
-	user, org, model := seedInternalChatDeps(ctx, t, db)
+	user, org, model := seedInternalChatDeps(t, db)
 	workspace, _, _ := seedWorkspaceBinding(t, db, user.ID)
 
 	server := newInternalTestServer(t, db, ps, chatprovider.ProviderAPIKeys{})
@@ -785,58 +786,191 @@ func TestStopAndStoreRecording_Empty(t *testing.T) {
 	assert.Empty(t, result.recordingFileID, "empty recording should not be stored")
 }
 
-// TestStopAndStoreRecording_LinkFailureRollsBackInsert verifies that a
-// chat-file cap rejection does not leave behind an unlinked recording row.
-func TestStopAndStoreRecording_LinkFailureRollsBackInsert(t *testing.T) {
+// TestStopAndStoreRecording_EvictsOldestAtCap verifies that storing a
+// recording on a chat at the configured file cap evicts the oldest files and
+// that a cap of one keeps the recording instead of storing its thumbnail.
+func TestStopAndStoreRecording_EvictsOldestAtCap(t *testing.T) {
 	t.Parallel()
 
-	db, ps, sqlDB := dbtestutil.NewDBWithSQLDB(t)
-	ctx := chatdTestContext(t)
+	tests := []struct {
+		name           string
+		limits         Limits
+		maxAttachments int32
+	}{
+		{name: "Default", maxAttachments: codersdk.DefaultChatMaxAttachmentsPerChat},
+		{name: "ConfiguredOne", limits: Limits{MaxAttachmentsPerChat: 1}, maxAttachments: 1},
+		{name: "ConfiguredBelowDefault", limits: Limits{MaxAttachmentsPerChat: 3}, maxAttachments: 3},
+		{name: "ConfiguredAboveDefault", limits: Limits{MaxAttachmentsPerChat: 60}, maxAttachments: 60},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
+			db, ps := dbtestutil.NewDB(t)
+			ctrl := gomock.NewController(t)
+			mockConn := agentconnmock.NewMockAgentConn(ctrl)
+			user, org, model := seedInternalChatDeps(t, db)
+			workspace, _, _ := seedWorkspaceBinding(t, db, user.ID)
+			server := newInternalTestServer(t, db, ps, chatprovider.ProviderAPIKeys{},
+				withInternalTestServerLimits(tt.limits))
+
+			ctx := chatdTestContext(t)
+			parent, _ := createParentChildChats(ctx, t, server, user, org, model)
+			existing := make([]uuid.UUID, 0, tt.maxAttachments)
+			for i := range tt.maxAttachments {
+				file, err := db.InsertChatFile(ctx, database.InsertChatFileParams{
+					OwnerID:        user.ID,
+					OrganizationID: workspace.OrganizationID,
+					Name:           fmt.Sprintf("existing-%02d.txt", i),
+					Mimetype:       "text/plain",
+					Data:           []byte("existing"),
+				})
+				require.NoError(t, err)
+				rejected, err := db.LinkChatFiles(ctx, database.LinkChatFilesParams{
+					ChatID:       parent.ID,
+					MaxFileLinks: tt.maxAttachments,
+					FileIds:      []uuid.UUID{file.ID},
+				})
+				require.NoError(t, err)
+				require.Zero(t, rejected)
+				existing = append(existing, file.ID)
+			}
+
+			mockConn.EXPECT().
+				StopDesktopRecording(gomock.Any(), gomock.Any()).
+				Return(buildMultipartResponse(
+					partSpec{"video/mp4", validRecordingMP4(1000, 0xDE)},
+					partSpec{"image/jpeg", validRecordingJPEG(492, 0xD8)},
+				), nil).
+				Times(1)
+
+			result := server.stopAndStoreRecording(
+				ctx, mockConn, uuid.New().String(), parent.ID, user.ID,
+				uuid.NullUUID{UUID: workspace.ID, Valid: true},
+			)
+
+			require.NotEmpty(t, result.recordingFileID)
+			_, err := db.GetChatFileByID(ctx, uuid.MustParse(result.recordingFileID))
+			require.NoError(t, err, "the returned recording must still exist")
+			evicted := 2
+			if tt.maxAttachments == 1 {
+				evicted = 1
+				assert.Empty(t, result.thumbnailFileID, "no second slot for a thumbnail")
+			} else {
+				assert.NotEmpty(t, result.thumbnailFileID)
+			}
+			for i, id := range existing {
+				_, err := db.GetChatFileByID(ctx, id)
+				if i < evicted {
+					require.ErrorIs(t, err, sql.ErrNoRows, "file %d should be evicted", i)
+				} else {
+					require.NoError(t, err, "file %d should be kept", i)
+				}
+			}
+		})
+	}
+}
+
+// TestStopAndStoreRecording_LimitsConcurrentUploads verifies that no more
+// than the configured number of recordings are stopped and stored at once.
+func TestStopAndStoreRecording_LimitsConcurrentUploads(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		limits      Limits
+		maxInFlight int
+	}{
+		{name: "Default", maxInFlight: codersdk.DefaultChatMaxConcurrentRecordingUploads},
+		{name: "ConfiguredOne", limits: Limits{MaxConcurrentRecordingUploads: 1}, maxInFlight: 1},
+		{name: "ConfiguredTwo", limits: Limits{MaxConcurrentRecordingUploads: 2}, maxInFlight: 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			db, ps := dbtestutil.NewDB(t)
+			server := newInternalTestServer(t, db, ps, chatprovider.ProviderAPIKeys{},
+				withInternalTestServerLimits(tt.limits))
+			calls := tt.maxInFlight + 1
+			entered := make(chan struct{}, calls)
+			release := make(chan struct{})
+			ctrl := gomock.NewController(t)
+			mockConn := agentconnmock.NewMockAgentConn(ctrl)
+			mockConn.EXPECT().
+				StopDesktopRecording(gomock.Any(), gomock.Any()).
+				DoAndReturn(func(ctx context.Context, _ workspacesdk.StopDesktopRecordingRequest) (workspacesdk.StopDesktopRecordingResponse, error) {
+					entered <- struct{}{}
+					select {
+					case <-release:
+					case <-ctx.Done():
+					}
+					return workspacesdk.StopDesktopRecordingResponse{}, xerrors.New("recording released")
+				}).
+				Times(calls)
+
+			ctx := testutil.Context(t, testutil.WaitLong)
+			done := make(chan struct{}, calls)
+			for range calls {
+				go func(ctx context.Context) {
+					server.stopAndStoreRecording(ctx, mockConn, uuid.NewString(), uuid.New(), uuid.New(), uuid.NullUUID{})
+					done <- struct{}{}
+				}(ctx)
+			}
+
+			for range tt.maxInFlight {
+				testutil.TryReceive(ctx, t, entered)
+			}
+			require.Never(t, func() bool { return len(entered) > 0 },
+				testutil.IntervalMedium, testutil.IntervalFast,
+				"a call must wait while %d uploads are in flight", tt.maxInFlight)
+
+			testutil.RequireSend(ctx, t, release, struct{}{})
+			testutil.TryReceive(ctx, t, entered)
+			close(release)
+			for range calls {
+				testutil.TryReceive(ctx, t, done)
+			}
+		})
+	}
+}
+
+// TestStopAndStoreRecording_CanceledWhileWaitingForUpload verifies that a call
+// waiting for an upload slot gives up when its context is canceled.
+func TestStopAndStoreRecording_CanceledWhileWaitingForUpload(t *testing.T) {
+	t.Parallel()
+
+	db, ps := dbtestutil.NewDB(t)
+	server := newInternalTestServer(t, db, ps, chatprovider.ProviderAPIKeys{},
+		withInternalTestServerLimits(Limits{MaxConcurrentRecordingUploads: 1}))
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
 	ctrl := gomock.NewController(t)
 	mockConn := agentconnmock.NewMockAgentConn(ctrl)
-
-	user, org, model := seedInternalChatDeps(ctx, t, db)
-	workspace, _, _ := seedWorkspaceBinding(t, db, user.ID)
-
-	server := newInternalTestServer(t, db, ps, chatprovider.ProviderAPIKeys{})
-	parent, _ := createParentChildChats(ctx, t, server, user, org, model)
-
-	for i := range codersdk.MaxChatFileIDs {
-		insertLinkedChatFile(
-			ctx,
-			t,
-			db,
-			parent.ID,
-			user.ID,
-			workspace.OrganizationID,
-			fmt.Sprintf("existing-%02d.txt", i),
-			"text/plain",
-			[]byte("existing"),
-		)
-	}
-
-	var beforeCount int
-	require.NoError(t, sqlDB.QueryRowContext(ctx, "SELECT COUNT(*) FROM chat_files").Scan(&beforeCount))
-
-	videoData := validRecordingMP4(1000, 0xDE)
 	mockConn.EXPECT().
 		StopDesktopRecording(gomock.Any(), gomock.Any()).
-		Return(buildMultipartResponse(partSpec{"video/mp4", videoData}), nil).
+		DoAndReturn(func(context.Context, workspacesdk.StopDesktopRecordingRequest) (workspacesdk.StopDesktopRecordingResponse, error) {
+			entered <- struct{}{}
+			<-release
+			return workspacesdk.StopDesktopRecordingResponse{}, xerrors.New("recording released")
+		}).
 		Times(1)
 
-	recordingID := uuid.New().String()
-	result := server.stopAndStoreRecording(
-		ctx, mockConn, recordingID, parent.ID, user.ID,
-		uuid.NullUUID{UUID: workspace.ID, Valid: true},
-	)
+	ctx := testutil.Context(t, testutil.WaitLong)
+	holderDone := make(chan struct{})
+	go func(ctx context.Context) {
+		defer close(holderDone)
+		server.stopAndStoreRecording(ctx, mockConn, uuid.NewString(), uuid.New(), uuid.New(), uuid.NullUUID{})
+	}(ctx)
+	testutil.TryReceive(ctx, t, entered)
 
-	assert.Empty(t, result.recordingFileID)
-	assert.Empty(t, result.thumbnailFileID)
+	waitCtx, cancel := context.WithCancel(ctx)
+	cancel()
+	result := server.stopAndStoreRecording(waitCtx, mockConn, uuid.NewString(), uuid.New(), uuid.New(), uuid.NullUUID{})
+	require.Equal(t, recordingResult{}, result)
 
-	var afterCount int
-	require.NoError(t, sqlDB.QueryRowContext(ctx, "SELECT COUNT(*) FROM chat_files").Scan(&afterCount))
-	assert.Equal(t, beforeCount, afterCount)
+	close(release)
+	testutil.TryReceive(ctx, t, holderDone)
 }
 
 // TestStopAndStoreRecording_WithThumbnail verifies that a multipart
@@ -851,7 +985,7 @@ func TestStopAndStoreRecording_WithThumbnail(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	mockConn := agentconnmock.NewMockAgentConn(ctrl)
 
-	user, org, model := seedInternalChatDeps(ctx, t, db)
+	user, org, model := seedInternalChatDeps(t, db)
 	workspace, _, _ := seedWorkspaceBinding(t, db, user.ID)
 
 	server := newInternalTestServer(t, db, ps, chatprovider.ProviderAPIKeys{})
@@ -905,7 +1039,7 @@ func TestStopAndStoreRecording_VideoOnly(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	mockConn := agentconnmock.NewMockAgentConn(ctrl)
 
-	user, org, model := seedInternalChatDeps(ctx, t, db)
+	user, org, model := seedInternalChatDeps(t, db)
 	workspace, _, _ := seedWorkspaceBinding(t, db, user.ID)
 
 	server := newInternalTestServer(t, db, ps, chatprovider.ProviderAPIKeys{})
@@ -947,7 +1081,7 @@ func TestStopAndStoreRecording_MismatchedVideoBytesSkipped(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	mockConn := agentconnmock.NewMockAgentConn(ctrl)
 
-	user, org, model := seedInternalChatDeps(ctx, t, db)
+	user, org, model := seedInternalChatDeps(t, db)
 	workspace, _, _ := seedWorkspaceBinding(t, db, user.ID)
 
 	server := newInternalTestServer(t, db, ps, chatprovider.ProviderAPIKeys{})
@@ -984,7 +1118,7 @@ func TestStopAndStoreRecording_DownloadFailure(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	mockConn := agentconnmock.NewMockAgentConn(ctrl)
 
-	user, org, model := seedInternalChatDeps(ctx, t, db)
+	user, org, model := seedInternalChatDeps(t, db)
 	workspace, _, _ := seedWorkspaceBinding(t, db, user.ID)
 
 	server := newInternalTestServer(t, db, ps, chatprovider.ProviderAPIKeys{})
@@ -1017,7 +1151,7 @@ func TestStopAndStoreRecording_UnknownPartIgnored(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	mockConn := agentconnmock.NewMockAgentConn(ctrl)
 
-	user, org, model := seedInternalChatDeps(ctx, t, db)
+	user, org, model := seedInternalChatDeps(t, db)
 	workspace, _, _ := seedWorkspaceBinding(t, db, user.ID)
 
 	server := newInternalTestServer(t, db, ps, chatprovider.ProviderAPIKeys{})
@@ -1061,7 +1195,7 @@ func TestStopAndStoreRecording_UnknownPartIgnored(t *testing.T) {
 }
 
 // TestStopAndStoreRecording_MalformedContentType verifies that a
-// response with an unparseable Content-Type returns an empty result.
+// response with an unparsable Content-Type returns an empty result.
 func TestStopAndStoreRecording_MalformedContentType(t *testing.T) {
 	t.Parallel()
 
@@ -1071,7 +1205,7 @@ func TestStopAndStoreRecording_MalformedContentType(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	mockConn := agentconnmock.NewMockAgentConn(ctrl)
 
-	user, org, model := seedInternalChatDeps(ctx, t, db)
+	user, org, model := seedInternalChatDeps(t, db)
 	workspace, _, _ := seedWorkspaceBinding(t, db, user.ID)
 
 	server := newInternalTestServer(t, db, ps, chatprovider.ProviderAPIKeys{})
@@ -1107,7 +1241,7 @@ func TestStopAndStoreRecording_MissingBoundary(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	mockConn := agentconnmock.NewMockAgentConn(ctrl)
 
-	user, org, model := seedInternalChatDeps(ctx, t, db)
+	user, org, model := seedInternalChatDeps(t, db)
 	workspace, _, _ := seedWorkspaceBinding(t, db, user.ID)
 
 	server := newInternalTestServer(t, db, ps, chatprovider.ProviderAPIKeys{})

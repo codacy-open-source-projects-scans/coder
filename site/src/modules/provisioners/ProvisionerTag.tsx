@@ -1,8 +1,6 @@
-import type { Interpolation, Theme } from "@emotion/react";
 import { CircleCheckIcon, CircleMinusIcon, TagIcon, XIcon } from "lucide-react";
-import type { ComponentProps, FC } from "react";
+import { Badge } from "#/components/Badge/Badge";
 import { Button } from "#/components/Button/Button";
-import { Pill } from "#/components/Pill/Pill";
 
 const parseBool = (s: string): { valid: boolean; value: boolean } => {
 	switch (s.toLowerCase()) {
@@ -20,14 +18,14 @@ const parseBool = (s: string): { valid: boolean; value: boolean } => {
 	}
 };
 
-interface ProvisionerTagProps {
+type ProvisionerTagProps = {
 	tagName: string;
 	tagValue: string;
 	/** Only used in the TemplateVersionEditor */
 	onDelete?: (tagName: string) => void;
-}
+};
 
-export const ProvisionerTag: FC<ProvisionerTagProps> = ({
+export const ProvisionerTag: React.FC<ProvisionerTagProps> = ({
 	tagName,
 	tagValue,
 	onDelete,
@@ -47,7 +45,7 @@ export const ProvisionerTag: FC<ProvisionerTagProps> = ({
 				onClick={() => {
 					onDelete(tagName);
 				}}
-				className="size-6"
+				className="size-6 -my-1"
 			>
 				<XIcon className="size-icon-xs" />
 				<span className="sr-only">Delete {tagName}</span>
@@ -60,48 +58,33 @@ export const ProvisionerTag: FC<ProvisionerTagProps> = ({
 		return <BooleanPill value={boolValue}>{content}</BooleanPill>;
 	}
 	return (
-		<Pill
-			size="lg"
-			icon={<TagIcon className="size-icon-sm" />}
-			data-testid={`tag-${tagName}`}
-		>
+		<Badge variant="outline" size="md" data-testid={`tag-${tagName}`}>
+			<TagIcon className="size-icon-sm" />
 			{content}
-		</Pill>
+		</Badge>
 	);
 };
 
-type BooleanPillProps = Omit<ComponentProps<typeof Pill>, "icon" | "value"> & {
+type BooleanPillProps = Omit<
+	React.ComponentProps<typeof Badge>,
+	"variant" | "value"
+> & {
 	value: boolean;
 };
 
-const BooleanPill: FC<BooleanPillProps> = ({
+const BooleanPill: React.FC<BooleanPillProps> = ({
 	value,
 	children,
-	...divProps
+	...badgeProps
 }) => {
 	return (
-		<Pill
-			type={value ? "active" : "danger"}
-			size="lg"
-			icon={
-				value ? (
-					<CircleCheckIcon css={styles.truePill} className="size-icon-sm" />
-				) : (
-					<CircleMinusIcon css={styles.falsePill} className="size-icon-sm" />
-				)
-			}
-			{...divProps}
-		>
+		<Badge variant={value ? "info" : "warning"} size="md" {...badgeProps}>
+			{value ? (
+				<CircleCheckIcon className="size-icon-sm text-content-link" />
+			) : (
+				<CircleMinusIcon className="size-icon-sm text-content-warning" />
+			)}
 			{children}
-		</Pill>
+		</Badge>
 	);
 };
-
-const styles = {
-	truePill: (theme) => ({
-		color: theme.roles.active.outline,
-	}),
-	falsePill: (theme) => ({
-		color: theme.roles.danger.outline,
-	}),
-} satisfies Record<string, Interpolation<Theme>>;

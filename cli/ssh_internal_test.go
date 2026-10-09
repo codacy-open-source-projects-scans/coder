@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"sync"
@@ -278,20 +279,38 @@ func TestCoderConnectStdio(t *testing.T) {
 		}
 	}()
 
-	server := newSSHServer("127.0.0.1:0")
-	ln, err := net.Listen("tcp", server.server.Addr)
-	require.NoError(t, err)
+	sshSrv := newSSHServer("127.0.0.1:0")
+	defer sshSrv.Close()
 
+	sshLn, err := net.Listen("tcp", sshSrv.server.Addr)
+	require.NoError(t, err)
 	go func() {
-		_ = server.Serve(ln)
+		_ = sshSrv.Serve(sshLn)
 	}()
-	t.Cleanup(func() {
-		_ = server.Close()
-	})
+
+	sshAddr, ok := sshLn.Addr().(*net.TCPAddr)
+	require.True(t, ok)
+
+	// Force using the fallback.
+	httpSrv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		rw.WriteHeader(http.StatusNotFound)
+	}))
+	defer httpSrv.Close()
+
+	httpAddr, ok := httpSrv.Listener.Addr().(*net.TCPAddr)
+	require.True(t, ok)
 
 	stdioDone := make(chan struct{})
 	go func() {
-		err = runCoderConnectStdio(ctx, ln.Addr().String(), clientOutput, serverInput, stack, logger)
+		err = runCoderConnectStdio(ctx, coderConnectOpts{
+			host:     "127.0.0.1",
+			httpPort: uint16(httpAddr.Port), // nolint:gosec // ports fit within uint16
+			tcpPort:  uint16(sshAddr.Port),  // nolint:gosec // ports fit within uint16
+			stdin:    clientOutput,
+			stdout:   serverInput,
+			stack:    stack,
+			logger:   logger,
+		})
 		assert.NoError(t, err)
 		close(stdioDone)
 	}()
@@ -542,11 +561,11 @@ func TestRetryWithInterval(t *testing.T) {
 	const maxAttempts = 3
 
 	dnsErr := &net.DNSError{Err: "no such host", Name: "example.com", IsNotFound: true}
-	logger := slogtest.Make(t, nil).Leveled(slog.LevelDebug)
 
 	t.Run("Succeeds_FirstTry", func(t *testing.T) {
 		t.Parallel()
 		ctx := testutil.Context(t, testutil.WaitShort)
+		logger := slogtest.Make(t, nil).Leveled(slog.LevelDebug)
 
 		attempts := 0
 		err := retryWithInterval(ctx, logger, interval, maxAttempts, func() error {
@@ -560,6 +579,7 @@ func TestRetryWithInterval(t *testing.T) {
 	t.Run("Succeeds_AfterTransientFailures", func(t *testing.T) {
 		t.Parallel()
 		ctx := testutil.Context(t, testutil.WaitShort)
+		logger := slogtest.Make(t, nil).Leveled(slog.LevelDebug)
 
 		attempts := 0
 		err := retryWithInterval(ctx, logger, interval, maxAttempts, func() error {
@@ -576,6 +596,7 @@ func TestRetryWithInterval(t *testing.T) {
 	t.Run("Stops_NonRetryableError", func(t *testing.T) {
 		t.Parallel()
 		ctx := testutil.Context(t, testutil.WaitShort)
+		logger := slogtest.Make(t, nil).Leveled(slog.LevelDebug)
 
 		attempts := 0
 		err := retryWithInterval(ctx, logger, interval, maxAttempts, func() error {
@@ -589,6 +610,7 @@ func TestRetryWithInterval(t *testing.T) {
 	t.Run("Stops_MaxAttemptsExhausted", func(t *testing.T) {
 		t.Parallel()
 		ctx := testutil.Context(t, testutil.WaitShort)
+		logger := slogtest.Make(t, nil).Leveled(slog.LevelDebug)
 
 		attempts := 0
 		err := retryWithInterval(ctx, logger, interval, maxAttempts, func() error {
@@ -602,6 +624,7 @@ func TestRetryWithInterval(t *testing.T) {
 	t.Run("Stops_ContextCanceled", func(t *testing.T) {
 		t.Parallel()
 		ctx, cancel := context.WithCancel(context.Background())
+		logger := slogtest.Make(t, nil).Leveled(slog.LevelDebug)
 
 		attempts := 0
 		err := retryWithInterval(ctx, logger, interval, maxAttempts, func() error {

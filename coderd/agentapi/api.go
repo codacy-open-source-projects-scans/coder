@@ -26,6 +26,7 @@ import (
 	"github.com/coder/coder/v2/coderd/database/pubsub"
 	"github.com/coder/coder/v2/coderd/externalauth"
 	"github.com/coder/coder/v2/coderd/notifications"
+	"github.com/coder/coder/v2/coderd/portsharing"
 	"github.com/coder/coder/v2/coderd/prometheusmetrics"
 	"github.com/coder/coder/v2/coderd/tracing"
 	"github.com/coder/coder/v2/coderd/workspacestats"
@@ -57,7 +58,8 @@ type API struct {
 	*ConnLogAPI
 	*SubAgentAPI
 	*BoundaryLogsAPI
-	*tailnet.DRPCService
+	*ContextAPI
+	tailnetService *tailnet.DRPCService
 
 	cachedWorkspaceFields *CachedWorkspaceFields
 
@@ -66,6 +68,28 @@ type API struct {
 
 var _ agentproto.DRPCAgentServer = &API{}
 
+// agentTailnetService exposes only Tailnet RPCs intended for workspace agents.
+// Other current and future RPCs remain unavailable until explicitly forwarded.
+type agentTailnetService struct {
+	tailnetproto.DRPCTailnetUnimplementedServer
+
+	service *tailnet.DRPCService
+}
+
+func (s *agentTailnetService) PostTelemetry(ctx context.Context, req *tailnetproto.TelemetryRequest) (*tailnetproto.TelemetryResponse, error) {
+	return s.service.PostTelemetry(ctx, req)
+}
+
+func (s *agentTailnetService) StreamDERPMaps(req *tailnetproto.StreamDERPMapsRequest, stream tailnetproto.DRPCTailnet_StreamDERPMapsStream) error {
+	return s.service.StreamDERPMaps(req, stream)
+}
+
+func (s *agentTailnetService) Coordinate(stream tailnetproto.DRPCTailnet_CoordinateStream) error {
+	return s.service.Coordinate(stream)
+}
+
+var _ tailnetproto.DRPCTailnetServer = (*agentTailnetService)(nil)
+
 type Options struct {
 	AgentID           uuid.UUID
 	OwnerID           uuid.UUID
@@ -73,12 +97,18 @@ type Options struct {
 	OrganizationID    uuid.UUID
 	TemplateVersionID uuid.UUID
 
-	AuthenticatedCtx                  context.Context
-	Log                               slog.Logger
-	Clock                             quartz.Clock
-	Database                          database.Store
-	NotificationsEnqueuer             notifications.Enqueuer
-	Pubsub                            pubsub.Pubsub
+	AuthenticatedCtx      context.Context
+	Log                   slog.Logger
+	Clock                 quartz.Clock
+	Database              database.Store
+	NotificationsEnqueuer notifications.Enqueuer
+	Pubsub                pubsub.Pubsub
+	// ContextDirtyMarker is the chatd-backed hydrate/dirty fan-out invoked
+	// from PushContextState. Nil when chatd is disabled.
+	ContextDirtyMarker ContextDirtyMarker
+	// ContextSyncDisabled makes PushContextState reject pushes with a dRPC
+	// Unimplemented code so agents stop sending context snapshots.
+	ContextSyncDisabled               bool
 	ConnectionLogger                  *atomic.Pointer[connectionlog.ConnectionLogger]
 	DerpMapFn                         func() *tailcfg.DERPMap
 	TailnetCoordinator                *atomic.Pointer[tailnet.Coordinator]
@@ -90,12 +120,14 @@ type Options struct {
 	NetworkTelemetryHandler           func(batch []*tailnetproto.TelemetryEvent)
 	BoundaryUsageTracker              *boundaryusage.Tracker
 	LifecycleMetrics                  *LifecycleMetrics
+	PortSharer                        *atomic.Pointer[portsharing.PortSharer]
 
 	AccessURL                 *url.URL
 	AppHostname               string
 	AgentStatsRefreshInterval time.Duration
 	DisableDirectConnections  bool
 	DerpForceWebSockets       bool
+	DisableUserSecretFilePath bool
 	DerpMapUpdateFrequency    time.Duration
 	ExternalAuthConfigs       []*externalauth.Config
 	Experiments               codersdk.Experiments
@@ -114,15 +146,16 @@ func New(opts Options, workspace database.Workspace, agent database.WorkspaceAge
 	}
 
 	api.ManifestAPI = &ManifestAPI{
-		AccessURL:                opts.AccessURL,
-		AppHostname:              opts.AppHostname,
-		ExternalAuthConfigs:      opts.ExternalAuthConfigs,
-		DisableDirectConnections: opts.DisableDirectConnections,
-		DerpForceWebSockets:      opts.DerpForceWebSockets,
-		AgentFn:                  api.agent,
-		Database:                 opts.Database,
-		DerpMapFn:                opts.DerpMapFn,
-		WorkspaceID:              opts.WorkspaceID,
+		AccessURL:                 opts.AccessURL,
+		AppHostname:               opts.AppHostname,
+		ExternalAuthConfigs:       opts.ExternalAuthConfigs,
+		DisableDirectConnections:  opts.DisableDirectConnections,
+		DerpForceWebSockets:       opts.DerpForceWebSockets,
+		DisableUserSecretFilePath: opts.DisableUserSecretFilePath,
+		AgentFn:                   api.agent,
+		Database:                  opts.Database,
+		DerpMapFn:                 opts.DerpMapFn,
+		WorkspaceID:               opts.WorkspaceID,
 	}
 
 	// Don't cache details for prebuilds, though the cached fields will eventually be updated
@@ -215,7 +248,7 @@ func New(opts Options, workspace database.Workspace, agent database.WorkspaceAge
 		Log:              opts.Log,
 	}
 
-	api.DRPCService = &tailnet.DRPCService{
+	api.tailnetService = &tailnet.DRPCService{
 		CoordPtr:                opts.TailnetCoordinator,
 		Logger:                  opts.Log,
 		DerpMapUpdateFrequency:  opts.DerpMapUpdateFrequency,
@@ -230,15 +263,28 @@ func New(opts Options, workspace database.Workspace, agent database.WorkspaceAge
 		Log:            opts.Log,
 		Clock:          opts.Clock,
 		Database:       opts.Database,
+		PortSharer:     opts.PortSharer,
 	}
 
 	api.BoundaryLogsAPI = &BoundaryLogsAPI{
 		Log:                  opts.Log,
+		Database:             opts.Database,
+		AgentID:              opts.AgentID,
 		WorkspaceID:          opts.WorkspaceID,
 		OwnerID:              opts.OwnerID,
 		TemplateID:           workspace.TemplateID,
 		TemplateVersionID:    opts.TemplateVersionID,
 		BoundaryUsageTracker: opts.BoundaryUsageTracker,
+	}
+
+	api.ContextAPI = &ContextAPI{
+		AgentID:     agent.ID,
+		Workspace:   api.cachedWorkspaceFields,
+		Log:         opts.Log,
+		Clock:       opts.Clock,
+		Database:    opts.Database,
+		DirtyMarker: opts.ContextDirtyMarker,
+		Disabled:    opts.ContextSyncDisabled,
 	}
 
 	// Start background cache refresh loop to handle workspace changes
@@ -255,12 +301,14 @@ func (a *API) Server(ctx context.Context) (*drpcserver.Server, error) {
 		return nil, xerrors.Errorf("register agent API protocol in DRPC mux: %w", err)
 	}
 
-	err = tailnetproto.DRPCRegisterTailnet(mux, a)
+	err = tailnetproto.DRPCRegisterTailnet(mux, &agentTailnetService{
+		service: a.tailnetService,
+	})
 	if err != nil {
 		return nil, xerrors.Errorf("register tailnet API protocol in DRPC mux: %w", err)
 	}
 
-	return drpcserver.NewWithOptions(&tracing.DRPCHandler{Handler: mux},
+	return drpcsdk.NewServer(a.opts.Log, &tracing.DRPCHandler{Handler: mux},
 		drpcserver.Options{
 			Manager: drpcsdk.DefaultDRPCOptions(nil),
 			Log: func(err error) {
@@ -279,7 +327,7 @@ func (a *API) Serve(ctx context.Context, l net.Listener) error {
 		return xerrors.Errorf("create agent API server: %w", err)
 	}
 
-	if err := a.ResourcesMonitoringAPI.InitMonitors(ctx); err != nil {
+	if err := a.InitMonitors(ctx); err != nil {
 		return xerrors.Errorf("initialize resource monitoring: %w", err)
 	}
 

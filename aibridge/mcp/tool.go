@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/xerrors"
@@ -20,13 +20,32 @@ const (
 	maxSpanInputAttrLen   = 100    // truncates tool.Call span input attribute to first `maxSpanInputAttrLen` letters
 	injectedToolPrefix    = "bmcp" // "bridged MCP"
 	injectedToolDelimiter = "_"
+
+	// MaxToolNameLen is the strictest provider limit for tool names.
+	// OpenAI allows 64 characters; Bedrock allows 128. We use the
+	// lower bound so names are safe for every provider.
+	MaxToolNameLen = 64
 )
 
-// ToolCaller is the narrowest interface which describes the behavior required from [mcp.Client],
-// which will normally be passed into [Tool] for interaction with an MCP server.
-// TODO: don't expose github.com/mark3labs/mcp-go outside this package.
+// toolNameSanitizer replaces characters that violate LLM provider tool
+// name constraints. Bedrock requires ^[a-zA-Z0-9_-]{1,128}$ and OpenAI
+// enforces a 64-character limit with a similar character set. Characters
+// outside [a-zA-Z0-9_-] are replaced with "_" so a single invalid
+// server or tool name cannot 400 the entire inference request.
+var toolNameSanitizer = regexp.MustCompile(`[^a-zA-Z0-9_-]`)
+
+// SanitizeToolName replaces characters outside [a-zA-Z0-9_-] with
+// underscores so the resulting name is accepted by LLM providers.
+// Callers that assemble a full tool name from multiple components
+// should truncate the final result to MaxToolNameLen.
+func SanitizeToolName(name string) string {
+	return toolNameSanitizer.ReplaceAllString(name, "_")
+}
+
+// ToolCaller is the subset of [mcp.ClientSession] used by [Tool].
+// TODO: avoid exposing MCP SDK types from this package.
 type ToolCaller interface {
-	CallTool(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error)
+	CallTool(ctx context.Context, params *mcp.CallToolParams) (*mcp.CallToolResult, error)
 }
 
 type Tool struct {
@@ -72,11 +91,9 @@ func (t *Tool) Call(ctx context.Context, input any, tracer trace.Tracer) (_ *mcp
 
 	start := time.Now()
 	var res *mcp.CallToolResult
-	res, outErr = t.Client.CallTool(ctx, mcp.CallToolRequest{
-		Params: mcp.CallToolParams{
-			Name:      t.Name,
-			Arguments: input,
-		},
+	res, outErr = t.Client.CallTool(ctx, &mcp.CallToolParams{
+		Name:      t.Name,
+		Arguments: input,
 	})
 
 	logFn := t.Logger.Debug
@@ -110,10 +127,14 @@ func EncodeToolID(server, tool string) string {
 	var sb strings.Builder
 	_, _ = sb.WriteString(injectedToolPrefix)
 	_, _ = sb.WriteString(injectedToolDelimiter)
-	_, _ = sb.WriteString(server)
+	_, _ = sb.WriteString(SanitizeToolName(server))
 	_, _ = sb.WriteString(injectedToolDelimiter)
-	_, _ = sb.WriteString(tool)
-	return sb.String()
+	_, _ = sb.WriteString(SanitizeToolName(tool))
+	id := sb.String()
+	if len(id) > MaxToolNameLen {
+		id = id[:MaxToolNameLen]
+	}
+	return id
 }
 
 // FilterAllowedTools filters tools based on the given allow/denylists.

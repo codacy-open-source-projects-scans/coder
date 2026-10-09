@@ -30,7 +30,7 @@ import (
 // @Param organization path string true "Organization ID"
 // @Param user path string true "User ID, name, or me"
 // @Success 200 {object} codersdk.OrganizationMember
-// @Router /organizations/{organization}/members/{user} [post]
+// @Router /api/v2/organizations/{organization}/members/{user} [post]
 func (api *API) postOrganizationMember(rw http.ResponseWriter, r *http.Request) {
 	var (
 		ctx               = r.Context()
@@ -97,7 +97,7 @@ func (api *API) postOrganizationMember(rw http.ResponseWriter, r *http.Request) 
 // @Param organization path string true "Organization ID"
 // @Param user path string true "User ID, name, or me"
 // @Success 204
-// @Router /organizations/{organization}/members/{user} [delete]
+// @Router /api/v2/organizations/{organization}/members/{user} [delete]
 func (api *API) deleteOrganizationMember(rw http.ResponseWriter, r *http.Request) {
 	var (
 		ctx               = r.Context()
@@ -113,7 +113,7 @@ func (api *API) deleteOrganizationMember(rw http.ResponseWriter, r *http.Request
 			Action:         database.AuditActionDelete,
 		})
 	)
-	aReq.Old = member.OrganizationMember.Auditable(member.Username)
+	aReq.Old = member.Auditable(member.Username)
 	defer commitAudit()
 
 	// Note: we disallow adding OIDC users if organization sync is enabled.
@@ -154,7 +154,7 @@ func (api *API) deleteOrganizationMember(rw http.ResponseWriter, r *http.Request
 // @Param user path string true "User ID, name, or me"
 // @Success 200 {object} codersdk.OrganizationMemberWithUserData
 // @Produce json
-// @Router /organizations/{organization}/members/{user} [get]
+// @Router /api/v2/organizations/{organization}/members/{user} [get]
 func (api *API) organizationMember(rw http.ResponseWriter, r *http.Request) {
 	var (
 		ctx          = r.Context()
@@ -212,7 +212,7 @@ func (api *API) organizationMember(rw http.ResponseWriter, r *http.Request) {
 // @Tags Members
 // @Param organization path string true "Organization ID"
 // @Success 200 {object} []codersdk.OrganizationMemberWithUserData
-// @Router /organizations/{organization}/members [get]
+// @Router /api/v2/organizations/{organization}/members [get]
 func (api *API) listMembers(rw http.ResponseWriter, r *http.Request) {
 	var (
 		ctx          = r.Context()
@@ -272,7 +272,7 @@ func (api *API) listMembers(rw http.ResponseWriter, r *http.Request) {
 // @Param limit query int false "Page limit, if 0 returns all members"
 // @Param offset query int false "Page offset"
 // @Success 200 {object} []codersdk.PaginatedMembersResponse
-// @Router /organizations/{organization}/paginated-members [get]
+// @Router /api/v2/organizations/{organization}/paginated-members [get]
 func (api *API) paginatedMembers(rw http.ResponseWriter, r *http.Request) {
 	var (
 		ctx          = r.Context()
@@ -300,6 +300,8 @@ func (api *API) paginatedMembers(rw http.ResponseWriter, r *http.Request) {
 		IncludeSystem:    false,
 		Search:           userFilterParams.Search,
 		Name:             userFilterParams.Name,
+		ExactUsername:    userFilterParams.ExactUsername,
+		ExactEmail:       userFilterParams.ExactEmail,
 		Status:           userFilterParams.Status,
 		IsServiceAccount: userFilterParams.IsServiceAccount,
 		RbacRole:         userFilterParams.RbacRole,
@@ -403,7 +405,7 @@ func getAISeatSetByUserIDs(ctx context.Context, db database.Store, userIDs []uui
 // @Param user path string true "User ID, name, or me"
 // @Param request body codersdk.UpdateRoles true "Update roles request"
 // @Success 200 {object} codersdk.OrganizationMember
-// @Router /organizations/{organization}/members/{user}/roles [put]
+// @Router /api/v2/organizations/{organization}/members/{user}/roles [put]
 func (api *API) putMemberRoles(rw http.ResponseWriter, r *http.Request) {
 	var (
 		ctx               = r.Context()
@@ -419,7 +421,7 @@ func (api *API) putMemberRoles(rw http.ResponseWriter, r *http.Request) {
 			Action:         database.AuditActionWrite,
 		})
 	)
-	aReq.Old = member.OrganizationMember.Auditable(member.Username)
+	aReq.Old = member.Auditable(member.Username)
 	defer commitAudit()
 
 	// Check if changing roles is allowed
@@ -427,7 +429,7 @@ func (api *API) putMemberRoles(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if apiKey.UserID == member.OrganizationMember.UserID {
+	if apiKey.UserID == member.UserID {
 		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
 			Message: "You cannot change your own organization roles.",
 			Detail:  "Another user with the appropriate permissions must change your roles.",

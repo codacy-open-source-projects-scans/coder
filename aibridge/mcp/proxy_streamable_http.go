@@ -2,13 +2,12 @@ package mcp
 
 import (
 	"context"
+	"net/http"
 	"regexp"
 	"slices"
 	"strings"
 
-	"github.com/mark3labs/mcp-go/client"
-	"github.com/mark3labs/mcp-go/client/transport"
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/exp/maps"
@@ -21,9 +20,11 @@ import (
 var _ ServerProxier = &StreamableHTTPServerProxy{}
 
 type StreamableHTTPServerProxy struct {
-	client *client.Client
-	logger slog.Logger
-	tracer trace.Tracer
+	client  *mcp.Client
+	tr      *mcp.StreamableClientTransport
+	session *mcp.ClientSession
+	logger  slog.Logger
+	tracer  trace.Tracer
 
 	allowlistPattern *regexp.Regexp
 	denylistPattern  *regexp.Regexp
@@ -33,21 +34,23 @@ type StreamableHTTPServerProxy struct {
 	tools      map[string]*Tool
 }
 
-func NewStreamableHTTPServerProxy(serverName, serverURL string, headers map[string]string, allowlist, denylist *regexp.Regexp, logger slog.Logger, tracer trace.Tracer, opts ...transport.StreamableHTTPCOption) (*StreamableHTTPServerProxy, error) {
-	// nit: headers should be passed in as an option instead of a separate parameter. Not changed as this would be a breaking change.
-	if headers != nil {
-		opts = append(opts, transport.WithHTTPHeaders(headers))
+func NewStreamableHTTPServerProxy(serverName, serverURL string, headers map[string]string, allowlist, denylist *regexp.Regexp, logger slog.Logger, tracer trace.Tracer, httpClient *http.Client) (*StreamableHTTPServerProxy, error) {
+	if httpClient == nil {
+		httpClient = mcpHTTPClient()
 	}
+	httpClient = withHeaders(httpClient, headers)
 
-	mcpClient, err := client.NewStreamableHttpClient(serverURL, opts...)
-	if err != nil {
-		return nil, xerrors.Errorf("create streamable http client: %w", err)
+	tr := &mcp.StreamableClientTransport{
+		Endpoint:   serverURL,
+		HTTPClient: httpClient,
 	}
+	mcpClient := mcp.NewClient(GetClientInfo(), nil)
 
 	return &StreamableHTTPServerProxy{
 		serverName:       serverName,
 		serverURL:        serverURL,
 		client:           mcpClient,
+		tr:               tr,
 		logger:           logger,
 		tracer:           tracer,
 		allowlistPattern: allowlist,
@@ -63,34 +66,32 @@ func (p *StreamableHTTPServerProxy) Init(ctx context.Context) (outErr error) {
 	ctx, span := p.tracer.Start(ctx, "StreamableHTTPServerProxy.Init", trace.WithAttributes(p.traceAttributes()...))
 	defer tracing.EndSpanErr(span, &outErr)
 
-	if err := p.client.Start(ctx); err != nil {
-		return xerrors.Errorf("start client: %w", err)
+	// Init may be called again (e.g. via ServerProxyManager); close
+	// the previous session so its transport does not leak.
+	if p.session != nil {
+		if err := p.session.Close(); err != nil {
+			p.logger.Debug(ctx, "failed to close previous MCP session", slog.Error(err))
+		}
+		p.session = nil
 	}
 
-	version := mcp.LATEST_PROTOCOL_VERSION
-	initReq := mcp.InitializeRequest{
-		Params: mcp.InitializeParams{
-			ProtocolVersion: version,
-			ClientInfo:      GetClientInfo(),
-		},
-	}
-
-	result, err := p.client.Initialize(ctx, initReq)
+	// The SDK negotiates the protocol version during Connect and
+	// fails when no mutually supported version exists.
+	session, err := p.client.Connect(ctx, p.tr, nil)
 	if err != nil {
 		return xerrors.Errorf("init MCP client: %w", err)
 	}
+	p.session = session
 
-	if !slices.Contains(mcp.ValidProtocolVersions, result.ProtocolVersion) {
-		if err := p.client.Close(); err != nil {
-			p.logger.Debug(ctx, "failed to close MCP client on unsuccessful version negotiation", slog.Error(err))
-		}
-		return xerrors.Errorf("MCP version negotiation failed; requested %q, accepts %q, received %q", version, strings.Join(mcp.ValidProtocolVersions, ","), result.ProtocolVersion)
-	}
-
+	result := session.InitializeResult()
 	p.logger.Debug(ctx, "mcp client initialized", slog.F("name", result.ServerInfo.Name), slog.F("server_version", result.ServerInfo.Version))
 
 	tools, err := p.fetchTools(ctx)
 	if err != nil {
+		if closeErr := session.Close(); closeErr != nil {
+			p.logger.Debug(ctx, "failed to close MCP session after fetch tools error", slog.Error(closeErr))
+		}
+		p.session = nil
 		return xerrors.Errorf("fetch tools: %w", err)
 	}
 
@@ -125,11 +126,13 @@ func (p *StreamableHTTPServerProxy) CallTool(ctx context.Context, name string, i
 		return nil, xerrors.Errorf("%q tool not known", name)
 	}
 
-	return p.client.CallTool(ctx, mcp.CallToolRequest{
-		Params: mcp.CallToolParams{
-			Name:      tool.Name,
-			Arguments: input,
-		},
+	if p.session == nil {
+		return nil, xerrors.New("proxy not initialized")
+	}
+
+	return p.session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      tool.Name,
+		Arguments: input,
 	})
 }
 
@@ -137,7 +140,7 @@ func (p *StreamableHTTPServerProxy) fetchTools(ctx context.Context) (_ map[strin
 	ctx, span := p.tracer.Start(ctx, "StreamableHTTPServerProxy.Init.fetchTools", trace.WithAttributes(p.traceAttributes()...))
 	defer tracing.EndSpanErr(span, &outErr)
 
-	tools, err := p.client.ListTools(ctx, mcp.ListToolsRequest{})
+	tools, err := p.session.ListTools(ctx, nil)
 	if err != nil {
 		return nil, xerrors.Errorf("list MCP tools: %w", err)
 	}
@@ -145,15 +148,24 @@ func (p *StreamableHTTPServerProxy) fetchTools(ctx context.Context) (_ map[strin
 	out := make(map[string]*Tool, len(tools.Tools))
 	for _, tool := range tools.Tools {
 		encodedID := EncodeToolID(p.serverName, tool.Name)
+		if existing, ok := out[encodedID]; ok {
+			p.logger.Warn(ctx,
+				"duplicate tool ID after sanitization; previous tool will be unreachable",
+				slog.F("tool_id", encodedID),
+				slog.F("new_tool", tool.Name),
+				slog.F("replaced_tool", existing.Name),
+				slog.F("server", p.serverName),
+			)
+		}
 		out[encodedID] = &Tool{
-			Client:      p.client,
+			Client:      p.session,
 			ID:          encodedID,
 			Name:        tool.Name,
 			ServerName:  p.serverName,
 			ServerURL:   p.serverURL,
 			Description: tool.Description,
-			Params:      tool.InputSchema.Properties,
-			Required:    tool.InputSchema.Required,
+			Params:      toolParams(tool.InputSchema),
+			Required:    toolRequired(tool.InputSchema),
 			Logger:      p.logger,
 		}
 	}
@@ -162,13 +174,11 @@ func (p *StreamableHTTPServerProxy) fetchTools(ctx context.Context) (_ map[strin
 }
 
 func (p *StreamableHTTPServerProxy) Shutdown(_ context.Context) error {
-	if p.client == nil {
+	if p.session == nil {
 		return nil
 	}
 
-	// NOTE: as of v0.38.0 the lib doesn't allow an outside context to be passed in;
-	// it has an internal timeout of 5s, though.
-	return p.client.Close()
+	return p.session.Close()
 }
 
 func (p *StreamableHTTPServerProxy) traceAttributes() []attribute.KeyValue {
@@ -177,4 +187,31 @@ func (p *StreamableHTTPServerProxy) traceAttributes() []attribute.KeyValue {
 		attribute.String(tracing.MCPServerName, p.serverName),
 		attribute.String(tracing.MCPServerURL, p.serverURL),
 	}
+}
+
+func toolParams(schema any) map[string]any {
+	m, ok := schema.(map[string]any)
+	if !ok {
+		return nil
+	}
+	properties, _ := m["properties"].(map[string]any)
+	return properties
+}
+
+func toolRequired(schema any) []string {
+	m, ok := schema.(map[string]any)
+	if !ok {
+		return nil
+	}
+	rawRequired, ok := m["required"].([]any)
+	if !ok {
+		return nil
+	}
+	var required []string
+	for _, r := range rawRequired {
+		if str, ok := r.(string); ok {
+			required = append(required, str)
+		}
+	}
+	return required
 }

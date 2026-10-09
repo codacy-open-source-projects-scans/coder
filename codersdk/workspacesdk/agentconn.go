@@ -98,13 +98,13 @@ type AgentConn interface {
 	CallMCPTool(ctx context.Context, req CallMCPToolRequest) (CallMCPToolResponse, error)
 	Close() error
 	ContextConfig(ctx context.Context) (ContextConfigResponse, error)
-	DebugLogs(ctx context.Context) ([]byte, error)
+	DebugLogs(ctx context.Context, opts ...DebugLogsOption) ([]byte, error)
 	DebugMagicsock(ctx context.Context) ([]byte, error)
 	DebugManifest(ctx context.Context) ([]byte, error)
 	DialContext(ctx context.Context, network string, addr string) (net.Conn, error)
+	AppHTTPClient() *http.Client
 	GetPeerDiagnostics() tailnet.PeerDiagnostics
 	ListContainers(ctx context.Context) (codersdk.WorkspaceAgentListContainersResponse, error)
-	ListMCPTools(ctx context.Context) (ListMCPToolsResponse, error)
 	ListProcesses(ctx context.Context) (ListProcessesResponse, error)
 	ListeningPorts(ctx context.Context) (codersdk.WorkspaceAgentListeningPortsResponse, error)
 	Netcheck(ctx context.Context) (healthsdk.AgentNetcheckReport, error)
@@ -116,13 +116,18 @@ type AgentConn interface {
 	RecreateDevcontainer(ctx context.Context, devcontainerID string) (codersdk.Response, error)
 	SignalProcess(ctx context.Context, id string, signal string) error
 	StartProcess(ctx context.Context, req StartProcessRequest) (StartProcessResponse, error)
+	CancelToolCall(ctx context.Context, id uuid.UUID) (CancelToolCallResponse, error)
 	LS(ctx context.Context, path string, req LSRequest) (LSResponse, error)
 	ResolvePath(ctx context.Context, path string) (string, error)
 	ReadFile(ctx context.Context, path string, offset, limit int64) (io.ReadCloser, string, error)
 	ReadFileLines(ctx context.Context, path string, offset, limit int64, limits ReadFileLinesLimits) (ReadFileLinesResponse, error)
 	WriteFile(ctx context.Context, path string, reader io.Reader) error
+	UploadChatFile(ctx context.Context, req UploadChatFileRequest) (AgentUploadChatFileResponse, error)
 	EditFiles(ctx context.Context, edits FileEditRequest) (FileEditResponse, error)
+	BundleFiles(ctx context.Context, req BundleFilesRequest) ([]byte, error)
+	// Deprecated: Use SSHTCPConn instead.
 	SSH(ctx context.Context) (*gonet.TCPConn, error)
+	SSHTCPConn(ctx context.Context) (TCPConn, error)
 	SSHClient(ctx context.Context) (*ssh.Client, error)
 	SSHClientOnPort(ctx context.Context, port uint16) (*ssh.Client, error)
 	SSHOnPort(ctx context.Context, port uint16) (*gonet.TCPConn, error)
@@ -158,6 +163,7 @@ func (c *agentConn) SetExtraHeaders(h http.Header) {
 type AgentConnOptions struct {
 	AgentID   uuid.UUID
 	CloseFunc func() error
+	Logger    slog.Logger
 }
 
 func (c *agentConn) agentAddress() netip.Addr {
@@ -245,7 +251,16 @@ func (c *agentConn) ReconnectingPTY(ctx context.Context, id uuid.UUID, height, w
 		return nil, xerrors.Errorf("workspace agent not reachable in time: %v", ctx.Err())
 	}
 
-	conn, err := c.Conn.DialContextTCP(ctx, netip.AddrPortFrom(c.agentAddress(), AgentReconnectingPTYPort))
+	c.headersMu.RLock()
+	extraHeaders := c.extraHeaders.Clone()
+	c.headersMu.RUnlock()
+
+	addr := netip.AddrPortFrom(c.agentAddress(), AgentHTTPAPIServerPort)
+	conn, err := DialTCPUpgrade(ctx, addr.String(), c.apiClient(ctx), extraHeaders, AgentReconnectingPTYPort)
+	if errors.Is(err, ErrAgentTCPUpgradeUnsupported) {
+		// Fall back to dialing the port directly.
+		conn, err = c.DialContextTCP(ctx, netip.AddrPortFrom(c.agentAddress(), AgentReconnectingPTYPort))
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -275,10 +290,36 @@ func (c *agentConn) ReconnectingPTY(ctx context.Context, id uuid.UUID, height, w
 	return conn, nil
 }
 
-// SSH pipes the SSH protocol over the returned net.Conn.
+// SSH pipes the SSH protocol over the returned gonet.TCPConn.
 // This connects to the built-in SSH server in the workspace agent.
 func (c *agentConn) SSH(ctx context.Context) (*gonet.TCPConn, error) {
 	return c.SSHOnPort(ctx, AgentSSHPort)
+}
+
+// SSHTCPConn makes an HTTP request with the client session ID that then
+// upgrades into an SSH connection.  If the agent does not support the endpoint,
+// falls back to dialing the port directly.
+func (c *agentConn) SSHTCPConn(ctx context.Context) (TCPConn, error) {
+	ctx, span := tracing.StartSpan(ctx)
+	defer span.End()
+
+	if !c.AwaitReachable(ctx) {
+		return nil, xerrors.Errorf("workspace agent not reachable in time: %v", ctx.Err())
+	}
+
+	c.SendConnectedTelemetry(c.agentAddress(), tailnet.TelemetryApplicationSSH)
+
+	c.headersMu.RLock()
+	extraHeaders := c.extraHeaders.Clone()
+	c.headersMu.RUnlock()
+
+	addr := netip.AddrPortFrom(c.agentAddress(), AgentHTTPAPIServerPort)
+	conn, err := DialTCPUpgrade(ctx, addr.String(), c.apiClient(ctx), extraHeaders, AgentStandardSSHPort)
+	if errors.Is(err, ErrAgentTCPUpgradeUnsupported) {
+		// Fall back to dialing the port directly.
+		return c.DialContextTCP(ctx, netip.AddrPortFrom(c.agentAddress(), AgentStandardSSHPort))
+	}
+	return conn, err
 }
 
 // SSHOnPort pipes the SSH protocol over the returned net.Conn.
@@ -295,9 +336,29 @@ func (c *agentConn) SSHOnPort(ctx context.Context, port uint16) (*gonet.TCPConn,
 	return c.DialContextTCP(ctx, netip.AddrPortFrom(c.agentAddress(), port))
 }
 
-// SSHClient calls SSH to create a client
+// SSHClient makes an HTTP request with the client session ID that then upgrades
+// into an SSH client connection.  If the agent does not support the endpoint,
+// falls back to dialing the port directly.
 func (c *agentConn) SSHClient(ctx context.Context) (*ssh.Client, error) {
-	return c.SSHClientOnPort(ctx, AgentSSHPort)
+	ctx, span := tracing.StartSpan(ctx)
+	defer span.End()
+
+	netConn, err := c.SSHTCPConn(ctx)
+	if err != nil {
+		return nil, xerrors.Errorf("ssh: %w", err)
+	}
+
+	sshConn, channels, requests, err := ssh.NewClientConn(netConn, "localhost:22", &ssh.ClientConfig{
+		// SSH host validation isn't helpful, because obtaining a peer
+		// connection already signifies user-intent to dial a workspace.
+		// #nosec
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+	})
+	if err != nil {
+		return nil, xerrors.Errorf("ssh conn: %w", err)
+	}
+
+	return ssh.NewClient(sshConn, channels, requests), nil
 }
 
 // SSHClientOnPort calls SSH to create a client on a specific port
@@ -323,6 +384,82 @@ func (c *agentConn) SSHClientOnPort(ctx context.Context, port uint16) (*ssh.Clie
 	return ssh.NewClient(sshConn, channels, requests), nil
 }
 
+type TCPConn interface {
+	net.Conn
+	CloseWrite() error
+}
+
+var ErrAgentTCPUpgradeUnsupported = xerrors.New("agent does not support the tcp upgrade endpoint")
+
+// DialTCPUpgrade dials the agent's /tcp HTTP endpoint which allows sending
+// extra data to the agent via headers.  These must include the client session
+// ID or the connection will be refused.  The agent will then upgrade the
+// connection based on the port.  Returns ErrAgentTCPUpgradeUnsupported if the
+// agent does not support the endpoint.
+func DialTCPUpgrade(ctx context.Context, addr string, client *http.Client, headers http.Header, port uint16) (TCPConn, error) {
+	apiURL := fmt.Sprintf("http://%s/api/v0/tcp/%d", addr, port)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
+	if err != nil {
+		return nil, xerrors.Errorf("new http api request to %q: %w", apiURL, err)
+	}
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Upgrade", "tcp")
+
+	// The client session ID baggage is found in the extra headers.
+	for k, v := range headers {
+		req.Header[k] = v
+	}
+
+	//nolint:bodyclose // On success the caller is responsible for closing.
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, xerrors.Errorf("do upgrade request to %q: %w", apiURL, err)
+	}
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		_ = resp.Body.Close()
+		return nil, ErrAgentTCPUpgradeUnsupported
+	}
+
+	respBody := resp.Body
+	conn, ok := respBody.(rawConn)
+	if !ok {
+		_ = respBody.Close()
+		return nil, xerrors.Errorf("response body is not a rawConn: %T", respBody)
+	}
+
+	return &upgradedConn{
+		rawConn:    conn,
+		remoteAddr: upgradeAddr{"tcp", addr},
+		// For now setting a fake local address.
+		localAddr: upgradeAddr{"ssh", "ssh"},
+	}, nil
+}
+
+type rawConn interface {
+	io.ReadWriteCloser
+	CloseWrite() error
+}
+
+type upgradedConn struct {
+	rawConn
+	remoteAddr net.Addr
+	localAddr  net.Addr
+}
+
+func (u *upgradedConn) LocalAddr() net.Addr              { return u.localAddr }
+func (u *upgradedConn) RemoteAddr() net.Addr             { return u.remoteAddr }
+func (*upgradedConn) SetDeadline(_ time.Time) error      { return nil }
+func (*upgradedConn) SetReadDeadline(_ time.Time) error  { return nil }
+func (*upgradedConn) SetWriteDeadline(_ time.Time) error { return nil }
+
+type upgradeAddr struct {
+	network string
+	addr    string
+}
+
+func (u upgradeAddr) Network() string { return u.network }
+func (u upgradeAddr) String() string  { return u.addr }
+
 // Speedtest runs a speedtest against the workspace agent.
 func (c *agentConn) Speedtest(ctx context.Context, direction speedtest.Direction, duration time.Duration) ([]speedtest.Result, error) {
 	ctx, span := tracing.StartSpan(ctx)
@@ -332,8 +469,8 @@ func (c *agentConn) Speedtest(ctx context.Context, direction speedtest.Direction
 		return nil, xerrors.Errorf("workspace agent not reachable in time: %v", ctx.Err())
 	}
 
-	c.Conn.SendConnectedTelemetry(c.agentAddress(), tailnet.TelemetryApplicationSpeedtest)
-	speedConn, err := c.Conn.DialContextTCP(ctx, netip.AddrPortFrom(c.agentAddress(), AgentSpeedtestPort))
+	c.SendConnectedTelemetry(c.agentAddress(), tailnet.TelemetryApplicationSpeedtest)
+	speedConn, err := c.DialContextTCP(ctx, netip.AddrPortFrom(c.agentAddress(), AgentSpeedtestPort))
 	if err != nil {
 		return nil, xerrors.Errorf("dial speedtest: %w", err)
 	}
@@ -362,11 +499,29 @@ func (c *agentConn) DialContext(ctx context.Context, network string, addr string
 
 	switch network {
 	case "tcp":
-		return c.Conn.DialContextTCP(ctx, ipp)
+		return c.DialContextTCP(ctx, ipp)
 	case "udp":
-		return c.Conn.DialContextUDP(ctx, ipp)
+		return c.DialContextUDP(ctx, ipp)
 	default:
 		return nil, xerrors.Errorf("unknown network %q", network)
+	}
+}
+
+// AppHTTPClient returns an HTTP client for reaching HTTP apps served by this
+// workspace agent. Redirects are blocked to prevent misuse.
+func (c *agentConn) AppHTTPClient() *http.Client {
+	return &http.Client{
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+		Transport: &http.Transport{
+			// Disable keep-alives so these short-lived clients don't leave
+			// idle connections (and their goroutines) lingering after they're
+			// discarded.
+			DisableKeepAlives: true,
+			// Host locked to agent, port from URL.
+			DialContext: c.DialContext,
+		},
 	}
 }
 
@@ -384,7 +539,7 @@ func (c *agentConn) ListeningPorts(ctx context.Context) (codersdk.WorkspaceAgent
 	}
 
 	var resp codersdk.WorkspaceAgentListeningPortsResponse
-	return resp, json.NewDecoder(res.Body).Decode(&resp)
+	return resp, decodeAgentJSON(res, &resp)
 }
 
 // Netcheck returns a network check report from the workspace agent.
@@ -401,7 +556,7 @@ func (c *agentConn) Netcheck(ctx context.Context) (healthsdk.AgentNetcheckReport
 	}
 
 	var resp healthsdk.AgentNetcheckReport
-	return resp, json.NewDecoder(res.Body).Decode(&resp)
+	return resp, decodeAgentJSON(res, &resp)
 }
 
 // DebugMagicsock makes a request to the workspace agent's magicsock debug endpoint.
@@ -443,11 +598,96 @@ func (c *agentConn) DebugManifest(ctx context.Context) ([]byte, error) {
 	return bs, nil
 }
 
-// DebugLogs returns up to the last 10MB of `/tmp/coder-agent.log`
-func (c *agentConn) DebugLogs(ctx context.Context) ([]byte, error) {
+// BundleFilesRequest configures a workspace-side file collection.
+type BundleFilesRequest struct {
+	Paths []string `json:"paths"`
+}
+
+// BundleFilesManifest is the manifest.json of the archive returned by
+// BundleFiles.
+type BundleFilesManifest struct {
+	Requested []string                   `json:"requested"`
+	Files     []BundleFilesManifestEntry `json:"files"`
+	Errors    []BundleFilesManifestError `json:"errors"`
+	Truncated bool                       `json:"truncated"`
+	Limits    BundleFilesLimits          `json:"limits"`
+}
+
+// BundleFilesManifestEntry describes one file collected into the archive.
+type BundleFilesManifestEntry struct {
+	Requested    string    `json:"requested"`
+	Path         string    `json:"path"`
+	ArchivePath  string    `json:"archive_path"`
+	Size         int64     `json:"size"`
+	ModTime      time.Time `json:"mod_time"`
+	BytesWritten int64     `json:"bytes_written"`
+	Truncated    bool      `json:"truncated"`
+}
+
+// BundleFilesManifestError records a path that could not be collected.
+type BundleFilesManifestError struct {
+	Requested string `json:"requested"`
+	Path      string `json:"path,omitempty"`
+	Reason    string `json:"reason"`
+}
+
+// BundleFilesLimits are the collection limits the agent applied.
+type BundleFilesLimits struct {
+	MaxFiles        int   `json:"max_files"`
+	MaxBytesPerFile int64 `json:"max_bytes_per_file"`
+	MaxTotalBytes   int64 `json:"max_total_bytes"`
+}
+
+// bundleFilesResponseMaxBytes guards against a misbehaving agent; the
+// agent itself caps collection at 100 MiB.
+const bundleFilesResponseMaxBytes int64 = 110 * 1024 * 1024
+
+// BundleFiles returns a tar archive of explicitly requested workspace
+// files.
+func (c *agentConn) BundleFiles(ctx context.Context, req BundleFilesRequest) ([]byte, error) {
 	ctx, span := tracing.StartSpan(ctx)
 	defer span.End()
-	res, err := c.apiRequest(ctx, http.MethodGet, "/debug/logs", nil)
+	res, err := c.apiRequest(ctx, http.MethodPost, "/api/v0/bundle-files", req)
+	if err != nil {
+		return nil, xerrors.Errorf("do request: %w", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return nil, codersdk.ReadBodyAsError(res)
+	}
+	bs, err := io.ReadAll(io.LimitReader(res.Body, bundleFilesResponseMaxBytes+1))
+	if err != nil {
+		return nil, xerrors.Errorf("read response body: %w", err)
+	}
+	if int64(len(bs)) > bundleFilesResponseMaxBytes {
+		return nil, xerrors.Errorf("response exceeds %d bytes", bundleFilesResponseMaxBytes)
+	}
+	return bs, nil
+}
+
+// DebugLogsOption configures a DebugLogs request.
+type DebugLogsOption func(*debugLogsConfig)
+
+type debugLogsConfig struct {
+	after time.Time
+}
+
+// WithLogsAfter also returns rotated logs modified at or after t, separated by
+// boundary markers (100 MiB combined cap).
+func WithLogsAfter(t time.Time) DebugLogsOption {
+	return func(c *debugLogsConfig) { c.after = t }
+}
+
+// DebugLogs returns up to 10 MiB of the active agent log. Pass WithLogsAfter to
+// also include rotated logs.
+func (c *agentConn) DebugLogs(ctx context.Context, opts ...DebugLogsOption) ([]byte, error) {
+	var cfg debugLogsConfig
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	ctx, span := tracing.StartSpan(ctx)
+	defer span.End()
+	res, err := c.apiRequest(ctx, http.MethodGet, debugLogsPath(cfg.after), nil)
 	if err != nil {
 		return nil, xerrors.Errorf("do request: %w", err)
 	}
@@ -460,6 +700,14 @@ func (c *agentConn) DebugLogs(ctx context.Context) ([]byte, error) {
 		return nil, xerrors.Errorf("read response body: %w", err)
 	}
 	return bs, nil
+}
+
+func debugLogsPath(after time.Time) string {
+	query := neturl.Values{}
+	if !after.IsZero() {
+		query.Set("after", after.UTC().Format(time.RFC3339Nano))
+	}
+	return agentAPIPath("/debug/logs", query)
 }
 
 // PrometheusMetrics returns a response from the agent's prometheus metrics endpoint
@@ -494,7 +742,7 @@ func (c *agentConn) ListContainers(ctx context.Context) (codersdk.WorkspaceAgent
 		return codersdk.WorkspaceAgentListContainersResponse{}, codersdk.ReadBodyAsError(res)
 	}
 	var resp codersdk.WorkspaceAgentListContainersResponse
-	return resp, json.NewDecoder(res.Body).Decode(&resp)
+	return resp, decodeAgentJSON(res, &resp)
 }
 
 func (c *agentConn) WatchContainers(ctx context.Context, logger slog.Logger) (<-chan codersdk.WorkspaceAgentListContainersResponse, io.Closer, error) {
@@ -505,7 +753,7 @@ func (c *agentConn) WatchContainers(ctx context.Context, logger slog.Logger) (<-
 	url := fmt.Sprintf("http://%s%s", host, "/api/v0/containers/watch")
 
 	conn, res, err := websocket.Dial(ctx, url, &websocket.DialOptions{
-		HTTPClient: c.apiClient(),
+		HTTPClient: c.apiClient(ctx),
 
 		// We want `NoContextTakeover` compression to balance improving
 		// bandwidth cost/latency with minimal memory usage overhead.
@@ -541,7 +789,7 @@ func (c *agentConn) WatchGit(ctx context.Context, logger slog.Logger, chatID uui
 	host := net.JoinHostPort(c.agentAddress().String(), strconv.Itoa(AgentHTTPAPIServerPort))
 
 	dialOpts := &websocket.DialOptions{
-		HTTPClient:      c.apiClient(),
+		HTTPClient:      c.apiClient(ctx),
 		CompressionMode: websocket.CompressionNoContextTakeover,
 	}
 	c.headersMu.RLock()
@@ -583,7 +831,7 @@ func (c *agentConn) ConnectDesktopVNC(ctx context.Context) (net.Conn, error) {
 	host := net.JoinHostPort(c.agentAddress().String(), strconv.Itoa(AgentHTTPAPIServerPort))
 
 	dialOpts := &websocket.DialOptions{
-		HTTPClient:      c.apiClient(),
+		HTTPClient:      c.apiClient(ctx),
 		CompressionMode: websocket.CompressionDisabled,
 	}
 	c.headersMu.RLock()
@@ -696,7 +944,7 @@ func (c *agentConn) ExecuteDesktopAction(ctx context.Context, action DesktopActi
 	}
 	c.headersMu.RUnlock()
 
-	resp, err := c.apiClient().Do(req)
+	resp, err := c.apiClient(ctx).Do(req)
 	if err != nil {
 		return DesktopActionResponse{}, xerrors.Errorf("action request: %w", err)
 	}
@@ -707,7 +955,7 @@ func (c *agentConn) ExecuteDesktopAction(ctx context.Context, action DesktopActi
 	}
 
 	var result DesktopActionResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := decodeAgentJSON(resp, &result); err != nil {
 		return DesktopActionResponse{}, xerrors.Errorf("decode action response: %w", err)
 	}
 	return result, nil
@@ -785,7 +1033,7 @@ func (c *agentConn) RecreateDevcontainer(ctx context.Context, devcontainerID str
 		return codersdk.Response{}, codersdk.ReadBodyAsError(res)
 	}
 	var m codersdk.Response
-	if err := json.NewDecoder(res.Body).Decode(&m); err != nil {
+	if err := decodeAgentJSON(res, &m); err != nil {
 		return codersdk.Response{}, xerrors.Errorf("decode response body: %w", err)
 	}
 	return m, nil
@@ -798,6 +1046,10 @@ type StartProcessRequest struct {
 	WorkDir    string            `json:"workdir,omitempty"`
 	Env        map[string]string `json:"env,omitempty"`
 	Background bool              `json:"background,omitempty"`
+	// TimeoutMs is the wait timeout in milliseconds after the process
+	// starts; see ProcessOutputOptions.TimeoutFromStartProcess. Not allowed
+	// with Background.
+	TimeoutMs int64 `json:"timeout_ms,omitempty"`
 }
 
 // StartProcessResponse is returned when a process is started.
@@ -830,6 +1082,9 @@ type ProcessOutputResponse struct {
 	Truncated *ProcessTruncation `json:"truncated,omitempty"`
 	Running   bool               `json:"running"`
 	ExitCode  *int               `json:"exit_code,omitempty"`
+	Command   string             `json:"command,omitempty"`
+	TimedOut  bool               `json:"timed_out,omitempty"` // running past StartProcessRequest.TimeoutMs
+	Canceled  bool               `json:"canceled,omitempty"`  // its tool call was canceled while it ran
 }
 
 // ProcessOutputOptions configures blocking behavior for
@@ -838,6 +1093,9 @@ type ProcessOutputOptions struct {
 	// Wait enables blocking mode. When true, the request
 	// blocks until the process exits or the context expires.
 	Wait bool
+	// TimeoutFromStartProcess also ends a blocking wait at
+	// StartProcessRequest.TimeoutMs.
+	TimeoutFromStartProcess bool
 }
 
 // ProcessTruncation describes how process output was truncated.
@@ -904,7 +1162,7 @@ func (c *agentConn) LS(ctx context.Context, path string, req LSRequest) (LSRespo
 	}
 
 	var m LSResponse
-	if err := json.NewDecoder(res.Body).Decode(&m); err != nil {
+	if err := decodeAgentJSON(res, &m); err != nil {
 		return LSResponse{}, xerrors.Errorf("decode response body: %w", err)
 	}
 	return m, nil
@@ -933,7 +1191,7 @@ func (c *agentConn) ResolvePath(ctx context.Context, path string) (string, error
 	}
 
 	var m ResolvePathResponse
-	if err := json.NewDecoder(res.Body).Decode(&m); err != nil {
+	if err := decodeAgentJSON(res, &m); err != nil {
 		return "", xerrors.Errorf("decode response body: %w", err)
 	}
 	return m.ResolvedPath, nil
@@ -963,7 +1221,7 @@ func (c *agentConn) ReadFileLines(ctx context.Context, path string, offset, limi
 	}
 
 	var resp ReadFileLinesResponse
-	if err := json.NewDecoder(res.Body).Decode(&resp); err != nil {
+	if err := decodeAgentJSON(res, &resp); err != nil {
 		return ReadFileLinesResponse{}, xerrors.Errorf("decode response: %w", err)
 	}
 	return resp, nil
@@ -1002,22 +1260,73 @@ func (c *agentConn) WriteFile(ctx context.Context, path string, reader io.Reader
 	ctx, span := tracing.StartSpan(ctx)
 	defer span.End()
 
-	res, err := c.apiRequest(ctx, http.MethodPost, agentAPIPath("/api/v0/write-file", neturl.Values{
+	res, err := c.toolCallRequest(ctx, http.MethodPost, agentAPIPath("/api/v0/write-file", neturl.Values{
 		"path": []string{path},
 	}), reader)
 	if err != nil {
 		return xerrors.Errorf("do request: %w", err)
 	}
 	defer res.Body.Close()
+	return readWriteFileResponse(res)
+}
+
+func readWriteFileResponse(res *http.Response) error {
 	if res.StatusCode != http.StatusOK {
 		return codersdk.ReadBodyAsError(res)
 	}
 
 	var m codersdk.Response
-	if err := json.NewDecoder(res.Body).Decode(&m); err != nil {
+	if err := decodeAgentJSON(res, &m); err != nil {
 		return xerrors.Errorf("decode response body: %w", err)
 	}
 	return nil
+}
+
+// UploadChatFileRequest is the streaming request for the agent's
+// chat-file upload endpoint.
+type UploadChatFileRequest struct {
+	// ChatID is the full chat UUID used to namespace the upload directory.
+	ChatID string
+	// Name is the filename. Coderd sanitizes it before the call; the
+	// agent sanitizes again as defense in depth for direct tailnet
+	// callers.
+	Name string
+	// Body must remain readable until UploadChatFile returns.
+	Body io.Reader
+}
+
+// AgentUploadChatFileResponse is the response from uploading to a workspace agent.
+type AgentUploadChatFileResponse struct {
+	// Path is the absolute path where the file was written on the workspace.
+	Path string `json:"path"`
+	// Name is the final basename after sanitization and collision suffixing.
+	Name string `json:"name"`
+	// Size is the number of bytes written to the workspace.
+	Size int64 `json:"size"`
+}
+
+// UploadChatFile streams a file body to the workspace agent.
+func (c *agentConn) UploadChatFile(ctx context.Context, req UploadChatFileRequest) (AgentUploadChatFileResponse, error) {
+	ctx, span := tracing.StartSpan(ctx)
+	defer span.End()
+
+	res, err := c.apiRequest(ctx, http.MethodPost, agentAPIPath("/api/v0/upload-chat-file", neturl.Values{
+		"chat_id": []string{req.ChatID},
+		"name":    []string{req.Name},
+	}), req.Body)
+	if err != nil {
+		return AgentUploadChatFileResponse{}, xerrors.Errorf("upload chat file: %w", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return AgentUploadChatFileResponse{}, codersdk.ReadBodyAsError(res)
+	}
+
+	var out AgentUploadChatFileResponse
+	if err := decodeAgentJSON(res, &out); err != nil {
+		return AgentUploadChatFileResponse{}, xerrors.Errorf("decode upload chat file response: %w", err)
+	}
+	return out, nil
 }
 
 // ReadFileLinesResponse is the response from the line-based file reader.
@@ -1065,15 +1374,21 @@ func DefaultReadFileLinesLimits() ReadFileLinesLimits {
 	}
 }
 
+// FileEdit is a single old_text -> new_text replacement applied
+// to one file. The fields use old_text/new_text instead of the
+// earlier search/replace because models confused the direction
+// (CODAGT-312); the old keys are not decoded.
 type FileEdit struct {
-	Search     string `json:"search"`
-	Replace    string `json:"replace"`
-	ReplaceAll bool   `json:"replace_all,omitempty"`
+	OldText    string `json:"old_text" description:"Existing text in the file to replace. Matching is fuzzy: whitespace and indentation differences are tolerated."`
+	NewText    string `json:"new_text" description:"Text that replaces old_text."`
+	ReplaceAll bool   `json:"replace_all,omitempty" description:"Replace every match of old_text instead of erroring when it matches more than once."`
 }
 
+// FileEdits carries the model-facing schema descriptions so the
+// chat tool's generated schema includes per-field guidance.
 type FileEdits struct {
-	Path  string     `json:"path"`
-	Edits []FileEdit `json:"edits"`
+	Path  string     `json:"path" description:"The absolute path of the file to edit, for example /home/coder/project/main.go."`
+	Edits []FileEdit `json:"edits" description:"Edits that replace old text with new text, applied to this file in order."`
 }
 
 type FileEditRequest struct {
@@ -1104,12 +1419,6 @@ type FileEditResponse struct {
 type FileEditResult struct {
 	Path string `json:"path"`
 	Diff string `json:"diff"`
-}
-
-// ListMCPToolsResponse is the response from the agent's
-// MCP tool discovery endpoint.
-type ListMCPToolsResponse struct {
-	Tools []MCPToolInfo `json:"tools"`
 }
 
 // MCPToolInfo describes a single tool discovered from an MCP
@@ -1161,16 +1470,38 @@ type MCPToolContent struct {
 func (c *agentConn) StartProcess(ctx context.Context, req StartProcessRequest) (StartProcessResponse, error) {
 	ctx, span := tracing.StartSpan(ctx)
 	defer span.End()
-	res, err := c.apiRequest(ctx, http.MethodPost, "/api/v0/processes/start", req)
+	res, err := c.toolCallRequest(ctx, http.MethodPost, "/api/v0/processes/start", req)
 	if err != nil {
 		return StartProcessResponse{}, xerrors.Errorf("do request: %w", err)
 	}
 	defer res.Body.Close()
+	return readStartProcessResponse(res)
+}
+
+func readStartProcessResponse(res *http.Response) (StartProcessResponse, error) {
 	if res.StatusCode != http.StatusOK {
 		return StartProcessResponse{}, codersdk.ReadBodyAsError(res)
 	}
 	var resp StartProcessResponse
-	return resp, json.NewDecoder(res.Body).Decode(&resp)
+	return resp, decodeAgentJSON(res, &resp)
+}
+
+// CancelToolCall cancels tool call id of the connection's chat. The agent
+// refuses later requests for it, waits for a running request, stops its
+// process, and returns the saved response.
+func (c *agentConn) CancelToolCall(ctx context.Context, id uuid.UUID) (CancelToolCallResponse, error) {
+	ctx, span := tracing.StartSpan(ctx)
+	defer span.End()
+	res, err := c.apiRequest(ctx, http.MethodPost, "/api/v0/tool-calls/"+id.String()+"/cancel", nil)
+	if err != nil {
+		return CancelToolCallResponse{}, xerrors.Errorf("do request: %w", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return CancelToolCallResponse{}, codersdk.ReadBodyAsError(res)
+	}
+	var resp CancelToolCallResponse
+	return resp, decodeAgentJSON(res, &resp)
 }
 
 // ListProcesses returns information about tracked processes on the agent.
@@ -1186,24 +1517,7 @@ func (c *agentConn) ListProcesses(ctx context.Context) (ListProcessesResponse, e
 		return ListProcessesResponse{}, codersdk.ReadBodyAsError(res)
 	}
 	var resp ListProcessesResponse
-	return resp, json.NewDecoder(res.Body).Decode(&resp)
-}
-
-// ListMCPTools returns tools discovered from MCP servers configured
-// in the workspace.
-func (c *agentConn) ListMCPTools(ctx context.Context) (ListMCPToolsResponse, error) {
-	ctx, span := tracing.StartSpan(ctx)
-	defer span.End()
-	res, err := c.apiRequest(ctx, http.MethodGet, "/api/v0/mcp/tools", nil)
-	if err != nil {
-		return ListMCPToolsResponse{}, xerrors.Errorf("do request: %w", err)
-	}
-	defer res.Body.Close()
-	if res.StatusCode != http.StatusOK {
-		return ListMCPToolsResponse{}, codersdk.ReadBodyAsError(res)
-	}
-	var resp ListMCPToolsResponse
-	return resp, json.NewDecoder(res.Body).Decode(&resp)
+	return resp, decodeAgentJSON(res, &resp)
 }
 
 // ContextConfig returns the resolved context configuration from
@@ -1220,7 +1534,7 @@ func (c *agentConn) ContextConfig(ctx context.Context) (ContextConfigResponse, e
 		return ContextConfigResponse{}, codersdk.ReadBodyAsError(res)
 	}
 	var resp ContextConfigResponse
-	return resp, json.NewDecoder(res.Body).Decode(&resp)
+	return resp, decodeAgentJSON(res, &resp)
 }
 
 // CallMCPTool proxies a tool call to an MCP server running in
@@ -1237,18 +1551,21 @@ func (c *agentConn) CallMCPTool(ctx context.Context, req CallMCPToolRequest) (Ca
 		return CallMCPToolResponse{}, codersdk.ReadBodyAsError(res)
 	}
 	var resp CallMCPToolResponse
-	return resp, json.NewDecoder(res.Body).Decode(&resp)
+	return resp, decodeAgentJSON(res, &resp)
 }
 
 // ProcessOutput returns the output of a tracked process on the agent.
 func (c *agentConn) ProcessOutput(ctx context.Context, id string, opts *ProcessOutputOptions) (ProcessOutputResponse, error) {
 	ctx, span := tracing.StartSpan(ctx)
 	defer span.End()
-	path := "/api/v0/processes/" + id + "/output"
+	query := neturl.Values{}
 	if opts != nil && opts.Wait {
-		path += "?wait=true"
+		query.Set("wait", "true")
+		if opts.TimeoutFromStartProcess {
+			query.Set("timeout_from_start_process", "true")
+		}
 	}
-	res, err := c.apiRequest(ctx, http.MethodGet, path, nil)
+	res, err := c.apiRequest(ctx, http.MethodGet, agentAPIPath("/api/v0/processes/"+id+"/output", query), nil)
 	if err != nil {
 		return ProcessOutputResponse{}, xerrors.Errorf("do request: %w", err)
 	}
@@ -1257,7 +1574,7 @@ func (c *agentConn) ProcessOutput(ctx context.Context, id string, opts *ProcessO
 		return ProcessOutputResponse{}, codersdk.ReadBodyAsError(res)
 	}
 	var resp ProcessOutputResponse
-	return resp, json.NewDecoder(res.Body).Decode(&resp)
+	return resp, decodeAgentJSON(res, &resp)
 }
 
 // SignalProcess sends a signal to a tracked process on the agent.
@@ -1273,30 +1590,34 @@ func (c *agentConn) SignalProcess(ctx context.Context, id string, signal string)
 		return codersdk.ReadBodyAsError(res)
 	}
 	var m codersdk.Response
-	if err := json.NewDecoder(res.Body).Decode(&m); err != nil {
+	if err := decodeAgentJSON(res, &m); err != nil {
 		return xerrors.Errorf("decode response body: %w", err)
 	}
 	return nil
 }
 
-// EditFiles performs search and replace edits on one or more files.
+// EditFiles replaces old_text with new_text on one or more files.
 // When edits.IncludeDiff is true, the returned FileEditResponse
 // carries a unified diff per edited file.
 func (c *agentConn) EditFiles(ctx context.Context, edits FileEditRequest) (FileEditResponse, error) {
 	ctx, span := tracing.StartSpan(ctx)
 	defer span.End()
 
-	res, err := c.apiRequest(ctx, http.MethodPost, "/api/v0/edit-files", edits)
+	res, err := c.toolCallRequest(ctx, http.MethodPost, "/api/v0/edit-files", edits)
 	if err != nil {
 		return FileEditResponse{}, xerrors.Errorf("do request: %w", err)
 	}
 	defer res.Body.Close()
+	return readEditFilesResponse(res)
+}
+
+func readEditFilesResponse(res *http.Response) (FileEditResponse, error) {
 	if res.StatusCode != http.StatusOK {
 		return FileEditResponse{}, codersdk.ReadBodyAsError(res)
 	}
 
 	var resp FileEditResponse
-	if err := json.NewDecoder(res.Body).Decode(&resp); err != nil {
+	if err := decodeAgentJSON(res, &resp); err != nil {
 		return FileEditResponse{}, xerrors.Errorf("decode response body: %w", err)
 	}
 	return resp, nil
@@ -1312,6 +1633,21 @@ func agentAPIPath(path string, query neturl.Values) string {
 
 // apiRequest makes a request to the workspace agent's HTTP API server.
 func (c *agentConn) apiRequest(ctx context.Context, method, path string, body interface{}) (*http.Response, error) {
+	return c.apiRequestWithHeader(ctx, method, path, body, nil)
+}
+
+// toolCallRequest is apiRequest with CoderToolCallIDHeader from ctx. Use
+// it only for requests that perform the tool call: the agent responds to
+// any other request carrying the ID with the saved response.
+func (c *agentConn) toolCallRequest(ctx context.Context, method, path string, body interface{}) (*http.Response, error) {
+	header := http.Header{}
+	if id, ok := ToolCallIDFromContext(ctx); ok {
+		header.Set(CoderToolCallIDHeader, id.String())
+	}
+	return c.apiRequestWithHeader(ctx, method, path, body, header)
+}
+
+func (c *agentConn) apiRequestWithHeader(ctx context.Context, method, path string, body interface{}, header http.Header) (*http.Response, error) {
 	ctx, span := tracing.StartSpan(ctx)
 	defer span.End()
 
@@ -1351,14 +1687,35 @@ func (c *agentConn) apiRequest(ctx context.Context, method, path string, body in
 			req.Header.Add(key, value)
 		}
 	}
+	for key, values := range header {
+		req.Header[key] = values
+	}
 
-	return c.apiClient().Do(req)
+	return c.apiClient(ctx).Do(req)
+}
+
+// decodeAgentJSON decodes an agent-direct HTTP response body. Agent
+// endpoints are served by the workspace agent over tailnet, not the
+// Coder control plane, so no reverse proxy or SSO portal can intercept
+// the response and codersdk.ReadBodyAsJSON's proxy/SSO-oriented error
+// guidance would be misleading here.
+//
+//nolint:gocritic // See doc comment.
+func decodeAgentJSON(res *http.Response, v any) error {
+	return json.NewDecoder(res.Body).Decode(v)
 }
 
 // apiClient returns an HTTP client that can be used to make
-// requests to the workspace agent's HTTP API server.
-func (c *agentConn) apiClient() *http.Client {
+// requests to the workspace agent's HTTP API server. The client is
+// scoped to a single request: its transport cancels in-flight dials
+// once reqCtx ends.
+func (c *agentConn) apiClient(reqCtx context.Context) *http.Client {
+	agentAddr := netip.AddrPortFrom(c.agentAddress(), AgentHTTPAPIServerPort)
 	return &http.Client{
+		// Redirects are blocked to prevent misuse.
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
 		Transport: &http.Transport{
 			// Disable keep alives as we're usually only making a single
 			// request, and this triggers goleak in tests
@@ -1372,22 +1729,36 @@ func (c *agentConn) apiClient() *http.Client {
 				if err != nil {
 					return nil, xerrors.Errorf("split host port %q: %w", addr, err)
 				}
-
-				// Verify that the port is TailnetStatisticsPort.
 				if port != strconv.Itoa(AgentHTTPAPIServerPort) {
 					return nil, xerrors.Errorf("request %q does not appear to be for http api", addr)
 				}
+				if reqAddr, err := netip.ParseAddr(host); err != nil || reqAddr != agentAddr.Addr() {
+					c.opts.Logger.Warn(ctx, "blocked workspace agent API request to unintended host",
+						slog.F("agent_id", c.opts.AgentID),
+						slog.F("request_host", host),
+						slog.F("intended_agent_addr", agentAddr.Addr()),
+					)
+					return nil, xerrors.Errorf("request host %q does not match intended agent %q", host, agentAddr.Addr())
+				}
+
+				// http.Transport detaches ctx from the request context so
+				// a pending dial can outlive its request and serve future
+				// requests. This client is request-scoped with keep-alives
+				// disabled, so a detached dial can never be reused. Without
+				// re-linking cancellation, a canceled request would leave
+				// the dial blocked in AwaitReachable until the agent becomes
+				// reachable, which may be never.
+				ctx, cancel := context.WithCancel(ctx)
+				defer cancel()
+				stop := context.AfterFunc(reqCtx, cancel)
+				defer stop()
 
 				if !c.AwaitReachable(ctx) {
 					return nil, xerrors.Errorf("workspace agent not reachable in time: %v", ctx.Err())
 				}
 
-				ipAddr, err := netip.ParseAddr(host)
-				if err != nil {
-					return nil, xerrors.Errorf("parse host addr: %w", err)
-				}
-
-				conn, err := c.Conn.DialContextTCP(ctx, netip.AddrPortFrom(ipAddr, AgentHTTPAPIServerPort))
+				// Always dial the pinned agent address, never the request host.
+				conn, err := c.DialContextTCP(ctx, agentAddr)
 				if err != nil {
 					return nil, xerrors.Errorf("dial http api: %w", err)
 				}

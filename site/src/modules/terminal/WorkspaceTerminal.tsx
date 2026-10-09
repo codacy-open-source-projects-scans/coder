@@ -5,8 +5,8 @@ import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
+import { cn } from "cn";
 import {
-	type Ref,
 	useCallback,
 	useEffect,
 	useEffectEvent,
@@ -15,14 +15,21 @@ import {
 	useRef,
 	useState,
 } from "react";
+import { toast } from "sonner";
 import {
 	ExponentialBackoff,
 	type Websocket,
 	WebsocketBuilder,
 	WebsocketEvent,
 } from "websocket-ts";
+import {
+	ContextMenu,
+	ContextMenuContent,
+	ContextMenuItem,
+	ContextMenuTrigger,
+} from "#/components/ContextMenu/ContextMenu";
 import { useClipboard } from "#/hooks/useClipboard";
-import { cn } from "#/utils/cn";
+import { isMac } from "#/utils/platform";
 import { terminalWebsocketUrl } from "#/utils/terminal";
 import type { ConnectionStatus } from "./types";
 
@@ -31,7 +38,7 @@ export type WorkspaceTerminalHandle = {
 };
 
 type WorkspaceTerminalProps = {
-	ref?: Ref<WorkspaceTerminalHandle>;
+	ref?: React.Ref<WorkspaceTerminalHandle>;
 	agentId: string | undefined;
 	operatingSystem?: string;
 	className?: string;
@@ -42,7 +49,14 @@ type WorkspaceTerminalProps = {
 	containerUser?: string;
 	onStatusChange?: (status: ConnectionStatus) => void;
 	onError?: (error: Error) => void;
+	onContentReady?: () => void;
 	reconnectionToken: string;
+	/**
+	 * The session ID correlates all logs, requests, and telemetry for this
+	 * terminal session. Unlike the reconnection token, it is not persisted in
+	 * the URL: a new page load (including a reload) is a new session.
+	 */
+	sessionId: string;
 	baseUrl?: string;
 	terminalFontFamily?: string;
 	renderer?: string;
@@ -72,7 +86,9 @@ export const WorkspaceTerminal = ({
 	containerUser,
 	onStatusChange,
 	onError,
+	onContentReady,
 	reconnectionToken,
+	sessionId,
 	baseUrl,
 	terminalFontFamily = DEFAULT_TERMINAL_FONT_FAMILY,
 	renderer,
@@ -92,20 +108,47 @@ export const WorkspaceTerminal = ({
 	const handleStatusChange = useEffectEvent((status: ConnectionStatus) => {
 		onStatusChange?.(status);
 	});
+	const handleContentReady = useEffectEvent(() => {
+		onContentReady?.();
+	});
 	const [terminal, setTerminal] = useState<Terminal>();
-	const { copyToClipboard } = useClipboard();
+	const { copyToClipboard, readFromClipboard } = useClipboard();
 
-	const [hasBeenVisible, setHasBeenVisible] = useState(false);
-	if (isVisible && !hasBeenVisible) {
-		setHasBeenVisible(true);
-	}
+	const [hasSelection, setHasSelection] = useState(false);
+	const handleContextMenuOpenChange = (open: boolean) => {
+		if (open) {
+			setHasSelection(Boolean(terminal?.hasSelection()));
+		}
+	};
+	const copyTerminalSelection = () => {
+		const selection = terminal?.getSelection();
+		if (selection) {
+			void copyToClipboard(selection);
+		}
+	};
+	const pasteIntoTerminal = async () => {
+		if (!terminal) {
+			return;
+		}
+		try {
+			const text = await readFromClipboard();
+			if (text) {
+				terminal.paste(text);
+			}
+		} catch (error) {
+			toast.error("Failed to paste from clipboard");
+			console.error(error);
+		} finally {
+			terminal.focus();
+		}
+	};
 
 	const reportTerminalError = useEffectEvent((error: Error) => {
 		console.error(error);
 		onError?.(error);
 	});
 
-	const getTerminalDimensions = useCallback(
+	const getTerminalDimensions = useEffectEvent(
 		(terminal: Terminal): { height: number; width: number } | null => {
 			if (terminal.rows <= 0 || terminal.cols <= 0) {
 				reportTerminalError(
@@ -121,12 +164,21 @@ export const WorkspaceTerminal = ({
 				width: terminal.cols,
 			};
 		},
-		[],
 	);
 
 	const refit = useCallback(() => {
 		const fitAddon = fitAddonRef.current;
 		if (!fitAddon) {
+			return;
+		}
+
+		// Fitting a zero-size container clamps the terminal and PTY to the minimum column count.
+		const mountNode = terminalWrapperRef.current;
+		if (
+			!mountNode ||
+			mountNode.clientWidth === 0 ||
+			mountNode.clientHeight === 0
+		) {
 			return;
 		}
 
@@ -136,9 +188,8 @@ export const WorkspaceTerminal = ({
 		try {
 			fitAddon.fit();
 			fitAddon.fit();
-		} catch (error) {
-			// biome-ignore lint/suspicious/noConsole: Expected transient fit failure while xterm initializes.
-			console.debug("Terminal fit skipped: renderer not ready", error);
+		} catch {
+			// Expected transient fit failure while xterm initializes.
 		}
 	}, []);
 
@@ -151,7 +202,7 @@ export const WorkspaceTerminal = ({
 	);
 
 	useEffect(() => {
-		if (!hasBeenVisible) {
+		if (!isVisible) {
 			return;
 		}
 
@@ -164,6 +215,12 @@ export const WorkspaceTerminal = ({
 		const nextTerminal = new Terminal({
 			allowProposedApi: true,
 			allowTransparency: true,
+			// Use the selected terminal font for block element, box drawing,
+			// quadrant, and powerline glyphs. xterm's custom glyph renderer helps
+			// when fonts lack powerline glyphs, but it changes block and quadrant
+			// shapes and breaks TUIs that use them for pixel art, like Claude
+			// Code's logo.
+			customGlyphs: false,
 			disableStdin: false,
 			fontFamily: terminalFontFamily,
 			fontSize: 16,
@@ -187,7 +244,30 @@ export const WorkspaceTerminal = ({
 			}),
 		);
 
-		const isMac = navigator.platform.match("Mac");
+		// OSC 52 clipboard support. Programs like tmux send this escape
+		// sequence to copy text to the host's system clipboard.
+		nextTerminal.parser.registerOscHandler(52, (data) => {
+			const separatorIndex = data.indexOf(";");
+			if (separatorIndex === -1) {
+				return false;
+			}
+			const payload = data.slice(separatorIndex + 1);
+			// A "?" payload is a clipboard read query. Responding would
+			// require writing back to the PTY, which is not supported.
+			if (!payload || payload === "?") {
+				return false;
+			}
+			try {
+				const bytes = Uint8Array.from(atob(payload), (c) => c.charCodeAt(0));
+				const decoded = new TextDecoder().decode(bytes);
+				void copyToClipboard(decoded);
+			} catch {
+				// Invalid base64; ignore.
+				return false;
+			}
+			return true;
+		});
+
 		const copySelection = () => {
 			const selection = nextTerminal.getSelection();
 			if (selection) {
@@ -213,7 +293,7 @@ export const WorkspaceTerminal = ({
 			// By default this usually launches the browser dev tools, but users
 			// expect this keybinding to copy when in the context of the web terminal.
 			if (
-				(isMac ? event.metaKey : event.ctrlKey) &&
+				(isMac() ? event.metaKey : event.ctrlKey) &&
 				event.shiftKey &&
 				event.key === "C"
 			) {
@@ -255,11 +335,12 @@ export const WorkspaceTerminal = ({
 			window.removeEventListener("resize", refit);
 			resizeObserver.disconnect();
 			fitAddonRef.current = undefined;
-			nextTerminal.dispose();
 			setTerminal(undefined);
+			// xterm queues its initial viewport synchronization in a timer.
+			window.setTimeout(() => nextTerminal.dispose(), 0);
 		};
 	}, [
-		hasBeenVisible,
+		isVisible,
 		copyToClipboard,
 		refit,
 		renderer,
@@ -289,8 +370,34 @@ export const WorkspaceTerminal = ({
 		};
 	}, [terminal, isVisible, autoFocus, loading]);
 
+	// Notify after first output paints so consumers can hide connection latency.
 	useEffect(() => {
-		if (!terminal || !hasBeenVisible) {
+		if (!terminal) {
+			return;
+		}
+		let hasParsedOutput = false;
+		const writeParsed = terminal.onWriteParsed(() => {
+			hasParsedOutput = true;
+		});
+		// onWriteParsed fires before xterm paints; gate on the next onRender so
+		// pixels are present before the terminal is revealed. clear()/refresh
+		// fire onRender without a parse and are intentionally ignored.
+		const rendered = terminal.onRender(() => {
+			if (!hasParsedOutput) {
+				return;
+			}
+			writeParsed.dispose();
+			rendered.dispose();
+			handleContentReady();
+		});
+		return () => {
+			writeParsed.dispose();
+			rendered.dispose();
+		};
+	}, [terminal]);
+
+	useEffect(() => {
+		if (!terminal || !isVisible) {
 			return;
 		}
 
@@ -355,6 +462,7 @@ export const WorkspaceTerminal = ({
 			initialDimensions.width,
 			containerName,
 			containerUser,
+			sessionId,
 		)
 			.then((url) => {
 				if (disposed) {
@@ -401,7 +509,10 @@ export const WorkspaceTerminal = ({
 					if (disposed) {
 						return;
 					}
-					console.error("WebSocket error:", event);
+					console.error("WebSocket error:", {
+						client_session_id: sessionId,
+						event,
+					});
 					terminal.options.disableStdin = true;
 					handleStatusChange("disconnected");
 				});
@@ -447,7 +558,10 @@ export const WorkspaceTerminal = ({
 				if (disposed) {
 					return;
 				}
-				console.error("WebSocket connection failed:", error);
+				console.error("WebSocket connection failed:", {
+					client_session_id: sessionId,
+					error,
+				});
 				reportTerminalError(
 					error instanceof Error ? error : new Error(String(error)),
 				);
@@ -463,17 +577,17 @@ export const WorkspaceTerminal = ({
 			websocketRef.current = undefined;
 		};
 	}, [
-		hasBeenVisible,
+		isVisible,
 		agentId,
 		baseUrl,
 		containerName,
 		containerUser,
 		errorMessage,
-		getTerminalDimensions,
 		initialCommand,
 		loading,
 		operatingSystem,
 		reconnectionToken,
+		sessionId,
 		refit,
 		terminal,
 	]);
@@ -505,18 +619,38 @@ export const WorkspaceTerminal = ({
 
 				${terminalScopeSelector} .xterm-viewport::-webkit-scrollbar-thumb {
 					min-height: 20px;
-					background-color: hsl(var(--surface-quaternary));
+					background-color: hsl(var(--surface-invert-secondary));
 				}
 			`}</style>
-			<div
-				className={cn(
-					"workspace-terminal h-full w-full flex-1 min-h-0 overflow-hidden bg-surface-tertiary",
-					className,
-				)}
-				ref={terminalWrapperRef}
-				data-terminal-scope={scopeId}
-				data-testid={testId}
-			/>
+			<ContextMenu onOpenChange={handleContextMenuOpenChange}>
+				<ContextMenuTrigger asChild disabled={isMac()}>
+					<div
+						className={cn(
+							"workspace-terminal h-full w-full flex-1 min-h-0 overflow-hidden bg-surface-tertiary",
+							className,
+						)}
+						ref={terminalWrapperRef}
+						data-terminal-scope={scopeId}
+						data-testid={testId}
+					/>
+				</ContextMenuTrigger>
+				<ContextMenuContent
+					onCloseAutoFocus={(event) => {
+						event.preventDefault();
+						terminal?.focus();
+					}}
+				>
+					<ContextMenuItem
+						disabled={!hasSelection}
+						onSelect={copyTerminalSelection}
+					>
+						Copy
+					</ContextMenuItem>
+					<ContextMenuItem onSelect={() => void pasteIntoTerminal()}>
+						Paste
+					</ContextMenuItem>
+				</ContextMenuContent>
+			</ContextMenu>
 		</>
 	);
 };

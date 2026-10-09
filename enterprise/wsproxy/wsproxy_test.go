@@ -90,7 +90,7 @@ func TestDERPOnly(t *testing.T) {
 	regions, err := client.Regions(ctx)
 	require.NoError(t, err)
 	require.Len(t, regions, 1)
-	require.Equal(t, api.Options.AccessURL.String(), regions[0].PathAppURL)
+	require.Equal(t, api.AccessURL.String(), regions[0].PathAppURL)
 }
 
 func TestDERP(t *testing.T) {
@@ -1201,12 +1201,10 @@ func createProxyReplicas(ctx context.Context, t *testing.T, opts *createProxyRep
 				ok = false
 
 				// Retry registration on this proxy.
-				wg.Add(1)
-				go func() {
-					defer wg.Done()
+				wg.Go(func() {
 					err := proxy.RegisterNow(ctx)
 					t.Logf("replica %d re-registered: err=%v", i, err)
-				}()
+				})
 			}
 		}
 		wg.Wait()

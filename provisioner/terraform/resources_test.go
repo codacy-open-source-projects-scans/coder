@@ -20,7 +20,6 @@ import (
 
 	"cdr.dev/slog/v3"
 	"cdr.dev/slog/v3/sloggers/slogtest"
-	"github.com/coder/coder/v2/coderd/util/ptr"
 	"github.com/coder/coder/v2/cryptorand"
 	"github.com/coder/coder/v2/provisioner/terraform"
 	"github.com/coder/coder/v2/provisionersdk/proto"
@@ -498,14 +497,16 @@ func TestConvertResources(t *testing.T) {
 					Architecture:    "amd64",
 					Scripts: []*proto.Script{
 						{
-							DisplayName: "Foobar Script 1",
-							Script:      "echo foobar 1",
-							RunOnStart:  true,
+							DisplayName:     "Foobar Script 1",
+							Script:          "echo foobar 1",
+							RunOnStart:      true,
+							ResourceAddress: "coder_script.script1",
 						},
 						{
-							DisplayName: "Foobar Script 2",
-							Script:      "echo foobar 2",
-							RunOnStart:  true,
+							DisplayName:     "Foobar Script 2",
+							Script:          "echo foobar 2",
+							RunOnStart:      true,
+							ResourceAddress: "coder_script.script2",
 						},
 					},
 					Auth:                     &proto.Agent_Token{},
@@ -523,9 +524,10 @@ func TestConvertResources(t *testing.T) {
 					Architecture:    "amd64",
 					Scripts: []*proto.Script{
 						{
-							DisplayName: "Foobar Script 3",
-							Script:      "echo foobar 3",
-							RunOnStart:  true,
+							DisplayName:     "Foobar Script 3",
+							Script:          "echo foobar 3",
+							RunOnStart:      true,
+							ResourceAddress: "coder_script.script3",
 						},
 					},
 					Auth:                     &proto.Agent_Token{},
@@ -703,22 +705,22 @@ func TestConvertResources(t *testing.T) {
 				Name:          "number_example_max_zero",
 				Type:          "number",
 				DefaultValue:  "-2",
-				ValidationMin: ptr.Ref(int32(-3)),
-				ValidationMax: ptr.Ref(int32(0)),
+				ValidationMin: new(int32(-3)),
+				ValidationMax: new(int32(0)),
 				FormType:      proto.ParameterFormType_INPUT,
 			}, {
 				Name:          "number_example_min_max",
 				Type:          "number",
 				DefaultValue:  "4",
-				ValidationMin: ptr.Ref(int32(3)),
-				ValidationMax: ptr.Ref(int32(6)),
+				ValidationMin: new(int32(3)),
+				ValidationMax: new(int32(6)),
 				FormType:      proto.ParameterFormType_INPUT,
 			}, {
 				Name:          "number_example_min_zero",
 				Type:          "number",
 				DefaultValue:  "4",
-				ValidationMin: ptr.Ref(int32(0)),
-				ValidationMax: ptr.Ref(int32(6)),
+				ValidationMin: new(int32(0)),
+				ValidationMax: new(int32(6)),
 				FormType:      proto.ParameterFormType_INPUT,
 			}, {
 				Name:         "Sample",
@@ -787,34 +789,34 @@ func TestConvertResources(t *testing.T) {
 				Type:          "number",
 				DefaultValue:  "4",
 				ValidationMin: nil,
-				ValidationMax: ptr.Ref(int32(6)),
+				ValidationMax: new(int32(6)),
 				FormType:      proto.ParameterFormType_INPUT,
 			}, {
 				Name:          "number_example_max_zero",
 				Type:          "number",
 				DefaultValue:  "-3",
 				ValidationMin: nil,
-				ValidationMax: ptr.Ref(int32(0)),
+				ValidationMax: new(int32(0)),
 				FormType:      proto.ParameterFormType_INPUT,
 			}, {
 				Name:          "number_example_min",
 				Type:          "number",
 				DefaultValue:  "4",
-				ValidationMin: ptr.Ref(int32(3)),
+				ValidationMin: new(int32(3)),
 				ValidationMax: nil,
 				FormType:      proto.ParameterFormType_INPUT,
 			}, {
 				Name:          "number_example_min_max",
 				Type:          "number",
 				DefaultValue:  "4",
-				ValidationMin: ptr.Ref(int32(3)),
-				ValidationMax: ptr.Ref(int32(6)),
+				ValidationMin: new(int32(3)),
+				ValidationMax: new(int32(6)),
 				FormType:      proto.ParameterFormType_INPUT,
 			}, {
 				Name:          "number_example_min_zero",
 				Type:          "number",
 				DefaultValue:  "4",
-				ValidationMin: ptr.Ref(int32(0)),
+				ValidationMin: new(int32(0)),
 				ValidationMax: nil,
 				FormType:      proto.ParameterFormType_INPUT,
 			}},
@@ -1007,10 +1009,11 @@ func TestConvertResources(t *testing.T) {
 								},
 								Scripts: []*proto.Script{
 									{
-										DisplayName: "Devcontainer Script",
-										Script:      "echo devcontainer",
-										RunOnStart:  true,
-										RunOnStop:   false,
+										DisplayName:     "Devcontainer Script",
+										Script:          "echo devcontainer",
+										RunOnStart:      true,
+										RunOnStop:       false,
+										ResourceAddress: "coder_script.devcontainer-script",
 									},
 								},
 								Envs: []*proto.Env{
@@ -1232,6 +1235,36 @@ func TestConvertResources(t *testing.T) {
 	}
 }
 
+func TestConvertState_LegacyInlineScriptsHaveNoAddress(t *testing.T) {
+	t.Parallel()
+	ctx, logger := ctxAndLogger(t)
+
+	// nolint:dogsled
+	_, filename, _, _ := runtime.Caller(0)
+	dir := filepath.Join(filepath.Dir(filename), "testdata", "resources", "multiple-agents")
+	tfPlanRaw, err := os.ReadFile(filepath.Join(dir, "multiple-agents.tfplan.json"))
+	require.NoError(t, err)
+	var tfPlan tfjson.Plan
+	require.NoError(t, json.Unmarshal(tfPlanRaw, &tfPlan))
+	tfPlanGraph, err := os.ReadFile(filepath.Join(dir, "multiple-agents.tfplan.dot"))
+	require.NoError(t, err)
+
+	state, err := terraform.ConvertState(ctx, []*tfjson.StateModule{tfPlan.PlannedValues.RootModule}, string(tfPlanGraph), logger)
+	require.NoError(t, err)
+
+	var scripts []*proto.Script
+	for _, resource := range state.Resources {
+		for _, agent := range resource.Agents {
+			scripts = append(scripts, agent.Scripts...)
+		}
+	}
+	require.NotEmpty(t, scripts)
+	for _, script := range scripts {
+		require.Empty(t, script.ResourceAddress, "script %q", script.DisplayName)
+		require.Empty(t, script.Dependencies, "script %q", script.DisplayName)
+	}
+}
+
 func TestInvalidTerraformAddress(t *testing.T) {
 	t.Parallel()
 	ctx, logger := context.Background(), slogtest.Make(t, &slogtest.Options{IgnoreErrors: true}).Leveled(slog.LevelDebug)
@@ -1286,6 +1319,63 @@ func TestAppSlugValidation(t *testing.T) {
 			for _, resource := range tfPlan.PlannedValues.RootModule.Resources {
 				if resource.Type == "coder_app" {
 					resource.AttributeValues["slug"] = c.slug
+					break
+				}
+			}
+
+			_, err := terraform.ConvertState(ctx, []*tfjson.StateModule{tfPlan.PlannedValues.RootModule}, string(tfPlanGraph), logger)
+			if c.errContains != "" {
+				require.ErrorContains(t, err, c.errContains)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+//nolint:tparallel
+func TestAppExternalURLInvalid(t *testing.T) {
+	t.Parallel()
+	ctx, logger := ctxAndLogger(t)
+
+	// nolint:dogsled
+	_, filename, _, _ := runtime.Caller(0)
+
+	// Load the multiple-apps state file and edit it.
+	dir := filepath.Join(filepath.Dir(filename), "testdata", "resources", "multiple-apps")
+	tfPlanRaw, err := os.ReadFile(filepath.Join(dir, "multiple-apps.tfplan.json"))
+	require.NoError(t, err)
+	var tfPlan tfjson.Plan
+	err = json.Unmarshal(tfPlanRaw, &tfPlan)
+	require.NoError(t, err)
+	tfPlanGraph, err := os.ReadFile(filepath.Join(dir, "multiple-apps.tfplan.dot"))
+	require.NoError(t, err)
+
+	cases := []struct {
+		name        string
+		external    bool
+		url         any
+		errContains string
+	}{
+		{name: "MissingScheme", external: true, url: "coder.com/docs", errContains: "must include a scheme"},
+		{name: "SchemeOnly", external: true, url: "https://", errContains: `"https" URLs must include a host`},
+		{name: "PortOnly", external: true, url: "https://:8080", errContains: `"https" URLs must include a host`},
+		{name: "AbsoluteURL", external: true, url: "https://coder.com/docs", errContains: ""},
+		{name: "CustomScheme", external: true, url: "zed://ssh/coder.dev", errContains: ""},
+		// Terraform reports URLs it cannot resolve until apply as empty, and
+		// non-external apps are proxied rather than opened by the browser.
+		{name: "UnresolvedURL", external: true, url: nil, errContains: ""},
+		{name: "NotExternal", external: false, url: "coder.com/docs", errContains: ""},
+	}
+
+	//nolint:paralleltest
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			// Change the first app to match the current case.
+			for _, resource := range tfPlan.PlannedValues.RootModule.Resources {
+				if resource.Type == "coder_app" {
+					resource.AttributeValues["external"] = c.external
+					resource.AttributeValues["url"] = c.url
 					break
 				}
 			}
@@ -1681,89 +1771,6 @@ func TestInstanceIDAssociation(t *testing.T) {
 			require.Equal(t, state.Resources[0].Agents[0].GetInstanceId(), instanceID)
 		})
 	}
-}
-
-func TestAITasks(t *testing.T) {
-	t.Parallel()
-	ctx, logger := ctxAndLogger(t)
-
-	t.Run("Multiple tasks can be defined", func(t *testing.T) {
-		t.Parallel()
-
-		// nolint:dogsled
-		_, filename, _, _ := runtime.Caller(0)
-
-		dir := filepath.Join(filepath.Dir(filename), "testdata", "resources", "ai-tasks-multiple")
-		tfPlanRaw, err := os.ReadFile(filepath.Join(dir, "ai-tasks-multiple.tfplan.json"))
-		require.NoError(t, err)
-		var tfPlan tfjson.Plan
-		err = json.Unmarshal(tfPlanRaw, &tfPlan)
-		require.NoError(t, err)
-		tfPlanGraph, err := os.ReadFile(filepath.Join(dir, "ai-tasks-multiple.tfplan.dot"))
-		require.NoError(t, err)
-
-		state, err := terraform.ConvertState(ctx, []*tfjson.StateModule{tfPlan.PlannedValues.RootModule, tfPlan.PriorState.Values.RootModule}, string(tfPlanGraph), logger)
-		require.NotNil(t, state)
-		require.NoError(t, err)
-		require.True(t, state.HasAITasks)
-		// Multiple coder_ai_tasks resources can be defined, but only 1 is allowed.
-		// This is validated once all parameters are resolved etc as part of the workspace build, but for now we can allow it.
-		require.Len(t, state.AITasks, 2)
-	})
-
-	t.Run("Can use sidebar app ID", func(t *testing.T) {
-		t.Parallel()
-
-		// nolint:dogsled
-		_, filename, _, _ := runtime.Caller(0)
-
-		dir := filepath.Join(filepath.Dir(filename), "testdata", "resources", "ai-tasks-sidebar")
-		tfPlanRaw, err := os.ReadFile(filepath.Join(dir, "ai-tasks-sidebar.tfplan.json"))
-		require.NoError(t, err)
-		var tfPlan tfjson.Plan
-		err = json.Unmarshal(tfPlanRaw, &tfPlan)
-		require.NoError(t, err)
-		tfPlanGraph, err := os.ReadFile(filepath.Join(dir, "ai-tasks-sidebar.tfplan.dot"))
-		require.NoError(t, err)
-
-		state, err := terraform.ConvertState(ctx, []*tfjson.StateModule{tfPlan.PlannedValues.RootModule, tfPlan.PriorState.Values.RootModule}, string(tfPlanGraph), logger)
-		require.NotNil(t, state)
-		require.NoError(t, err)
-		require.True(t, state.HasAITasks)
-		require.Len(t, state.AITasks, 1)
-
-		sidebarApp := state.AITasks[0].GetSidebarApp()
-		require.NotNil(t, sidebarApp)
-		require.Equal(t, "5ece4674-dd35-4f16-88c8-82e40e72e2fd", sidebarApp.GetId())
-		require.Equal(t, "5ece4674-dd35-4f16-88c8-82e40e72e2fd", state.AITasks[0].AppId)
-	})
-
-	t.Run("Can use app ID", func(t *testing.T) {
-		t.Parallel()
-
-		// nolint:dogsled
-		_, filename, _, _ := runtime.Caller(0)
-
-		dir := filepath.Join(filepath.Dir(filename), "testdata", "resources", "ai-tasks-app")
-		tfPlanRaw, err := os.ReadFile(filepath.Join(dir, "ai-tasks-app.tfplan.json"))
-		require.NoError(t, err)
-		var tfPlan tfjson.Plan
-		err = json.Unmarshal(tfPlanRaw, &tfPlan)
-		require.NoError(t, err)
-		tfPlanGraph, err := os.ReadFile(filepath.Join(dir, "ai-tasks-app.tfplan.dot"))
-		require.NoError(t, err)
-
-		state, err := terraform.ConvertState(ctx, []*tfjson.StateModule{tfPlan.PlannedValues.RootModule, tfPlan.PriorState.Values.RootModule}, string(tfPlanGraph), logger)
-		require.NotNil(t, state)
-		require.NoError(t, err)
-		require.True(t, state.HasAITasks)
-		require.Len(t, state.AITasks, 1)
-
-		sidebarApp := state.AITasks[0].GetSidebarApp()
-		require.NotNil(t, sidebarApp)
-		require.Equal(t, "5ece4674-dd35-4f16-88c8-82e40e72e2fd", sidebarApp.GetId())
-		require.Equal(t, "5ece4674-dd35-4f16-88c8-82e40e72e2fd", state.AITasks[0].AppId)
-	})
 }
 
 func TestExternalAgents(t *testing.T) {

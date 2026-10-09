@@ -1,11 +1,9 @@
 import { InfoIcon } from "lucide-react";
-import type { ComponentProps, FC, PropsWithChildren } from "react";
 import type { AIBridgeSession } from "#/api/typesGenerated";
 import {
 	PaginationContainer,
 	type PaginationResult,
 } from "#/components/PaginationWidget/PaginationContainer";
-import { PaywallAIGovernance } from "#/components/Paywall/PaywallAIGovernance";
 import {
 	Table,
 	TableBody,
@@ -21,26 +19,35 @@ import {
 	TooltipProvider,
 	TooltipTrigger,
 } from "#/components/Tooltip/Tooltip";
+import { PremiumPaywallAIGovernance } from "#/modules/paywall/PremiumPaywallAIGovernance";
 import { DATE_FORMAT, formatDateTime } from "#/utils/time";
 import { AIBridgeSetupAlert } from "../AIBridgeSetupAlert";
 import { ListSessionsFilter } from "./ListSessionsFilter";
 import { ListSessionsRow } from "./ListSessionsRow";
 
-interface ListSessionsPageViewProps {
+type ListSessionsPageViewProps = {
 	isLoading: boolean;
 	isFetching: boolean;
 	isAISessionsEntitled: boolean;
 	isAISessionsEnabled: boolean;
 	sessions?: readonly AIBridgeSession[];
 	sessionsQuery: PaginationResult;
-	filterProps: ComponentProps<typeof ListSessionsFilter>;
+	filterProps: React.ComponentProps<typeof ListSessionsFilter>;
 	onSessionRowClick?: (sessionId: string) => void;
-}
+};
 
-const ThreadTooltip: FC<PropsWithChildren> = ({ children }) => (
+const ThreadTooltip: React.FC<React.PropsWithChildren> = ({ children }) => (
 	<TooltipProvider>
 		<Tooltip>
-			<TooltipTrigger asChild>{children}</TooltipTrigger>
+			<TooltipTrigger asChild>
+				<button
+					type="button"
+					aria-label="About threads"
+					className="m-0 flex items-center border-0 bg-transparent p-0 text-inherit rounded-sm focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-content-link"
+				>
+					{children}
+				</button>
+			</TooltipTrigger>
 			<TooltipContent
 				side="top"
 				align="end"
@@ -53,7 +60,7 @@ const ThreadTooltip: FC<PropsWithChildren> = ({ children }) => (
 	</TooltipProvider>
 );
 
-export const ListSessionsPageView: FC<ListSessionsPageViewProps> = ({
+export const ListSessionsPageView: React.FC<ListSessionsPageViewProps> = ({
 	isLoading,
 	isFetching,
 	isAISessionsEntitled,
@@ -64,7 +71,12 @@ export const ListSessionsPageView: FC<ListSessionsPageViewProps> = ({
 	onSessionRowClick,
 }) => {
 	if (!isAISessionsEntitled) {
-		return <PaywallAIGovernance />;
+		return (
+			<PremiumPaywallAIGovernance
+				variant="sessions"
+				source="aibridge_sessions"
+			/>
+		);
 	}
 
 	if (!isAISessionsEnabled) {
@@ -86,6 +98,7 @@ export const ListSessionsPageView: FC<ListSessionsPageViewProps> = ({
 							<TableHead className="text-nowrap">Provider</TableHead>
 							<TableHead className="text-nowrap">Client</TableHead>
 							<TableHead className="text-nowrap">In/Out Tokens</TableHead>
+							<TableHead className="text-nowrap">Network Requests</TableHead>
 							<TableHead className="flex items-center flex-nowrap gap-1">
 								Threads
 								<ThreadTooltip>

@@ -7,14 +7,18 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"syscall"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/spf13/afero"
 
 	"cdr.dev/slog/v3"
+	"github.com/coder/coder/v2/agent/agentchat"
 	"github.com/coder/coder/v2/agent/agentexec"
 	"github.com/coder/coder/v2/agent/agentgit"
+	"github.com/coder/coder/v2/agent/usershell"
 	"github.com/coder/coder/v2/coderd/httpapi"
 	"github.com/coder/coder/v2/codersdk"
 	"github.com/coder/coder/v2/codersdk/workspacesdk"
@@ -35,10 +39,10 @@ type API struct {
 }
 
 // NewAPI creates a new process API handler.
-func NewAPI(logger slog.Logger, execer agentexec.Execer, updateEnv func(current []string) (updated []string, err error), pathStore *agentgit.PathStore, workingDir func() string) *API {
+func NewAPI(logger slog.Logger, execer agentexec.Execer, fs afero.Fs, pathStore *agentgit.PathStore, envInfo usershell.EnvInfoer, updateEnv func(current []string) (updated []string, err error), workingDir func() string) *API {
 	return &API{
 		logger:    logger,
-		manager:   newManager(logger, execer, updateEnv, workingDir),
+		manager:   newManager(logger, execer, fs, envInfo, updateEnv, workingDir),
 		pathStore: pathStore,
 	}
 }
@@ -78,13 +82,20 @@ func (api *API) handleStartProcess(rw http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-
-	var chatID string
-	if id, _, ok := agentgit.ExtractChatContext(r); ok {
-		chatID = id.String()
+	if req.Background && req.TimeoutMs != 0 {
+		httpapi.Write(ctx, rw, http.StatusBadRequest, codersdk.Response{
+			Message: "Background processes cannot have timeout_ms.",
+		})
+		return
 	}
 
-	proc, err := api.manager.start(req, chatID)
+	chat, _ := agentchat.FromContext(ctx)
+	id := chat.ToolCallID
+	if id == uuid.Nil {
+		id = uuid.New()
+	}
+
+	proc, err := api.manager.start(req, chat.ID, id.String())
 	if err != nil {
 		httpapi.Write(ctx, rw, http.StatusInternalServerError, codersdk.Response{
 			Message: "Failed to start process.",
@@ -97,8 +108,8 @@ func (api *API) handleStartProcess(rw http.ResponseWriter, r *http.Request) {
 	// file changes made by the command are visible in the scan.
 	// If a workdir is provided, track it as a path as well.
 	if api.pathStore != nil {
-		if chatID, ancestorIDs, ok := agentgit.ExtractChatContext(r); ok {
-			allIDs := append([]uuid.UUID{chatID}, ancestorIDs...)
+		if chatContext, ok := agentchat.FromContext(ctx); ok {
+			allIDs := append([]uuid.UUID{chatContext.ID}, chatContext.AncestorIDs...)
 			go func() {
 				<-proc.done
 				if req.WorkDir != "" {
@@ -116,16 +127,12 @@ func (api *API) handleStartProcess(rw http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleListProcesses lists all tracked processes.
+// handleListProcesses lists the processes of the requester's chat.
 func (api *API) handleListProcesses(rw http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	var chatID string
-	if id, _, ok := agentgit.ExtractChatContext(r); ok {
-		chatID = id.String()
-	}
-
-	infos := api.manager.list(chatID)
+	chat, _ := agentchat.FromContext(ctx)
+	infos := api.manager.list(chat.ID)
 
 	// Sort by running state (running first), then by started_at
 	// descending so the most recent processes appear first.
@@ -150,26 +157,16 @@ func (api *API) handleListProcesses(rw http.ResponseWriter, r *http.Request) {
 // handleProcessOutput returns the output of a process.
 func (api *API) handleProcessOutput(rw http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	logger := api.logger.With(agentchat.Fields(ctx)...)
 
 	id := chi.URLParam(r, "id")
-	proc, ok := api.manager.get(id)
+	chat, _ := agentchat.FromContext(ctx)
+	proc, ok := api.manager.get(chat.ID, id)
 	if !ok {
 		httpapi.Write(ctx, rw, http.StatusNotFound, codersdk.Response{
 			Message: fmt.Sprintf("Process %q not found.", id),
 		})
 		return
-	}
-
-	// Enforce chat ID isolation. If the request carries
-	// a chat context, only allow access to processes
-	// belonging to that chat.
-	if chatID, _, ok := agentgit.ExtractChatContext(r); ok {
-		if proc.chatID != "" && proc.chatID != chatID.String() {
-			httpapi.Write(ctx, rw, http.StatusNotFound, codersdk.Response{
-				Message: fmt.Sprintf("Process %q not found.", id),
-			})
-			return
-		}
 	}
 
 	// Check for blocking mode via query params.
@@ -184,29 +181,60 @@ func (api *API) handleProcessOutput(rw http.ResponseWriter, r *http.Request) {
 		// Add headroom beyond the wait timeout so there's time to
 		// write the response after the blocking wait completes.
 		if err := rc.SetWriteDeadline(time.Now().Add(maxWaitDuration + 30*time.Second)); err != nil {
-			api.logger.Error(ctx, "extend write deadline for blocking process output",
+			logger.Error(ctx, "extend write deadline for blocking process output",
 				slog.Error(err),
 			)
 		}
 
 		// Cap the wait at maxWaitDuration regardless of
 		// client-supplied timeout.
-		waitCtx, waitCancel := context.WithTimeout(ctx, maxWaitDuration)
+		wait := maxWaitDuration
+		if r.URL.Query().Get("timeout_from_start_process") == "true" && !proc.waitUntil.IsZero() {
+			wait = min(wait, api.manager.clock.Until(proc.waitUntil))
+		}
+		waitCtx, waitCancel := context.WithCancel(ctx)
 		defer waitCancel()
+		defer api.manager.clock.AfterFunc(wait, waitCancel).Stop()
 
 		_ = proc.waitForOutput(waitCtx)
 		// Fall through to read snapshot below.
 	}
 
-	output, truncated := proc.output()
+	// Read info before output to avoid a TOCTOU race. The exit
+	// goroutine completes all buffer writes (cmd.Wait) before
+	// setting running=false, so if info reports the process as
+	// exited, the subsequent output read is guaranteed to reflect
+	// the final buffer state.
 	info := proc.info()
+	output, truncated := proc.output()
 
 	httpapi.Write(ctx, rw, http.StatusOK, workspacesdk.ProcessOutputResponse{
 		Output:    output,
 		Truncated: truncated,
 		Running:   info.Running,
 		ExitCode:  info.ExitCode,
+		Command:   info.Command,
+		TimedOut:  info.Running && !proc.waitUntil.IsZero() && !api.manager.clock.Now().Before(proc.waitUntil),
+		Canceled:  proc.canceled.Load(),
 	})
+}
+
+// CancelToolCall cancels chat chatID's running process for tool call id:
+// it marks the process canceled and sends it SIGKILL.
+func (api *API) CancelToolCall(ctx context.Context, chatID, id uuid.UUID) {
+	proc, ok := api.manager.get(chatID, id.String())
+	if !ok {
+		return
+	}
+	proc.mu.Lock()
+	defer proc.mu.Unlock()
+	if !proc.running {
+		return
+	}
+	proc.canceled.Store(true)
+	if err := signalProcess(proc.cmd.Process, syscall.SIGKILL); err != nil {
+		api.logger.Warn(ctx, "kill canceled tool call process", slog.F("process_id", id), slog.Error(err))
+	}
 }
 
 // handleSignalProcess sends a signal to a running process.
@@ -214,17 +242,6 @@ func (api *API) handleSignalProcess(rw http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	id := chi.URLParam(r, "id")
-
-	// Enforce chat ID isolation.
-	if chatID, _, ok := agentgit.ExtractChatContext(r); ok {
-		proc, procOK := api.manager.get(id)
-		if procOK && proc.chatID != "" && proc.chatID != chatID.String() {
-			httpapi.Write(ctx, rw, http.StatusNotFound, codersdk.Response{
-				Message: fmt.Sprintf("Process %q not found.", id),
-			})
-			return
-		}
-	}
 
 	var req workspacesdk.SignalProcessRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -252,7 +269,8 @@ func (api *API) handleSignalProcess(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := api.manager.signal(id, req.Signal); err != nil {
+	chat, _ := agentchat.FromContext(ctx)
+	if err := api.manager.signal(chat.ID, id, req.Signal); err != nil {
 		switch {
 		case errors.Is(err, errProcessNotFound):
 			httpapi.Write(ctx, rw, http.StatusNotFound, codersdk.Response{

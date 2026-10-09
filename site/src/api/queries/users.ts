@@ -5,6 +5,7 @@ import type {
 	UseQueryOptions,
 } from "react-query";
 import { API } from "#/api/api";
+import { isApiError } from "#/api/errors";
 import type {
 	AuthorizationRequest,
 	GenerateAPIKeyResponse,
@@ -15,7 +16,10 @@ import type {
 	UpdateUserPasswordRequest,
 	UpdateUserPreferenceSettingsRequest,
 	UpdateUserProfileRequest,
+	UpsertUserAIBudgetOverrideRequest,
 	User,
+	UserAIBudgetOverride,
+	UserAISpendStatus,
 	UserAppearanceSettings,
 	UserPreferenceSettings,
 	UsersRequest,
@@ -27,10 +31,13 @@ import {
 import type { UsePaginatedQueryOptions } from "#/hooks/usePaginatedQuery";
 import { prepareQuery } from "#/utils/filters";
 import { getAuthorizationKey } from "./authCheck";
+import { invalidateGroupMembersAISpend } from "./groups";
 import { cachedQuery } from "./util";
 
+export const usersQueryKey = ["users"] as const;
+
 export function usersKey(req: UsersRequest) {
-	return ["users", req] as const;
+	return [...usersQueryKey, req] as const;
 }
 
 export function paginatedUsers(
@@ -85,7 +92,7 @@ export const createUser = (queryClient: QueryClient) => {
 	return {
 		mutationFn: API.createUser,
 		onSuccess: async () => {
-			await queryClient.invalidateQueries({ queryKey: ["users"] });
+			await queryClient.invalidateQueries({ queryKey: usersQueryKey });
 		},
 	};
 };
@@ -100,7 +107,7 @@ export const suspendUser = (queryClient: QueryClient) => {
 	return {
 		mutationFn: API.suspendUser,
 		onSuccess: async () => {
-			await queryClient.invalidateQueries({ queryKey: ["users"] });
+			await queryClient.invalidateQueries({ queryKey: usersQueryKey });
 		},
 	};
 };
@@ -109,7 +116,7 @@ export const activateUser = (queryClient: QueryClient) => {
 	return {
 		mutationFn: API.activateUser,
 		onSuccess: async () => {
-			await queryClient.invalidateQueries({ queryKey: ["users"] });
+			await queryClient.invalidateQueries({ queryKey: usersQueryKey });
 		},
 	};
 };
@@ -118,7 +125,7 @@ export const deleteUser = (queryClient: QueryClient) => {
 	return {
 		mutationFn: API.deleteUser,
 		onSuccess: async () => {
-			await queryClient.invalidateQueries({ queryKey: ["users"] });
+			await queryClient.invalidateQueries({ queryKey: usersQueryKey });
 		},
 	};
 };
@@ -128,7 +135,7 @@ export const updateRoles = (queryClient: QueryClient) => {
 		mutationFn: ({ userId, roles }: { userId: string; roles: string[] }) =>
 			API.updateUserRoles(roles, userId),
 		onSuccess: async () => {
-			await queryClient.invalidateQueries({ queryKey: ["users"] });
+			await queryClient.invalidateQueries({ queryKey: usersQueryKey });
 		},
 	};
 };
@@ -154,12 +161,85 @@ export const me = (metadata: MetadataState<User>) => {
 	});
 };
 
-const userKey = (usernameOrId: string) => ["user", usernameOrId];
+export const meAISpendKey = [...meKey, "aiSpend"] as const;
+
+export const meAISpend = (): UseQueryOptions<UserAISpendStatus> => {
+	return {
+		queryKey: meAISpendKey,
+		queryFn: () => API.getUserAISpend(),
+		// Polled so the avatar border reflects spend without opening the dropdown.
+		refetchInterval: 60_000,
+	};
+};
+
+export const userKey = (usernameOrId: string) =>
+	["user", usernameOrId] as const;
 
 export const user = (usernameOrId: string) => {
 	return {
 		queryKey: userKey(usernameOrId),
 		queryFn: () => API.getUser(usernameOrId),
+	};
+};
+
+export const getUserAIBudgetOverrideQueryKey = (userId: string) => [
+	"user",
+	userId,
+	"aiBudgetOverride",
+];
+
+export const userAIBudgetOverride = (
+	userId: string,
+): UseQueryOptions<UserAIBudgetOverride | null> => {
+	return {
+		queryKey: getUserAIBudgetOverrideQueryKey(userId),
+		queryFn: async () => {
+			try {
+				return await API.getUserAIBudgetOverride(userId);
+			} catch (error) {
+				if (isApiError(error) && error.response.status === 404) {
+					return null;
+				}
+
+				throw error;
+			}
+		},
+	};
+};
+
+const invalidateUserAIBudgetQueries = (
+	queryClient: QueryClient,
+	userId: string,
+) =>
+	Promise.all([
+		queryClient.invalidateQueries({
+			queryKey: getUserAIBudgetOverrideQueryKey(userId),
+		}),
+		invalidateGroupMembersAISpend(queryClient, userId),
+	]);
+
+export const saveUserAIBudgetOverride = (
+	queryClient: QueryClient,
+	userId: string,
+) => {
+	return {
+		mutationFn: (request: UpsertUserAIBudgetOverrideRequest) =>
+			API.upsertUserAIBudgetOverride(userId, request),
+		onSuccess: async () => {
+			await invalidateUserAIBudgetQueries(queryClient, userId);
+		},
+	};
+};
+
+export const deleteUserAIBudgetOverride = (
+	queryClient: QueryClient,
+	userId: string,
+) => {
+	return {
+		mutationFn: () => API.deleteUserAIBudgetOverride(userId),
+		onSuccess: async () => {
+			await invalidateUserAIBudgetQueries(queryClient, userId);
+		},
 	};
 };
 
@@ -250,6 +330,9 @@ export const logout = (queryClient: QueryClient): MutationOptions => {
 			 * should be moved.
 			 */
 			defaultMetadataManager.clearMetadataByKey("user");
+			// Experiments are decided per user, so the embedded list must not
+			// seed the next user's session.
+			defaultMetadataManager.clearMetadataByKey("experiments");
 			queryClient.removeQueries();
 		},
 	};
@@ -262,7 +345,11 @@ export const updateProfile = (userId: string) => {
 	};
 };
 
-const myAppearanceKey = ["me", "appearance"];
+export const myAppearanceKey = ["me", "appearance"] as const;
+
+type AppearanceMutationContext = {
+	previousAppearanceSettings: UserAppearanceSettings | undefined;
+};
 
 export const appearanceSettings = (
 	metadata: MetadataState<UserAppearanceSettings>,
@@ -280,33 +367,51 @@ export const updateAppearanceSettings = (
 	UserAppearanceSettings,
 	unknown,
 	UpdateUserAppearanceSettingsRequest,
-	unknown
+	AppearanceMutationContext
 > => {
 	return {
 		mutationFn: (req) => API.updateAppearanceSettings(req),
 		onMutate: async (patch) => {
+			await queryClient.cancelQueries({ queryKey: myAppearanceKey });
+			const previousAppearanceSettings =
+				queryClient.getQueryData<UserAppearanceSettings>(myAppearanceKey);
+
 			// Mutate the `queryClient` optimistically to make the theme switcher
 			// more responsive.
-			queryClient.setQueryData(myAppearanceKey, {
+			queryClient.setQueryData<UserAppearanceSettings>(myAppearanceKey, {
 				theme_preference: patch.theme_preference,
+				theme_mode: patch.theme_mode,
+				theme_light: patch.theme_light,
+				theme_dark: patch.theme_dark,
 				terminal_font: patch.terminal_font,
 			});
+			return { previousAppearanceSettings };
 		},
-		onSuccess: async () =>
-			// Could technically invalidate more, but we only ever care about the
-			// `theme_preference` for the `me` query.
-			await queryClient.invalidateQueries({
-				queryKey: myAppearanceKey,
-			}),
+		onError: (_error, _patch, context) => {
+			if (context?.previousAppearanceSettings) {
+				queryClient.setQueryData<UserAppearanceSettings>(
+					myAppearanceKey,
+					context.previousAppearanceSettings,
+				);
+				return;
+			}
+			queryClient.removeQueries({ queryKey: myAppearanceKey, exact: true });
+		},
+		onSuccess: (settings, patch) => {
+			queryClient.setQueryData<UserAppearanceSettings>(myAppearanceKey, {
+				...patch,
+				...settings,
+			});
+		},
 	};
 };
 
-const myPreferencesKey = ["me", "preferences"];
+export const preferenceSettingsKey = ["me", "preferences"] as const;
 
 export const preferenceSettings =
 	(): UseQueryOptions<UserPreferenceSettings> => {
 		return {
-			queryKey: myPreferencesKey,
+			queryKey: preferenceSettingsKey,
 			queryFn: () => API.getUserPreferenceSettings(),
 		};
 	};
@@ -323,7 +428,7 @@ export const updatePreferenceSettings = (
 		mutationFn: (req) => API.updateUserPreferenceSettings(req),
 		onSuccess: async () =>
 			await queryClient.invalidateQueries({
-				queryKey: myPreferencesKey,
+				queryKey: preferenceSettingsKey,
 			}),
 	};
 };

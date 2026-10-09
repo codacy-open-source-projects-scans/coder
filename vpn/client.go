@@ -32,6 +32,7 @@ type Conn interface {
 	Ping(ctx context.Context, agentID uuid.UUID) (time.Duration, bool, *ipnstate.PingResult, error)
 	Node() *tailnet.Node
 	DERPMap() *tailcfg.DERPMap
+	Rebind()
 	Close() error
 }
 
@@ -106,7 +107,7 @@ func (*client) NewConn(initCtx context.Context, serverURL *url.URL, token string
 	sdk.SetSessionToken(token)
 	sdk.HTTPClient.Transport = &codersdk.HeaderTransport{
 		Transport: http.DefaultTransport,
-		Header:    headers.Clone(),
+		Provider:  codersdk.StaticHeaderProvider{Header: headers.Clone()},
 	}
 
 	// New context, separate from initCtx. We don't want to cancel the

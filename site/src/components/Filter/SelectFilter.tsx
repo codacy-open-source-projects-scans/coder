@@ -1,4 +1,4 @@
-import type { FC, ReactNode } from "react";
+import { cn } from "cn";
 import {
 	Combobox,
 	ComboboxButton,
@@ -9,12 +9,11 @@ import {
 	ComboboxTrigger,
 } from "#/components/Combobox/Combobox";
 import { Spinner } from "#/components/Spinner/Spinner";
-import { cn } from "#/utils/cn";
 
 const BASE_WIDTH = 200;
 
 export type SelectFilterOption = {
-	startIcon?: ReactNode;
+	startIcon?: React.ReactNode;
 	label: string;
 	value: string;
 };
@@ -31,10 +30,10 @@ type SelectFilterProps = {
 	onSelect: (option: SelectFilterOption | undefined) => void;
 	width?: number;
 	// SelectFilterSearch element
-	selectFilterSearch?: ReactNode;
+	selectFilterSearch?: React.ReactNode;
 };
 
-export const SelectFilter: FC<SelectFilterProps> = ({
+export const SelectFilter: React.FC<SelectFilterProps> = ({
 	label,
 	options,
 	selectedOption,
@@ -55,7 +54,7 @@ export const SelectFilter: FC<SelectFilterProps> = ({
 				<ComboboxButton
 					selectedOption={selectedOption}
 					placeholder={placeholder}
-					className="flex-shrink-0 grow"
+					className="shrink-0 grow"
 					style={{ flexBasis: width }}
 					aria-label={label}
 				/>
@@ -75,16 +74,11 @@ export const SelectFilter: FC<SelectFilterProps> = ({
 				shouldFilter={false}
 			>
 				{selectFilterSearch}
-				<ComboboxList
-					className={cn(
-						!selectFilterSearch && "border-t-0",
-						"border-surface-quaternary",
-					)}
-				>
+				<ComboboxList className={cn(!selectFilterSearch && "border-t-0")}>
 					{options !== undefined ? (
 						options.map((option) => (
 							<ComboboxItem
-								className="px-4 data-[selected=true]:bg-surface-tertiary font-normal gap-4"
+								className="px-4 font-normal gap-4"
 								key={option.value}
 								value={option.value}
 								keywords={[option.label]}

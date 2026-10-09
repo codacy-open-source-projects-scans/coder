@@ -16,10 +16,11 @@ import (
 	"golang.org/x/xerrors"
 
 	"cdr.dev/slog/v3"
-	"github.com/coder/coder/v2/aibridge/config"
-	aibcontext "github.com/coder/coder/v2/aibridge/context"
+	"github.com/coder/coder/v2/aibridge/credential"
 	"github.com/coder/coder/v2/aibridge/intercept"
+	"github.com/coder/coder/v2/aibridge/intercept/awssig"
 	"github.com/coder/coder/v2/aibridge/intercept/eventstream"
+	"github.com/coder/coder/v2/aibridge/keypool"
 	"github.com/coder/coder/v2/aibridge/mcp"
 	"github.com/coder/coder/v2/aibridge/recorder"
 	"github.com/coder/coder/v2/aibridge/tracing"
@@ -37,23 +38,44 @@ type StreamingResponsesInterceptor struct {
 func NewStreamingInterceptor(
 	id uuid.UUID,
 	reqPayload RequestPayload,
-	providerName string,
-	cfg config.OpenAI,
+	cfg intercept.Config,
+	cred credential.Credential,
 	clientHeaders http.Header,
-	authHeaderName string,
 	tracer trace.Tracer,
-	cred intercept.CredentialInfo,
+) *StreamingResponsesInterceptor {
+	return buildStreamingInterceptor(id, reqPayload, cfg, cred, nil, clientHeaders, tracer)
+}
+
+func NewBedrockStreamingInterceptor(
+	id uuid.UUID,
+	reqPayload RequestPayload,
+	cfg intercept.Config,
+	cred credential.Credential,
+	bedrockMantle *awssig.MantleConfig,
+	clientHeaders http.Header,
+	tracer trace.Tracer,
+) *StreamingResponsesInterceptor {
+	return buildStreamingInterceptor(id, reqPayload, cfg, cred, bedrockMantle, clientHeaders, tracer)
+}
+
+func buildStreamingInterceptor(
+	id uuid.UUID,
+	reqPayload RequestPayload,
+	cfg intercept.Config,
+	cred credential.Credential,
+	bedrockMantle *awssig.MantleConfig,
+	clientHeaders http.Header,
+	tracer trace.Tracer,
 ) *StreamingResponsesInterceptor {
 	return &StreamingResponsesInterceptor{
 		responsesInterceptionBase: responsesInterceptionBase{
-			id:             id,
-			providerName:   providerName,
-			reqPayload:     reqPayload,
-			cfg:            cfg,
-			clientHeaders:  clientHeaders,
-			authHeaderName: authHeaderName,
-			tracer:         tracer,
-			credential:     cred,
+			id:            id,
+			reqPayload:    reqPayload,
+			cfg:           cfg,
+			cred:          cred,
+			bedrockMantle: bedrockMantle,
+			clientHeaders: clientHeaders,
+			tracer:        tracer,
 		},
 	}
 }
@@ -67,7 +89,7 @@ func (*StreamingResponsesInterceptor) Streaming() bool {
 }
 
 func (i *StreamingResponsesInterceptor) TraceAttributes(r *http.Request) []attribute.KeyValue {
-	return i.responsesInterceptionBase.baseTraceAttributes(r, true)
+	return i.baseTraceAttributes(r, true)
 }
 
 func (i *StreamingResponsesInterceptor) ProcessRequest(w http.ResponseWriter, r *http.Request) (outErr error) {
@@ -76,13 +98,18 @@ func (i *StreamingResponsesInterceptor) ProcessRequest(w http.ResponseWriter, r 
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+
 	r = r.WithContext(ctx) // Rewire context for SSE cancellation.
 
 	if err := i.validateRequest(ctx, w); err != nil {
 		return err
 	}
 
-	i.injectTools()
+	// Only injected tools let the inner agentic loop rerun upstream, which
+	// requires holding back everything but the final response so response.id
+	// stays consistent. Otherwise events are relayed as they arrive: buffering
+	// starves the client of headers and bytes until upstream completes.
+	toolsInjected := i.injectTools()
 
 	events := eventstream.NewEventStream(ctx, i.logger.Named("sse-sender"), nil, quartz.NewReal())
 	go events.Start(w, r)
@@ -97,47 +124,109 @@ func (i *StreamingResponsesInterceptor) ProcessRequest(w http.ResponseWriter, r 
 	var completedResponse *responses.Response
 	var innerLoopErr error
 	var streamErr error
+	var relayed bool
 
 	prompt, promptFound, err := i.reqPayload.lastUserPrompt(ctx, i.logger)
 	if err != nil {
 		i.logger.Warn(ctx, "failed to get user prompt", slog.Error(err))
 	}
 	shouldLoop := true
-	srv := i.newResponsesService()
+	srv := i.newResponsesService(ctx)
+
+	// Sum the key attempts across all iterations and record once when the
+	// interception completes.
+	var totalKeyAttempts int
+	if cp, ok := credential.AsCentralizedPool(i.cred); ok {
+		defer func() {
+			cp.Pool.RecordAttempts(totalKeyAttempts)
+		}()
+	}
 
 	for shouldLoop {
 		shouldLoop = false
 
-		respCopy = responseCopier{}
-		opts := i.requestOptions(&respCopy)
-
-		// TODO(ssncferreira): inject actor headers directly in the client-header
-		//   middleware instead of using SDK options.
-		if actor := aibcontext.ActorFromContext(r.Context()); actor != nil && i.cfg.SendActorHeaders {
-			opts = append(opts, intercept.ActorHeadersAsOpenAIOpts(actor)...)
+		// A pool credential advances its failover walker. An iteration is an
+		// agentic continuation or a failover retry after the previous key was
+		// marked. BYOK has no pool and runs as a single attempt.
+		var walker *keypool.Walker
+		cp, isPool := credential.AsCentralizedPool(i.cred)
+		if isPool {
+			walker = cp.Pool.Walker()
 		}
-		stream := i.newStream(ctx, srv, opts)
+
+		// Failover sub-loop: try keys until a stream starts
+		// successfully or we hit a non-recoverable error.
+		var stream *ssestream.Stream[responses.ResponseStreamEventUnion]
+		var startErr error
+		for {
+			respCopy = responseCopier{}
+			opts := i.requestOptions(&respCopy)
+
+			var currentPoolKey *keypool.Key
+			if isPool && walker != nil {
+				key, keyPoolErr := cp.NextKey(walker)
+				if keyPoolErr != nil {
+					// Pool exhausted: write the error directly. In
+					// agentic mode the inner loop buffers events
+					// instead of streaming them downstream, so the
+					// SSE connection has not been opened yet.
+					totalKeyAttempts += walker.Attempts()
+					i.writeUpstreamError(w, intercept.ResponseErrorFromKeyPool(keyPoolErr))
+					return xerrors.Errorf("key pool exhausted: %w", keyPoolErr)
+				}
+
+				i.logger.Debug(credential.WithCredentialInfo(ctx, i.cred), "using centralized api key")
+				currentPoolKey = key
+				opts = append(opts,
+					option.WithAPIKey(key.Value()),
+					// Disable SDK retries because the failover
+					// loop handles retries via key rotation.
+					option.WithMaxRetries(0),
+				)
+			}
+
+			stream = i.newStream(ctx, srv, opts)
+			if upstreamErr := stream.Err(); upstreamErr != nil {
+				// Pre-stream failure of this attempt. For
+				// centralized requests, mark the key and
+				// retry with the next one.
+				if currentPoolKey != nil && i.markKeyOnError(ctx, currentPoolKey, upstreamErr) {
+					stream.Close()
+					continue
+				}
+				// Non-key error: stop trying and let the
+				// existing handling below report it.
+				startErr = upstreamErr
+				break
+			}
+			// Stream started successfully: commit to this key.
+			break
+		}
+
+		if isPool {
+			totalKeyAttempts += walker.Attempts()
+		}
 
 		// func scope to defer steam.Close()
 		err := func() error {
 			defer stream.Close()
 
-			if upstreamErr := stream.Err(); upstreamErr != nil {
+			if startErr != nil {
 				// events stream should never be initialized
 				if events.IsStreaming() {
 					i.logger.Warn(ctx, "event stream was initialized when no response was received from upstream")
-					return upstreamErr
+					return startErr
 				}
 
 				// no response received from upstream (eg. client/connection error), return custom error
 				if !respCopy.responseReceived.Load() {
-					i.sendCustomErr(ctx, w, http.StatusInternalServerError, upstreamErr)
-					return upstreamErr
+					i.sendCustomErr(ctx, w, http.StatusInternalServerError, startErr)
+					return startErr
 				}
 
 				// forward received response as-is
 				err := respCopy.forwardResp(w)
-				return errors.Join(upstreamErr, err)
+				return errors.Join(startErr, err)
 			}
 
 			for stream.Next() {
@@ -157,16 +246,12 @@ func (i *StreamingResponsesInterceptor) ProcessRequest(w http.ResponseWriter, r 
 					completedResponse = &completedEvent.Response
 				}
 
-				// If no MCP proxy is provided then no tools are injected.
-				// Inner loop will never iterate more than once, so events can be forwarded as soon as received.
-				//
-				// Otherwise inner loop could iterate. Only last response should be forwarded.
-				// This is needed to keep consistency between response.id and response.previous_response_id fields.
-				if i.mcpProxy == nil {
+				if !toolsInjected {
 					if err := events.Send(ctx, respCopy.buff.readDelta()); err != nil {
 						err = xerrors.Errorf("failed to relay chunk: %w", err)
 						return err
 					}
+					relayed = true
 				}
 			}
 
@@ -177,16 +262,21 @@ func (i *StreamingResponsesInterceptor) ProcessRequest(w http.ResponseWriter, r 
 			return err
 		}
 
-		if i.mcpProxy != nil && completedResponse != nil {
+		// Record token usage for every iteration, whether or not tools are
+		// injected. Usage is reported by upstream independently of the MCP
+		// proxy, so gating this on the proxy drops usage entirely for
+		// deployments that run without one.
+		if completedResponse != nil {
+			i.recordTokenUsage(ctx, completedResponse)
+		}
+
+		if toolsInjected && completedResponse != nil {
 			pending := i.getPendingInjectedToolCalls(completedResponse)
 			shouldLoop, innerLoopErr = i.handleInnerAgenticLoop(ctx, pending, completedResponse)
 			if innerLoopErr != nil {
 				i.sendCustomErr(ctx, w, http.StatusInternalServerError, innerLoopErr)
 				shouldLoop = false
 			}
-
-			// Record token usage for each inner loop iteration
-			i.recordTokenUsage(ctx, completedResponse)
 		}
 
 		i.recordModelThoughts(ctx, completedResponse)
@@ -205,7 +295,14 @@ func (i *StreamingResponsesInterceptor) ProcessRequest(w http.ResponseWriter, r 
 
 	b, err := respCopy.readAll()
 	if err != nil {
-		return xerrors.Errorf("failed to read response body: %w", err)
+		err = xerrors.Errorf("failed to read response body: %w", err)
+		// Returning without a response would let the server emit an empty 200.
+		// A queued payload commits the response to SSE before IsStreaming
+		// reports it, so decide from what this request relayed instead.
+		if !relayed {
+			i.sendCustomErr(ctx, w, http.StatusBadGateway, err)
+		}
+		return err
 	}
 
 	err = events.Send(ctx, b)

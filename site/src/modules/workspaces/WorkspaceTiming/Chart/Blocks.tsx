@@ -1,6 +1,6 @@
+import { cn } from "cn";
 import { EllipsisIcon } from "lucide-react";
-import { type FC, useEffect, useRef, useState } from "react";
-import { cn } from "#/utils/cn";
+import { useEffect, useRef, useState } from "react";
 
 const spaceBetweenBlocks = 4;
 const moreIconSize = 18;
@@ -10,11 +10,11 @@ type BlocksProps = {
 	count: number;
 };
 
-export const Blocks: FC<BlocksProps> = ({ count }) => {
+export const Blocks: React.FC<BlocksProps> = ({ count }) => {
 	const [availableWidth, setAvailableWidth] = useState<number>(0);
 	const blocksRef = useRef<HTMLDivElement>(null);
 
-	// Fix: When using useLayoutEffect, Chromatic fails to calculate the right width.
+	// Fix: When using useLayoutEffect, snapshot tests fail to calculate the right width.
 	useEffect(() => {
 		if (availableWidth || !blocksRef.current) {
 			return;

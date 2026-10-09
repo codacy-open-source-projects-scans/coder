@@ -1,13 +1,13 @@
-import type { FC, PropsWithChildren, ReactNode } from "react";
-import { cn } from "#/utils/cn";
+import { cn } from "cn";
+import type React from "react";
 
-interface PageHeaderProps {
-	actions?: ReactNode;
+type PageHeaderProps = {
+	actions?: React.ReactNode;
 	className?: string;
-	children?: ReactNode;
-}
+	children?: React.ReactNode;
+};
 
-export const PageHeader: FC<PageHeaderProps> = ({
+export const PageHeader: React.FC<PageHeaderProps> = ({
 	children,
 	actions,
 	className,
@@ -31,32 +31,61 @@ export const PageHeader: FC<PageHeaderProps> = ({
 	);
 };
 
-export const PageHeaderTitle: FC<PropsWithChildren> = ({ children }) => {
+type PageHeaderTitleProps = React.ComponentProps<"h1">;
+
+export const PageHeaderTitle: React.FC<PageHeaderTitleProps> = ({
+	children,
+	className,
+	...props
+}) => {
 	return (
-		<h1 className="text-3xl font-semibold m-0 flex items-center leading-snug">
+		<h1
+			className={cn(
+				"text-3xl font-semibold m-0 flex items-center leading-snug",
+				className,
+			)}
+			{...props}
+		>
 			{children}
 		</h1>
 	);
 };
 
-interface PageHeaderSubtitleProps {
-	children?: ReactNode;
-	condensed?: boolean;
-}
+type PageHeaderSubtitleProps = React.ComponentProps<"h2">;
 
-export const PageHeaderSubtitle: FC<PageHeaderSubtitleProps> = ({
+export const PageHeaderSubtitle: React.FC<PageHeaderSubtitleProps> = ({
 	children,
+	className,
+	...props
 }) => {
 	return (
-		<h2 className="text-sm text-content-secondary font-normal block m-0 leading-snug">
+		<h2
+			className={cn(
+				"text-sm text-content-secondary font-normal block m-0 leading-snug",
+				className,
+			)}
+			{...props}
+		>
 			{children}
 		</h2>
 	);
 };
 
-export const PageHeaderCaption: FC<PropsWithChildren> = ({ children }) => {
+type PageHeaderCaptionProps = React.ComponentProps<"span">;
+
+export const PageHeaderCaption: React.FC<PageHeaderCaptionProps> = ({
+	children,
+	className,
+	...props
+}) => {
 	return (
-		<span className="text-sm text-content-secondary font-medium uppercase tracking-widest">
+		<span
+			className={cn(
+				"text-sm text-content-secondary font-medium uppercase tracking-widest",
+				className,
+			)}
+			{...props}
+		>
 			{children}
 		</span>
 	);

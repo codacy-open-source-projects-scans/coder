@@ -8,7 +8,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/coder/coder/v2/coderd/coderdtest"
-	"github.com/coder/coder/v2/coderd/util/ptr"
 	"github.com/coder/coder/v2/codersdk"
 	"github.com/coder/coder/v2/provisioner/echo"
 	"github.com/coder/coder/v2/testutil"
@@ -63,7 +62,11 @@ func TestCompositeWorkspaceScopes(t *testing.T) {
 		})
 		require.NoError(t, err, "creating scoped token")
 
-		scoped := codersdk.New(adminClient.URL, codersdk.WithSessionToken(resp.Key))
+		scoped := codersdk.New(
+			adminClient.URL,
+			codersdk.WithSessionToken(resp.Key),
+			codersdk.WithHTTPClient(coderdtest.NewIsolatedHTTPClient(adminClient.URL)),
+		)
 		t.Cleanup(func() { scoped.HTTPClient.CloseIdleConnections() })
 		return scoped
 	}
@@ -115,7 +118,7 @@ func TestCompositeWorkspaceScopes(t *testing.T) {
 		// Update the workspace metadata (requires workspace:update). This goes
 		// through the PATCH /workspaces/{workspace} endpoint.
 		err = scoped.UpdateWorkspaceTTL(ctx, s.workspace.ID, codersdk.UpdateWorkspaceTTLRequest{
-			TTLMillis: ptr.Ref[int64]((time.Hour).Milliseconds()),
+			TTLMillis: new((time.Hour).Milliseconds()),
 		})
 		require.NoError(t, err, "updating workspace with coder:workspaces.operate scope")
 

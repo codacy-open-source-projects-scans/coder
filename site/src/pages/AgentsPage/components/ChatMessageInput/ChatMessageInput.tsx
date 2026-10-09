@@ -6,14 +6,17 @@ import { LexicalErrorBoundary } from "@lexical/react/LexicalErrorBoundary";
 import { HistoryPlugin } from "@lexical/react/LexicalHistoryPlugin";
 import { RichTextPlugin } from "@lexical/react/LexicalRichTextPlugin";
 import { mergeRegister } from "@lexical/utils";
+import { cn } from "cn";
 import {
 	$createParagraphNode,
 	$createTextNode,
+	$getNodeByKey,
 	$getRoot,
 	$getSelection,
 	$insertNodes,
 	$isParagraphNode,
 	$isRangeSelection,
+	$isTextNode,
 	COMMAND_PRIORITY_HIGH,
 	FORMAT_ELEMENT_COMMAND,
 	FORMAT_TEXT_COMMAND,
@@ -23,18 +26,26 @@ import {
 	PASTE_COMMAND,
 } from "lexical";
 import {
-	type FC,
 	useEffect,
 	useImperativeHandle,
 	useLayoutEffect,
 	useRef,
+	useState,
 } from "react";
-import { cn } from "#/utils/cn";
-import { isMobileViewport } from "#/utils/mobile";
+import { useQuery } from "react-query";
+import { userSkills } from "#/api/queries/userSkills";
+import type * as TypesGen from "#/api/typesGenerated";
+import { MODIFIER_AGENT_CHAT_SEND_SHORTCUT } from "../../utils/agentChatSendShortcut";
+import {
+	filterSkillsByQuery,
+	isPersonalSkillTriggerToken,
+} from "../../utils/personalSkills";
+import type { ChatSlashCommand } from "../../utils/slashCommands";
 import {
 	$createFileReferenceNode,
 	FileReferenceNode,
 } from "./FileReferenceNode";
+import { IOSBackspacePlugin } from "./iosBackspace";
 import {
 	createPasteFile,
 	getPasteDataTransfer,
@@ -42,10 +53,21 @@ import {
 	isLargePaste,
 	type PasteCommandEvent,
 } from "./pasteHelpers";
+import {
+	createCommandMenuItem,
+	createSkillMenuItem,
+	type SkillMenuItem,
+	type SkillMetadata,
+	SkillsTriggerMenu,
+} from "./SkillsTriggerMenu";
+import {
+	type ActiveSkillsTrigger,
+	SkillsTriggerPlugin,
+} from "./SkillsTriggerPlugin";
 
 // Blocks Cmd+B/I/U and element formatting shortcuts so the editor
 // stays plain-text only.
-const DisableFormattingPlugin: FC = function DisableFormattingPlugin() {
+const DisableFormattingPlugin: React.FC = function DisableFormattingPlugin() {
 	const [editor] = useLexicalComposerContext();
 
 	useEffect(() => {
@@ -125,8 +147,8 @@ function replacePlainTextInEditor(editor: LexicalEditor, text: string) {
 // Cmd/Ctrl+Shift+V ("paste and match style") is treated as an explicit
 // user intent to paste inline, so the large-paste-to-attachment
 // conversion is bypassed for that shortcut.
-const PasteSanitizationPlugin: FC<{
-	onFilePaste?: (file: File) => void;
+const PasteSanitizationPlugin: React.FC<{
+	onFilePaste?: (file: File) => boolean;
 	allowTextAttachmentPaste?: boolean;
 }> = function PasteSanitizationPlugin({
 	onFilePaste,
@@ -201,20 +223,25 @@ const PasteSanitizationPlugin: FC<{
 					}
 					// Native paste event (ClipboardEvent).
 
-					// Check for image files in the clipboard (e.g.
-					// pasted screenshots). Forward them to the parent
-					// via callback instead of inserting text.
+					// Check for files in the clipboard, such as pasted
+					// screenshots or archives. Forward all files to the
+					// parent, which routes each one to the attachment
+					// pipeline or a workspace upload by MIME type.
 					if (onFilePaste && dataTransfer?.files.length) {
-						const images = Array.from(dataTransfer.files).filter((f) =>
-							f.type.startsWith("image/"),
-						);
-						if (images.length > 0) {
-							event.preventDefault();
-							for (const file of images) {
-								onFilePaste(file);
+						let routed = false;
+						for (const file of Array.from(dataTransfer.files)) {
+							if (onFilePaste(file)) {
+								routed = true;
 							}
+						}
+						if (routed) {
+							event.preventDefault();
 							return true;
 						}
+						// Every file was refused (for example an archive
+						// pasted while workspace uploads are unavailable).
+						// Fall through so accompanying clipboard text still
+						// pastes.
 					}
 
 					const text = getPastedPlainText(event, dataTransfer);
@@ -222,7 +249,7 @@ const PasteSanitizationPlugin: FC<{
 
 					// Convert large pastes to file attachments, but
 					// only for normal Cmd+V. Cmd+Shift+V is the
-					// user’s explicit "paste inline" escape hatch.
+					// user's explicit "paste inline" escape hatch.
 					if (
 						!isPlainTextPaste &&
 						allowTextAttachmentPaste &&
@@ -256,21 +283,68 @@ const PasteSanitizationPlugin: FC<{
 	return null;
 };
 
-// Handles Enter key behavior: plain Enter submits via the onEnter
-// callback, Shift+Enter inserts a newline. On mobile viewports, Enter
-// always inserts a newline; users submit via the send button because
-// Shift+Enter is cumbersome on touch keyboards (CODAGT-210).
-const EnterKeyPlugin: FC<{ onEnter?: () => void }> = function EnterKeyPlugin({
-	onEnter,
-}) {
+// Lexical ignores paste events while the editor is not editable, so a
+// composer locked for a pending send would silently drop pasted files
+// that the picker and drop target still route through onFilePaste.
+const LockedFilePastePlugin: React.FC<{
+	onFilePaste: (file: File) => boolean;
+}> = function LockedFilePastePlugin({ onFilePaste }) {
+	const [editor] = useLexicalComposerContext();
+
+	useEffect(() => {
+		const handlePaste = (event: ClipboardEvent) => {
+			const files = event.clipboardData?.files;
+			if (editor.isEditable() || !files?.length) {
+				return;
+			}
+			event.preventDefault();
+			for (const file of Array.from(files)) {
+				onFilePaste(file);
+			}
+		};
+		return editor.registerRootListener((rootElement) => {
+			if (!rootElement) {
+				return;
+			}
+			rootElement.addEventListener("paste", handlePaste);
+			return () => rootElement.removeEventListener("paste", handlePaste);
+		});
+	}, [editor, onFilePaste]);
+
+	return null;
+};
+
+// Touch keyboards need plain Enter for newlines (CODAGT-210). Pointer
+// capability, not viewport width, keeps narrow desktop windows usable.
+// Cmd/Ctrl+Enter submits on either input type; Shift+Enter stays a newline.
+const EnterKeyPlugin: React.FC<{
+	onEnter?: () => void;
+	sendShortcut: TypesGen.AgentChatSendShortcut;
+}> = function EnterKeyPlugin({ onEnter, sendShortcut }) {
 	const [editor] = useLexicalComposerContext();
 
 	useEffect(() => {
 		return editor.registerCommand(
 			KEY_ENTER_COMMAND,
 			(event: KeyboardEvent | null) => {
-				if (event?.shiftKey || isMobileViewport()) {
-					return false;
+				const shouldInsertLineBreak =
+					event?.shiftKey ||
+					(!(event?.metaKey || event?.ctrlKey) &&
+						(window.matchMedia("(pointer: coarse)").matches ||
+							sendShortcut === MODIFIER_AGENT_CHAT_SEND_SHORTCUT));
+				if (shouldInsertLineBreak) {
+					event?.preventDefault();
+					editor.update(() => {
+						let selection = $getSelection();
+						if (!$isRangeSelection(selection)) {
+							$getRoot().selectEnd();
+							selection = $getSelection();
+						}
+						if ($isRangeSelection(selection)) {
+							selection.insertLineBreak();
+						}
+					});
+					return true;
 				}
 				if (onEnter) {
 					event?.preventDefault();
@@ -280,15 +354,15 @@ const EnterKeyPlugin: FC<{ onEnter?: () => void }> = function EnterKeyPlugin({
 			},
 			COMMAND_PRIORITY_HIGH,
 		);
-	}, [editor, onEnter]);
+	}, [editor, onEnter, sendShortcut]);
 
 	return null;
 };
 
 // Fires the onChange callback with the editor's plain-text content
 // on every update.
-const ContentChangePlugin: FC<{
-	onChange?: (
+const ContentChangePlugin: React.FC<{
+	onChange: (
 		content: string,
 		serializedEditorState: string,
 		hasFileReferences: boolean,
@@ -297,8 +371,6 @@ const ContentChangePlugin: FC<{
 	const [editor] = useLexicalComposerContext();
 
 	useEffect(() => {
-		if (!onChange) return;
-
 		return editor.registerUpdateListener(({ editorState }) => {
 			editorState.read(() => {
 				const root = $getRoot();
@@ -330,8 +402,8 @@ const ContentChangePlugin: FC<{
 // initialEditorState is provided (a serialized Lexical JSON string),
 // it restores the full editor state including file-reference chips.
 // Falls back to plain-text seeding via initialValue.
-const ValueSyncPlugin: FC<{
-	initialValue?: string;
+const ValueSyncPlugin: React.FC<{
+	initialValue: string;
 	initialEditorState?: string;
 }> = function ValueSyncPlugin({ initialValue, initialEditorState }) {
 	const [editor] = useLexicalComposerContext();
@@ -351,11 +423,11 @@ const ValueSyncPlugin: FC<{
 				editor.setEditorState(parsed);
 				return;
 			} catch {
-				// Malformed state — fall through to plain-text path.
+				// Malformed state, fall through to plain-text path.
 			}
 		}
 
-		if (initialValue === undefined || initialValue === "") {
+		if (initialValue === "") {
 			return;
 		}
 
@@ -374,7 +446,7 @@ const ValueSyncPlugin: FC<{
 
 // Exposes the LexicalEditor instance to the parent via a callback
 // so it can be stored in a ref for imperative access.
-const InsertTextPlugin: FC<{
+const InsertTextPlugin: React.FC<{
 	onEditorReady: (editor: LexicalEditor) => void;
 }> = function InsertTextPlugin({ onEditorReady }) {
 	const [editor] = useLexicalComposerContext();
@@ -389,12 +461,12 @@ const InsertTextPlugin: FC<{
 /**
  * Structured data for a file reference extracted from the editor.
  */
-interface FileReferenceData {
+type FileReferenceData = {
 	readonly fileName: string;
 	readonly startLine: number;
 	readonly endLine: number;
 	readonly content: string;
-}
+};
 
 /**
  * A content part extracted from the Lexical editor in document order.
@@ -417,7 +489,7 @@ type MutableFileRefPart = {
 };
 type MutableContentPart = MutableTextPart | MutableFileRefPart;
 
-export interface ChatMessageInputRef {
+export type ChatMessageInputRef = {
 	setValue: (text: string) => void;
 	insertText: (text: string) => void;
 	clear: () => void;
@@ -434,19 +506,21 @@ export interface ChatMessageInputRef {
 	 * paragraph are merged, and paragraphs are separated by newlines.
 	 */
 	getContentParts: () => EditorContentPart[];
-}
+};
 
-interface ChatMessageInputProps
-	extends Omit<React.ComponentProps<"div">, "onChange" | "role" | "ref"> {
-	placeholder?: string;
-	initialValue?: string;
+type ChatMessageInputProps = Omit<
+	React.ComponentProps<"div">,
+	"onChange" | "role" | "ref"
+> & {
+	placeholder: string;
+	initialValue: string;
 	/**
 	 * Serialized Lexical editor state JSON. When provided, the editor
 	 * restores the full state (including file-reference chips) instead
 	 * of using initialValue as plain text.
 	 */
 	initialEditorState?: string;
-	onChange?: (
+	onChange: (
 		content: string,
 		serializedEditorState: string,
 		hasFileReferences: boolean,
@@ -454,18 +528,51 @@ interface ChatMessageInputProps
 	/** Monotonic counter to force editor remount. */
 	remountKey?: number;
 	rows?: number;
-	onEnter?: () => void;
-	onFilePaste?: (file: File) => void;
+	onEnter: () => void;
+	sendShortcut: TypesGen.AgentChatSendShortcut;
+	// Returns whether the file was routed anywhere (attachment or
+	// workspace upload). Refused files let the paste fall back to
+	// the clipboard's text payload.
+	onFilePaste?: (file: File) => boolean;
 	allowTextAttachmentPaste?: boolean;
-	disabled?: boolean;
-	autoFocus?: boolean;
+	// Keeps routing pasted files through onFilePaste while disabled, so
+	// the parent can refuse them visibly instead of losing them.
+	acceptFilePasteWhileDisabled?: boolean;
+	disabled: boolean;
+	/**
+	 * True when the chat has a bound workspace, so workspace skills may
+	 * exist even while workspaceSkills is still undefined.
+	 */
+	hasWorkspace: boolean;
+	/**
+	 * Story and test seam for deterministic personal skill menu data.
+	 */
+	personalSkillsOverride?: readonly TypesGen.UserSkillMetadata[];
+	/**
+	 * Workspace skill menu data from the chat's pinned context, so the
+	 * menu matches read_skill resolution. Undefined while the chat
+	 * detail is still loading (or when no chat exists yet).
+	 */
+	workspaceSkills?: readonly SkillMetadata[];
+	/**
+	 * Built-in commands offered by the "/" trigger menu ahead of
+	 * skills. Selection inserts the command text; the parent
+	 * composer intercepts it at submit time.
+	 */
+	slashCommands?: readonly ChatSlashCommand[];
+	/**
+	 * Composer box element the skills menu is pinned above and sized
+	 * to match. Falls back to this component's own container.
+	 */
+	skillsMenuAnchor?: HTMLElement | null;
 	"aria-label"?: string;
-}
+	"aria-describedby"?: string;
+};
 
 // Keeps the Lexical editor's editable state in sync with the
 // disabled prop so that the underlying contentEditable element
 // becomes truly non-interactive when the input is disabled.
-const EditableStatePlugin: FC<{ disabled: boolean }> =
+const EditableStatePlugin: React.FC<{ disabled: boolean }> =
 	function EditableStatePlugin({ disabled }) {
 		const [editor] = useLexicalComposerContext();
 
@@ -476,6 +583,37 @@ const EditableStatePlugin: FC<{ disabled: boolean }> =
 		return null;
 	};
 
+type SkillsTriggerLocation = Pick<
+	ActiveSkillsTrigger,
+	"nodeKey" | "slashOffset"
+>;
+
+const isSameSkillsTriggerLocation = (
+	a: SkillsTriggerLocation,
+	b: SkillsTriggerLocation | null,
+): boolean => {
+	return Boolean(
+		b && a.nodeKey === b.nodeKey && a.slashOffset === b.slashOffset,
+	);
+};
+
+const isSameSkillsTrigger = (
+	a: ActiveSkillsTrigger | null,
+	b: ActiveSkillsTrigger | null,
+): boolean => {
+	if (a === b) {
+		return true;
+	}
+	if (!a || !b) {
+		return false;
+	}
+	return (
+		a.nodeKey === b.nodeKey &&
+		a.slashOffset === b.slashOffset &&
+		a.query === b.query
+	);
+};
+
 const ChatMessageInput = ({
 	className,
 	placeholder,
@@ -485,11 +623,18 @@ const ChatMessageInput = ({
 	remountKey,
 	rows,
 	onEnter,
+	sendShortcut,
 	onFilePaste,
 	allowTextAttachmentPaste,
+	acceptFilePasteWhileDisabled,
 	disabled,
-	autoFocus,
+	hasWorkspace,
+	personalSkillsOverride,
+	workspaceSkills,
+	slashCommands,
+	skillsMenuAnchor,
 	"aria-label": ariaLabel,
+	"aria-describedby": ariaDescribedBy,
 	ref,
 	...props
 }: ChatMessageInputProps & { ref?: React.Ref<ChatMessageInputRef> }) => {
@@ -497,7 +642,6 @@ const ChatMessageInput = ({
 		namespace: "ChatMessageInput",
 		theme: {
 			paragraph: "m-0",
-			inlineDecorator: "mx-1",
 		},
 		onError: (error: Error) => console.error("Lexical error:", error),
 		nodes: [FileReferenceNode],
@@ -510,9 +654,165 @@ const ChatMessageInput = ({
 	const editorRef = useRef<LexicalEditor | null>(null);
 	// Tracks the last known text content so getValue() can return
 	// a useful value before the Lexical editor hydrates.
-	const lastKnownValueRef = useRef(initialValue ?? "");
+	const lastKnownValueRef = useRef(initialValue);
 	// Queues a setValue call made before the editor ref is ready.
 	const pendingReplacementRef = useRef<string | null>(null);
+	const [skillsTrigger, setSkillsTrigger] =
+		useState<ActiveSkillsTrigger | null>(null);
+	const [containerElement, setContainerElement] =
+		useState<HTMLDivElement | null>(null);
+	const suppressedSkillsTriggerRef = useRef<SkillsTriggerLocation | null>(null);
+	const [skillsMenuSelectedIndex, setSkillsMenuSelectedIndex] = useState(0);
+	const hasSkillsTrigger = Boolean(skillsTrigger);
+	const hasPersonalSkillsOverride = personalSkillsOverride !== undefined;
+	const personalSkillsQueryEnabled =
+		hasSkillsTrigger && !hasPersonalSkillsOverride;
+	const skillsQuery = useQuery({
+		...userSkills(),
+		enabled: personalSkillsQueryEnabled,
+		// Avoid refetching on each trigger toggle from caret movement.
+		staleTime: 60_000,
+	});
+	const personalSkills = personalSkillsOverride ?? skillsQuery.data ?? [];
+	const loadedWorkspaceSkills = workspaceSkills ?? [];
+	// Until the chat detail resolves, workspace skills are unknown: keep
+	// personal triggers qualified (a qualified alias always resolves) and
+	// treat the workspace list as still loading.
+	const workspaceSkillsKnown = !hasWorkspace || workspaceSkills !== undefined;
+	// A personal or workspace skill with the same name takes
+	// precedence over a built-in command: the composer's submit
+	// intercept defers to the skill, so the menu must not advertise a
+	// dead command entry. Until both skill lists resolve, a collision
+	// cannot be ruled out, so no built-in commands are offered
+	// (matching the submit intercept, which also stands down while
+	// skills are unknown).
+	const skillsResolved =
+		(hasPersonalSkillsOverride || skillsQuery.isSuccess) &&
+		workspaceSkillsKnown;
+	const availableSlashCommands = skillsResolved
+		? (slashCommands ?? []).filter(
+				(command) =>
+					!personalSkills.some((skill) => skill.name === command.name) &&
+					!loadedWorkspaceSkills.some((skill) => skill.name === command.name),
+			)
+		: [];
+	const hasSlashCommands = availableSlashCommands.length > 0;
+	// A stale empty cache with a refetch in flight must not dismiss the menu.
+	const isResolvedEmptyPersonalSkills = hasPersonalSkillsOverride
+		? personalSkills.length === 0
+		: skillsQuery.isSuccess &&
+			!skillsQuery.isFetching &&
+			personalSkills.length === 0;
+	// Unknown workspace skills must not close the menu: the trigger plugin
+	// records a closed trigger as dismissed, so skills arriving later could
+	// never reopen it.
+	const isResolvedEmptyWorkspaceSkills =
+		workspaceSkillsKnown && loadedWorkspaceSkills.length === 0;
+	// Without built-in commands, "/" is plain text when both skills
+	// lists resolve empty. When only the filtered result is empty,
+	// keep the menu open for the no-match message.
+	const skillsMenuOpen =
+		hasSkillsTrigger &&
+		(hasSlashCommands ||
+			!(isResolvedEmptyPersonalSkills && isResolvedEmptyWorkspaceSkills));
+	const skillsSearchQuery = skillsTrigger?.query ?? "";
+	const commandMenuItems: readonly SkillMenuItem[] = filterSkillsByQuery(
+		availableSlashCommands.map(createCommandMenuItem),
+		skillsSearchQuery,
+	);
+	const workspaceSkillNames = new Set(
+		loadedWorkspaceSkills.map((skill) => skill.name),
+	);
+	const personalSkillItems: readonly SkillMenuItem[] = filterSkillsByQuery(
+		personalSkills.map((skill) =>
+			createSkillMenuItem(
+				"personal",
+				skill,
+				!workspaceSkillsKnown || workspaceSkillNames.has(skill.name),
+			),
+		),
+		skillsSearchQuery,
+	);
+	const workspaceSkillItems: readonly SkillMenuItem[] = filterSkillsByQuery(
+		loadedWorkspaceSkills.map((skill) =>
+			createSkillMenuItem("workspace", skill),
+		),
+		skillsSearchQuery,
+	);
+	// Commands come first so partitioned menu groups match selection order.
+	const allFilteredSkills: readonly SkillMenuItem[] = [
+		...commandMenuItems,
+		...personalSkillItems,
+		...workspaceSkillItems,
+	];
+	const selectedSkillIndex =
+		allFilteredSkills.length === 0
+			? -1
+			: Math.min(skillsMenuSelectedIndex, allFilteredSkills.length - 1);
+
+	const handleSkillsTriggerChange = (trigger: ActiveSkillsTrigger | null) => {
+		if (
+			trigger &&
+			isSameSkillsTriggerLocation(trigger, suppressedSkillsTriggerRef.current)
+		) {
+			suppressedSkillsTriggerRef.current = null;
+			return;
+		}
+		suppressedSkillsTriggerRef.current = null;
+		if (isSameSkillsTrigger(trigger, skillsTrigger)) {
+			return;
+		}
+		if (trigger?.query !== skillsTrigger?.query) {
+			setSkillsMenuSelectedIndex(0);
+		}
+		setSkillsTrigger(trigger);
+	};
+
+	const replaceActiveSkillsTrigger = (skill: SkillMenuItem) => {
+		const editor = editorRef.current;
+		const trigger = skillsTrigger;
+		if (!editor || !trigger) {
+			setSkillsTrigger(null);
+			setSkillsMenuSelectedIndex(0);
+			return;
+		}
+
+		suppressedSkillsTriggerRef.current = trigger;
+
+		editor.update(() => {
+			const selection = $getSelection();
+			if (!$isRangeSelection(selection) || !selection.isCollapsed()) {
+				return;
+			}
+
+			const anchor = selection.anchor;
+			if (anchor.type !== "text" || anchor.key !== trigger.nodeKey) {
+				return;
+			}
+
+			const node = $getNodeByKey(trigger.nodeKey);
+			if (!$isTextNode(node)) {
+				return;
+			}
+
+			const caretOffset = anchor.offset;
+			const token = node
+				.getTextContent()
+				.slice(trigger.slashOffset, caretOffset);
+			if (
+				caretOffset < trigger.slashOffset ||
+				!isPersonalSkillTriggerToken(token)
+			) {
+				return;
+			}
+
+			selection.anchor.set(trigger.nodeKey, trigger.slashOffset, "text");
+			selection.focus.set(trigger.nodeKey, caretOffset, "text");
+			selection.insertText(skill.triggerText);
+		});
+		setSkillsTrigger(null);
+		setSkillsMenuSelectedIndex(0);
+	};
 
 	const handleEditorReady = (editor: LexicalEditor) => {
 		editorRef.current = editor;
@@ -674,8 +974,9 @@ const ChatMessageInput = ({
 	return (
 		<LexicalComposer initialConfig={initialConfig} key={remountKey}>
 			<div
+				ref={setContainerElement}
 				className={cn(
-					"grid w-full rounded-md bg-transparent text-base placeholder:text-content-secondary focus-visible:outline-none whitespace-pre-wrap break-words [&>*]:col-start-1 [&>*]:row-start-1",
+					"grid w-full rounded-md bg-transparent text-base placeholder:text-content-secondary focus-visible:outline-hidden whitespace-pre-wrap wrap-break-word *:col-start-1 *:row-start-1",
 					disabled && "cursor-not-allowed opacity-50",
 					className,
 				)}
@@ -685,10 +986,11 @@ const ChatMessageInput = ({
 				<RichTextPlugin
 					contentEditable={
 						<ContentEditable
-							className="outline-none w-full whitespace-pre-wrap overflow-y-auto max-h-[50vh] [scrollbar-width:thin] [scrollbar-color:hsl(var(--surface-quaternary))_transparent] [&_p]:leading-normal [&_p:first-child]:mt-0 [&_p:last-child]:mb-0 py-px"
+							className="outline-hidden w-full whitespace-pre-wrap overflow-y-auto max-h-[50vh] scrollbar-thin [&_p]:leading-normal [&_p:first-child]:mt-0 [&_p:last-child]:mb-0 py-px"
 							data-testid="chat-message-input"
 							style={{ minHeight: "inherit" }}
 							aria-label={ariaLabel}
+							aria-describedby={ariaDescribedBy}
 							aria-disabled={disabled}
 						/>
 					}
@@ -705,15 +1007,75 @@ const ChatMessageInput = ({
 					onFilePaste={onFilePaste}
 					allowTextAttachmentPaste={allowTextAttachmentPaste}
 				/>
-				<EnterKeyPlugin onEnter={disabled ? undefined : onEnter} />
+				<EnterKeyPlugin
+					onEnter={disabled ? undefined : onEnter}
+					sendShortcut={sendShortcut}
+				/>
+				<IOSBackspacePlugin />
 				<ContentChangePlugin onChange={onChange} />
 				<ValueSyncPlugin
 					initialValue={initialValue}
 					initialEditorState={initialEditorState}
 				/>
 				<InsertTextPlugin onEditorReady={handleEditorReady} />
-				<EditableStatePlugin disabled={Boolean(disabled)} />
-				{autoFocus && <AutoFocusPlugin />}
+				<SkillsTriggerPlugin
+					open={skillsMenuOpen}
+					skills={allFilteredSkills}
+					skillsLoading={
+						(personalSkillsQueryEnabled &&
+							skillsQuery.isFetching &&
+							skillsQuery.data === undefined) ||
+						!workspaceSkillsKnown
+					}
+					selectedIndex={selectedSkillIndex}
+					onSelectedIndexChange={setSkillsMenuSelectedIndex}
+					onTriggerChange={handleSkillsTriggerChange}
+					onSkillSelect={replaceActiveSkillsTrigger}
+				/>
+				<EditableStatePlugin disabled={disabled} />
+				{onFilePaste && acceptFilePasteWhileDisabled && (
+					<LockedFilePastePlugin onFilePaste={onFilePaste} />
+				)}
+				<AutoFocusPlugin />
+				<SkillsTriggerMenu
+					open={skillsMenuOpen}
+					anchor={skillsMenuAnchor ?? containerElement}
+					query={skillsSearchQuery}
+					commands={commandMenuItems}
+					personalSkills={personalSkillItems}
+					workspaceSkills={workspaceSkillItems}
+					workspaceSkillsEnabled={hasWorkspace}
+					isPersonalLoading={
+						personalSkillsQueryEnabled &&
+						skillsQuery.isFetching &&
+						skillsQuery.data === undefined
+					}
+					isPersonalError={
+						personalSkillsQueryEnabled &&
+						skillsQuery.isError &&
+						skillsQuery.data === undefined
+					}
+					isWorkspaceLoading={!workspaceSkillsKnown}
+					selectedIndex={selectedSkillIndex}
+					onSelectedIndexChange={setSkillsMenuSelectedIndex}
+					onSelect={replaceActiveSkillsTrigger}
+					onClose={() => handleSkillsTriggerChange(null)}
+					onEscapeKeyDown={(event) => {
+						// On a real keypress React commits Radix's dismiss before
+						// Lexical sees the same keydown, so the trigger plugin
+						// would find the menu already closed and Lexical's default
+						// Escape would blur the editor. Escape from inside the
+						// editor belongs to the plugin; elsewhere Radix still
+						// dismisses the menu.
+						const rootElement = editorRef.current?.getRootElement();
+						if (
+							event.target instanceof Node &&
+							rootElement?.contains(event.target)
+						) {
+							event.preventDefault();
+						}
+					}}
+				/>
 			</div>
 		</LexicalComposer>
 	);

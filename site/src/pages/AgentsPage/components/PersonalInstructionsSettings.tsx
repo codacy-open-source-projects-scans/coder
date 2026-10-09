@@ -1,24 +1,23 @@
+import { cn } from "cn";
 import { useFormik } from "formik";
-import type { FC } from "react";
 import { useState } from "react";
 import TextareaAutosize from "react-textarea-autosize";
 import type * as TypesGen from "#/api/typesGenerated";
 import { Alert, AlertDescription } from "#/components/Alert/Alert";
 import { Button } from "#/components/Button/Button";
 import { Spinner } from "#/components/Spinner/Spinner";
-import { cn } from "#/utils/cn";
-import { countInvisibleCharacters } from "#/utils/invisibleUnicode";
 import {
 	TemporarySavedState,
 	useTemporarySavedState,
-} from "./TemporarySavedState";
+} from "#/components/TemporarySavedState/TemporarySavedState";
+import { countInvisibleCharacters } from "#/utils/invisibleUnicode";
 
-interface MutationCallbacks {
+type MutationCallbacks = {
 	onSuccess?: () => void;
 	onError?: () => void;
-}
+};
 
-interface PersonalInstructionsSettingsProps {
+type PersonalInstructionsSettingsProps = {
 	userPromptData: TypesGen.UserChatCustomPrompt | undefined;
 	onSaveUserPrompt: (
 		req: TypesGen.UserChatCustomPrompt,
@@ -27,9 +26,9 @@ interface PersonalInstructionsSettingsProps {
 	isSavingUserPrompt: boolean;
 	isSaveUserPromptError: boolean;
 	isAnyPromptSaving: boolean;
-}
+};
 
-export const PersonalInstructionsSettings: FC<
+export const PersonalInstructionsSettings: React.FC<
 	PersonalInstructionsSettingsProps
 > = ({
 	userPromptData,
@@ -66,15 +65,15 @@ export const PersonalInstructionsSettings: FC<
 	return (
 		<form className="flex flex-col gap-2" onSubmit={form.handleSubmit}>
 			<h3 className="m-0 text-sm font-semibold text-content-primary">
-				Personal Instructions
+				Personal instructions
 			</h3>
 			<p className="m-0 text-xs text-content-secondary">
 				Applied to all your conversations. Only visible to you.
 			</p>
 			<TextareaAutosize
 				className={cn(
-					"max-h-[240px] w-full resize-none rounded-lg border border-border bg-surface-primary px-4 py-3 font-sans text-sm leading-relaxed text-content-primary placeholder:text-content-secondary focus:outline-none focus:ring-2 focus:ring-content-link",
-					isUserPromptOverflowing && "overflow-y-auto [scrollbar-width:thin]",
+					"max-h-[240px] w-full resize-none rounded-lg border border-border bg-surface-primary px-4 py-3 font-sans text-sm leading-relaxed text-content-primary placeholder:text-content-secondary focus:outline-hidden focus:ring-2 focus:ring-content-link",
+					isUserPromptOverflowing && "overflow-y-auto scrollbar-thin",
 				)}
 				name="custom_prompt"
 				placeholder="Additional behavior, style, and tone preferences"
@@ -113,7 +112,7 @@ export const PersonalInstructionsSettings: FC<
 								type="submit"
 								disabled={isAnyPromptSaving || !form.dirty}
 							>
-								{isSavingUserPrompt && <Spinner loading className="h-4 w-4" />}
+								{isSavingUserPrompt && <Spinner loading className="size-4" />}
 								Save
 							</Button>
 						</>

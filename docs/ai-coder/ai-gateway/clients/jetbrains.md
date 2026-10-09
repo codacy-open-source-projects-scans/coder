@@ -1,4 +1,10 @@
-# JetBrains IDEs
+---
+title: JetBrains
+---
+
+> [!NOTE]
+> AI Gateway is part of [AI Governance](../../ai-governance.md), which is
+> included with a Premium license.
 
 JetBrains IDE (IntelliJ IDEA, PyCharm, WebStorm, etc.) support AI Gateway via the [third-party model configuration](https://www.jetbrains.com/help/ai-assistant/use-custom-models.html#provide-your-own-api-key) feature.
 
@@ -12,13 +18,15 @@ JetBrains IDE (IntelliJ IDEA, PyCharm, WebStorm, etc.) support AI Gateway via th
 1. **Open Settings**: Go to **Settings** > **Tools** > **AI Assistant** > **Models & API Keys**.
 1. **Configure Provider**: Go to **Third-party AI providers**.
 1. **Choose Provider**: Choose **OpenAI-compatible**.
-1. **URL**: `https://coder.example.com/api/v2/aibridge/openai/v1`
+1. **URL**: `https://coder.example.com/api/v2/ai-gateway/openai/v1`
 1. **API Key**: Paste your **[Coder API token](../../../admin/users/sessions-tokens.md#generate-a-long-lived-api-token-on-behalf-of-yourself)**.
-1. **Apply**: Click **Apply** and **OK**.
+1. **Apply**: Select **Apply** and **OK**.
 
 ![JetBrains AI Assistant Settings](../../../images/aibridge/clients/jetbrains-ai-settings.png)
 
-## Using the AI Assistant
+<a id="using-the-ai-assistant"></a>
+
+## Use the AI Assistant
 
 1. Go back to **AI Chat** on theleft side bar and choose **Chat**.
 1. In the Model dropdown, select the desired model (e.g., `gpt-5.2`).
@@ -30,7 +38,8 @@ You can now use the AI Assistant chat with the configured provider.
 > [!NOTE]
 >
 > * JetBrains AI Assistant currently only supports OpenAI-compatible endpoints. There is an open [issue](https://youtrack.jetbrains.com/issue/LLM-22740) tracking support for Anthropic.
-> * JetBrains AI Assistant may not support all models that support OPenAI's `/chat/completions` endpoint in Chat mode.
+> * JetBrains AI Assistant may not support all models that support OpenAI's `/chat/completions` endpoint in Chat mode.
+> * JetBrains AI Assistant does not send an identifying user agent, so AI Gateway records these sessions with the client `Unknown`. Usage, tokens, and audit data are still captured.
 
 ## BYOK (Personal API Key)
 

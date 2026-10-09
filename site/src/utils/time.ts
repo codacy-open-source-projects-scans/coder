@@ -31,11 +31,13 @@ type DateTimeInput = Date | string | number | Dayjs | null | undefined;
 export const DATE_FORMAT = {
 	ISO_DATE: "YYYY-MM-DD",
 	ISO_DATETIME: "YYYY-MM-DD HH:mm:ss",
+	ISO_DATETIME_MINUTE: "YYYY-MM-DD HH:mm",
 	FULL_DATE: "MMMM D, YYYY",
 	MEDIUM_DATE: "MMM D, YYYY",
 	FULL_DATETIME: "MMMM D, YYYY h:mm A",
 	SHORT_DATE: "MM/DD/YYYY",
 	TIME_24H: "HH:mm:ss",
+	TIME_24H_MINUTE: "HH:mm",
 	TIME_12H: "h:mm A",
 	UTC_OFFSET: "Z",
 } as const;
@@ -77,6 +79,20 @@ export function humanDuration(durationInMs: number) {
 		largest: 3,
 	});
 }
+
+/**
+ * Compact duration for tight UI like a live elapsed counter:
+ * "7s", "1m 5s", "1h 2m". Rounds to whole seconds.
+ */
+export const humanDurationShort = humanizeDuration.humanizer({
+	language: "shortEn",
+	languages: { shortEn: { h: () => "h", m: () => "m", s: () => "s" } },
+	units: ["h", "m", "s"],
+	largest: 2,
+	round: true,
+	spacer: "",
+	delimiter: " ",
+});
 
 export function durationInHours(durationMs: number): number {
 	return durationMs / TIME_CONSTANTS.MS_PER_HOUR;

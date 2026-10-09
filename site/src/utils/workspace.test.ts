@@ -4,11 +4,38 @@ import * as Mocks from "#/testHelpers/entities";
 import {
 	agentVersionStatus,
 	defaultWorkspaceExtension,
+	findWorkspaceAgent,
 	getDisplayVersionStatus,
 	getDisplayWorkspaceBuildInitiatedBy,
 	getDisplayWorkspaceTemplateName,
+	getMatchingAgentOrFirst,
+	getWorkspaceAgents,
 	isWorkspaceOn,
 } from "./workspace";
+
+function buildWorkspace(
+	resourceAgents: readonly TypesGen.WorkspaceAgent[][],
+): TypesGen.Workspace {
+	const resourceTemplate = Mocks.MockWorkspace.latest_build.resources[0];
+	return {
+		...Mocks.MockWorkspace,
+		latest_build: {
+			...Mocks.MockWorkspace.latest_build,
+			resources: resourceAgents.map((agents) => ({
+				...resourceTemplate,
+				agents,
+			})),
+		},
+	};
+}
+
+function buildAgent(id: string): TypesGen.WorkspaceAgent {
+	return {
+		...Mocks.MockWorkspaceAgent,
+		id,
+		name: id,
+	};
+}
 
 describe("util > workspace", () => {
 	describe("isWorkspaceOn", () => {
@@ -35,20 +62,23 @@ describe("util > workspace", () => {
 			["start", "pending", false],
 			["start", "running", false],
 			["start", "succeeded", true],
-		])("transition=%p, status=%p, isWorkspaceOn=%p", (transition, status, isOn) => {
-			const workspace: TypesGen.Workspace = {
-				...Mocks.MockWorkspace,
-				latest_build: {
-					...Mocks.MockWorkspaceBuild,
-					job: {
-						...Mocks.MockProvisionerJob,
-						status,
+		])(
+			"transition=%p, status=%p, isWorkspaceOn=%p",
+			(transition, status, isOn) => {
+				const workspace: TypesGen.Workspace = {
+					...Mocks.MockWorkspace,
+					latest_build: {
+						...Mocks.MockWorkspaceBuild,
+						job: {
+							...Mocks.MockProvisionerJob,
+							status,
+						},
+						transition,
 					},
-					transition,
-				},
-			};
-			expect(isWorkspaceOn(workspace)).toBe(isOn);
-		});
+				};
+				expect(isWorkspaceOn(workspace)).toBe(isOn);
+			},
+		);
 	});
 
 	describe("defaultWorkspaceExtension", () => {
@@ -74,8 +104,18 @@ describe("util > workspace", () => {
 	});
 
 	describe("getDisplayWorkspaceBuildInitiatedBy", () => {
+		// Legacy task build reasons are no longer in the BuildReason union but
+		// still arrive on retained builds of former task workspaces.
+		const legacyReasonBuild = (reason: string): TypesGen.WorkspaceBuild => ({
+			...Mocks.MockWorkspaceBuild,
+			reason: reason as TypesGen.BuildReason,
+		});
+
 		it.each<[TypesGen.WorkspaceBuild, string]>([
 			[Mocks.MockWorkspaceBuild, "TestUser"],
+			[legacyReasonBuild("task_auto_pause"), "Coder"],
+			[legacyReasonBuild("task_manual_pause"), "TestUser"],
+			[legacyReasonBuild("task_resume"), "TestUser"],
 			[
 				{
 					...Mocks.MockWorkspaceBuild,
@@ -90,16 +130,12 @@ describe("util > workspace", () => {
 				},
 				"Coder",
 			],
-			[
-				{
-					...Mocks.MockWorkspaceBuild,
-					reason: "task_auto_pause",
-				},
-				"Coder",
-			],
-		])("getDisplayWorkspaceBuildInitiatedBy(%p) returns %p", (build, initiatedBy) => {
-			expect(getDisplayWorkspaceBuildInitiatedBy(build)).toEqual(initiatedBy);
-		});
+		])(
+			"getDisplayWorkspaceBuildInitiatedBy(%p) returns %p",
+			(build, initiatedBy) => {
+				expect(getDisplayWorkspaceBuildInitiatedBy(build)).toEqual(initiatedBy);
+			},
+		);
 	});
 
 	describe("getDisplayVersionStatus", () => {
@@ -119,16 +155,19 @@ describe("util > workspace", () => {
 				"v1.2.3",
 				agentVersionStatus.Deprecated,
 			],
-		])("getDisplayVersionStatus(theme, %p, %p, %p, %p) returns (%p, %p)", (agentVersion, serverVersion, agentAPIVersion, serverAPIVersion, expectedVersion, expectedStatus) => {
-			const { displayVersion, status } = getDisplayVersionStatus(
-				agentVersion,
-				serverVersion,
-				agentAPIVersion,
-				serverAPIVersion,
-			);
-			expect(displayVersion).toEqual(expectedVersion);
-			expect(status).toEqual(expectedStatus);
-		});
+		])(
+			"getDisplayVersionStatus(theme, %p, %p, %p, %p) returns (%p, %p)",
+			(agentVersion, serverVersion, agentAPIVersion, serverAPIVersion, expectedVersion, expectedStatus) => {
+				const { displayVersion, status } = getDisplayVersionStatus(
+					agentVersion,
+					serverVersion,
+					agentAPIVersion,
+					serverAPIVersion,
+				);
+				expect(displayVersion).toEqual(expectedVersion);
+				expect(status).toEqual(expectedStatus);
+			},
+		);
 	});
 
 	describe("getDisplayWorkspaceTemplateName", () => {
@@ -146,6 +185,55 @@ describe("util > workspace", () => {
 			};
 			const displayed = getDisplayWorkspaceTemplateName(workspace);
 			expect(displayed).toEqual(workspace.template_display_name);
+		});
+	});
+
+	describe("getWorkspaceAgents", () => {
+		it("flattens agents across workspace resources", () => {
+			const workspace = buildWorkspace([
+				[buildAgent("agent-1")],
+				[buildAgent("agent-2")],
+			]);
+
+			expect(getWorkspaceAgents(workspace).map((agent) => agent.id)).toEqual([
+				"agent-1",
+				"agent-2",
+			]);
+		});
+	});
+
+	describe("findWorkspaceAgent", () => {
+		it("returns the matching agent by ID", () => {
+			const workspace = buildWorkspace([[buildAgent("agent-1")]]);
+
+			expect(findWorkspaceAgent(workspace, "agent-1")?.name).toBe("agent-1");
+			expect(findWorkspaceAgent(workspace, "missing")).toBeUndefined();
+		});
+	});
+
+	describe("getMatchingAgentOrFirst", () => {
+		it("returns the agent matching by name across resources", () => {
+			const workspace = buildWorkspace([
+				[buildAgent("agent-1")],
+				[buildAgent("agent-2")],
+			]);
+
+			expect(getMatchingAgentOrFirst(workspace, "agent-2")?.id).toBe("agent-2");
+		});
+
+		it("returns the first agent when no name is given", () => {
+			const workspace = buildWorkspace([
+				[buildAgent("agent-1")],
+				[buildAgent("agent-2")],
+			]);
+
+			expect(getMatchingAgentOrFirst(workspace, undefined)?.id).toBe("agent-1");
+		});
+
+		it("returns undefined when no agent matches the name", () => {
+			const workspace = buildWorkspace([[buildAgent("agent-1")]]);
+
+			expect(getMatchingAgentOrFirst(workspace, "missing")).toBeUndefined();
 		});
 	});
 });

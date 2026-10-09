@@ -1,4 +1,6 @@
-# Resource persistence
+---
+title: Resource persistence
+---
 
 By default, all Coder resources are persistent, but production templates
 **must** use the practices laid out in this document to prevent accidental
@@ -12,7 +14,9 @@ The needs of most workspaces fall somewhere in the middle, persisting user data
 like filesystem volumes, but deleting expensive, reproducible resources such as
 compute instances.
 
-## Disabling persistence
+<a id="disabling-persistence"></a>
+
+## Turn off persistence
 
 The Terraform
 [`coder_workspace` data source](https://registry.terraform.io/providers/coder/coder/latest/docs/data-sources/workspace)
@@ -52,12 +56,19 @@ Because we depend on `coder_workspace.me.owner`, if the owner changes their
 username, Terraform will recreate the volume (wiping its data!) the next time
 that Coder starts the workspace.
 
-To prevent this, use immutable IDs:
+✅ To prevent this, use immutable IDs:
 
 - `coder_workspace.me.owner_id`
 - `coder_workspace.me.id`
 
-You should also avoid using `coder_workspace.me.name` if your deployment allows workspace renaming via `CODER_ALLOW_WORKSPACE_RENAMES` or `--allow-workspace-renames`.
+⚠️ Avoid mutable IDs:
+
+- `coder_workspace.me.name`
+- `coder_workspace.me.owner`
+
+Workspace renaming is disabled by default to help prevent this kind of
+destruction, but a template admin can enable it. Refer to
+[Workspace renaming](../managing-templates/index.md#workspace-renaming).
 
 ```tf
 data "coder_workspace" "me" {

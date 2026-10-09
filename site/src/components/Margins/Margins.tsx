@@ -1,24 +1,24 @@
-import type { FC, JSX } from "react";
+import { cn } from "cn";
 import {
 	containerWidth,
 	containerWidthMedium,
 	sidePadding,
 } from "#/theme/constants";
-import { cn } from "#/utils/cn";
 
-type Size = "regular" | "medium" | "small";
+export type Size = "regular" | "medium" | "condensed" | "small";
 
 const widthBySize: Record<Size, number> = {
 	regular: containerWidth,
 	medium: containerWidthMedium,
+	condensed: containerWidth / 2,
 	small: containerWidth / 3,
 };
 
-type MarginsProps = JSX.IntrinsicElements["div"] & {
+type MarginsProps = React.JSX.IntrinsicElements["div"] & {
 	size?: Size;
 };
 
-export const Margins: FC<MarginsProps> = ({
+export const Margins: React.FC<MarginsProps> = ({
 	size = "regular",
 	children,
 	className,

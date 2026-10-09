@@ -1,14 +1,15 @@
+import { cn } from "cn";
 import {
 	LoaderIcon,
 	MessageCircleQuestionIcon,
 	TriangleAlertIcon,
 } from "lucide-react";
-import { type FC, type FormEvent, useId, useState } from "react";
+import { useId, useState } from "react";
 import { useMutation } from "react-query";
 import { Button } from "#/components/Button/Button";
 import { Input } from "#/components/Input/Input";
 import { RadioGroup, RadioGroupItem } from "#/components/RadioGroup/RadioGroup";
-import { cn } from "#/utils/cn";
+import { ToolCall } from "./ToolCall";
 import type { ToolStatus } from "./utils";
 
 export type AskUserQuestion = {
@@ -140,7 +141,7 @@ type SelectableAnswerOptionProps = {
 	isSubmitting: boolean;
 };
 
-const SelectableAnswerOption: FC<SelectableAnswerOptionProps> = ({
+const SelectableAnswerOption: React.FC<SelectableAnswerOptionProps> = ({
 	id,
 	value,
 	label,
@@ -183,7 +184,7 @@ type QuestionOptionProps = {
 	isSubmitting: boolean;
 };
 
-const QuestionOption: FC<QuestionOptionProps> = ({
+const QuestionOption: React.FC<QuestionOptionProps> = ({
 	questionIdBase,
 	option,
 	optionIndex,
@@ -212,7 +213,7 @@ type OtherQuestionOptionProps = {
 	onTextChange: (text: string) => void;
 };
 
-const OtherQuestionOption: FC<OtherQuestionOptionProps> = ({
+const OtherQuestionOption: React.FC<OtherQuestionOptionProps> = ({
 	questionHeader,
 	questionIdBase,
 	optionIndex,
@@ -263,7 +264,7 @@ type QuestionStepProps = {
 	onOtherTextChange: (text: string) => void;
 };
 
-const QuestionStep: FC<QuestionStepProps> = ({
+const QuestionStep: React.FC<QuestionStepProps> = ({
 	question,
 	questionIndex,
 	questionCount,
@@ -291,7 +292,7 @@ const QuestionStep: FC<QuestionStepProps> = ({
 			<div className="flex items-start gap-1.5 text-content-secondary">
 				<MessageCircleQuestionIcon
 					aria-hidden="true"
-					className="mt-0.5 h-4 w-4 shrink-0"
+					className="mt-0.5 size-4 shrink-0"
 				/>
 				<p
 					id={questionTextId}
@@ -304,7 +305,7 @@ const QuestionStep: FC<QuestionStepProps> = ({
 					<span>{questionText}</span>
 				</p>
 			</div>
-			<div className="rounded-md border border-solid border-border-default px-3 py-1">
+			<div className="rounded-md border border-solid border-border px-3 py-1">
 				<RadioGroup
 					aria-labelledby={`${questionHeaderId} ${questionTextId}`}
 					className="space-y-1"
@@ -345,7 +346,7 @@ type AnsweredQuestionTextProps = {
 	idPrefix: string;
 };
 
-const AnsweredQuestionText: FC<AnsweredQuestionTextProps> = ({
+const AnsweredQuestionText: React.FC<AnsweredQuestionTextProps> = ({
 	question,
 	questionIndex,
 	idPrefix,
@@ -354,7 +355,7 @@ const AnsweredQuestionText: FC<AnsweredQuestionTextProps> = ({
 		<div className="flex items-start gap-1.5 text-content-secondary">
 			<MessageCircleQuestionIcon
 				aria-hidden="true"
-				className="mt-0.5 h-4 w-4 shrink-0"
+				className="mt-0.5 size-4 shrink-0"
 			/>
 			<p
 				id={`${idPrefix}-question-${questionIndex}-text`}
@@ -367,7 +368,7 @@ const AnsweredQuestionText: FC<AnsweredQuestionTextProps> = ({
 	);
 };
 
-export const AskUserQuestionTool: FC<AskUserQuestionToolProps> = ({
+export const AskUserQuestionTool: React.FC<AskUserQuestionToolProps> = ({
 	questions,
 	status,
 	isError,
@@ -388,11 +389,7 @@ export const AskUserQuestionTool: FC<AskUserQuestionToolProps> = ({
 	>(null);
 	const submitAnswerMutation = useMutation({
 		mutationFn: async (message: string) => {
-			if (!onSubmitAnswer) {
-				return;
-			}
-
-			await onSubmitAnswer(message);
+			await onSubmitAnswer?.(message);
 		},
 		onSuccess: (_data, message) => {
 			setSubmittedResponseText(message);
@@ -519,7 +516,7 @@ export const AskUserQuestionTool: FC<AskUserQuestionToolProps> = ({
 		submitAnswerMutation.mutate(outgoingMessage);
 	};
 
-	const handleFormSubmit = (event: FormEvent<HTMLFormElement>) => {
+	const handleFormSubmit = (event: React.FormEvent<HTMLFormElement>) => {
 		event.preventDefault();
 		if (!isInteractive) {
 			return;
@@ -535,17 +532,18 @@ export const AskUserQuestionTool: FC<AskUserQuestionToolProps> = ({
 
 	if (isError) {
 		return (
-			<div className="w-full">
-				<div
-					role="alert"
-					className="flex items-center gap-1.5 py-0.5 text-[13px] text-content-secondary"
+			<div className="w-full" role="alert">
+				<ToolCall.Root
+					status={status}
+					isError
+					errorMessage={errorMessage || "Failed to ask questions"}
+					hasContent={false}
 				>
-					<TriangleAlertIcon
-						aria-label="Error"
-						className="h-3.5 w-3.5 shrink-0 text-content-secondary"
+					<ToolCall.Header
+						iconName="ask_user_question"
+						label={errorMessage || "Failed to ask questions"}
 					/>
-					<span>{errorMessage || "Failed to ask questions"}</span>
-				</div>
+				</ToolCall.Root>
 			</div>
 		);
 	}
@@ -554,19 +552,17 @@ export const AskUserQuestionTool: FC<AskUserQuestionToolProps> = ({
 		return (
 			<div className="w-full">
 				{isRunning ? (
-					<div
+					<ToolCall.Root
+						status={status}
+						hasContent={false}
 						role="status"
 						aria-live="polite"
-						className="flex items-center gap-1.5 py-0.5"
 					>
-						<span className="text-[13px] text-content-secondary">
-							Asking for clarification...
-						</span>
-						<LoaderIcon
-							data-testid="ask-user-question-loading-icon"
-							className="h-3.5 w-3.5 shrink-0 animate-spin text-content-secondary motion-reduce:animate-none"
+						<ToolCall.Header
+							iconName="ask_user_question"
+							label="Asking for clarification..."
 						/>
-					</div>
+					</ToolCall.Root>
 				) : (
 					<p className="text-[13px] italic text-content-secondary">
 						No questions available.
@@ -617,7 +613,7 @@ export const AskUserQuestionTool: FC<AskUserQuestionToolProps> = ({
 			</div>
 
 			{showSubmittedResponse && (
-				<div className="mt-4 rounded-md border border-solid border-border-default bg-surface-secondary px-3 py-2">
+				<div className="mt-4 rounded-md border border-solid border-border bg-surface-secondary px-3 py-2">
 					<p className="text-xs font-medium text-content-secondary">
 						Submitted answer
 					</p>
@@ -632,7 +628,7 @@ export const AskUserQuestionTool: FC<AskUserQuestionToolProps> = ({
 					role="alert"
 					className="mt-3 flex items-center gap-1.5 text-[13px] text-content-destructive"
 				>
-					<TriangleAlertIcon className="h-3.5 w-3.5 shrink-0" />
+					<TriangleAlertIcon className="size-3.5 shrink-0" />
 					<span>{submitError}</span>
 				</div>
 			)}
@@ -667,7 +663,7 @@ export const AskUserQuestionTool: FC<AskUserQuestionToolProps> = ({
 							disabled={!canSubmitAllAnswers || isSubmitting}
 						>
 							{isSubmitting && (
-								<LoaderIcon className="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" />
+								<LoaderIcon className="size-3.5 animate-spin motion-reduce:animate-none" />
 							)}
 							{isSubmitting ? "Submitting..." : "Submit"}
 						</Button>
@@ -680,21 +676,18 @@ export const AskUserQuestionTool: FC<AskUserQuestionToolProps> = ({
 	return (
 		<div className="w-full">
 			{isRunning && (
-				<div
+				<ToolCall.Root
+					status={status}
+					hasContent={false}
 					role="status"
 					aria-live="polite"
-					className="flex items-center gap-1.5 py-0.5"
 				>
-					<span className="text-[13px] text-content-secondary">
-						Asking for clarification...
-					</span>
-					<LoaderIcon
-						data-testid="ask-user-question-loading-icon"
-						className="h-3.5 w-3.5 shrink-0 animate-spin text-content-secondary motion-reduce:animate-none"
+					<ToolCall.Header
+						iconName="ask_user_question"
+						label="Asking for clarification..."
 					/>
-				</div>
+				</ToolCall.Root>
 			)}
-
 			{isInteractive ? (
 				<form onSubmit={handleFormSubmit}>{content}</form>
 			) : (

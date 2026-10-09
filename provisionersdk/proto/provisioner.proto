@@ -242,6 +242,34 @@ message Script {
   bool run_on_stop = 7;
   int32 timeout_seconds = 8;
   string log_path = 9;
+  // Terraform address of the coder_script resource, such as
+  // "module.git_clone.coder_script.clone". Empty for legacy agent
+  // startup and shutdown scripts.
+  string resource_address = 10;
+  // Direct prerequisites from coder_script_order rules, sorted by
+  // prerequisite_resource_address. Empty when the script has no prerequisites.
+  repeated ScriptDependency dependencies = 11;
+}
+
+// ScriptDependencyRequirement is the outcome a prerequisite must reach
+// before the dependent may run. It mirrors the `requires` attribute of
+// coder_script_order. The provisioner never emits UNSPECIFIED.
+enum ScriptDependencyRequirement {
+  SCRIPT_DEPENDENCY_REQUIREMENT_UNSPECIFIED = 0;
+  // The prerequisite must exit successfully.
+  SCRIPT_DEPENDENCY_REQUIREMENT_SUCCESS = 1;
+  // The prerequisite must finish with any result other than canceled.
+  SCRIPT_DEPENDENCY_REQUIREMENT_COMPLETION = 2;
+}
+
+// ScriptDependency names one prerequisite script and the outcome required
+// from it.
+message ScriptDependency {
+  // Full Terraform address of the prerequisite script, equal to that
+  // script's resource_address, such as
+  // "module.git_clone.coder_script.clone". Never module-relative.
+  string prerequisite_resource_address = 1;
+  ScriptDependencyRequirement requirement = 2;
 }
 
 message Devcontainer {
@@ -338,15 +366,6 @@ enum PrebuiltWorkspaceBuildStage {
   CLAIM = 2;  // A prebuilt workspace is being claimed.
 }
 
-message AITaskSidebarApp {
-  string id = 1;
-}
-
-message AITask {
-  string id = 1;
-  optional AITaskSidebarApp sidebar_app = 2;
-  string app_id = 3;
-}
 
 // Metadata is information about a workspace used in the execution of a build
 message Metadata {
@@ -371,8 +390,8 @@ message Metadata {
   repeated Role workspace_owner_rbac_roles = 19;
   PrebuiltWorkspaceBuildStage prebuilt_workspace_build_stage = 20; // Indicates that a prebuilt workspace is being built.
   repeated RunningAgentAuthToken running_agent_auth_tokens = 21;
-  string task_id = 22;
-  string task_prompt = 23;
+  reserved 22, 23;
+  reserved "task_id", "task_prompt";
   string template_version_id = 24;
   string template_version_modules_file = 25;
 }
@@ -422,29 +441,6 @@ message InitComplete {
   bytes module_files_hash = 5;
 }
 
-// UserSecretValue carries a single user secret to a provisioner. env_name and
-// file_path describe the bindings the user requested when creating the secret.
-// The terraform provisioner exposes secrets via CODER_SECRET_ENV_* and
-// CODER_SECRET_FILE_* environment variables consumed by terraform-provider-coder's
-// coder_secret data source
-message UserSecretValue {
-  // Environment variable name the user selected (e.g. "GITHUB_TOKEN"). Intended
-  // to be treated as an opaque lookup key, i.e. consumers must preserve it
-  // verbatim when matching against a data.coder_secret.env_name attribute.
-  // Consumers can assume names are POSIX-compliant. Optional: env_name and
-  // file_path are independent.
-  string env_name = 1;
-  // Filesystem path the user requested this secret be bound to (e.g. "~/creds"
-  // or "/etc/creds"). This path is not expanded. Expansion happens only where
-  // the secret is actually materialized on disk. Intended to be treated as an
-  // opaque lookup key, i.e. consumers must preserve it verbatim when matching
-  // against a data.coder_secret.file attribute. Optional; env_name and
-  // file_path are independent.
-  string file_path = 2;
-  // Secret value, which may be arbitrary binary data.
-  bytes value = 3;
-}
-
 // PlanRequest asks the provisioner to plan what resources & parameters it will create
 message PlanRequest {
   Metadata metadata = 1;
@@ -456,11 +452,9 @@ message PlanRequest {
   // state is the provisioner state (if any)
   bytes state = 6;
 
-  // User secrets to make available during plan. Not carried on ApplyRequest
-  // because plan evaluates data.coder_secret references and bakes the
-  // resolved values into plan state, so apply does not need the raw secrets.
-  // Provisioner-specific handling is documented on the UserSecretValue message.
-  repeated UserSecretValue user_secrets = 7;
+  // Reserved 7 for `user_secrets` introduced in v1.17 (#24542) and removed
+  // in v1.18 along with the rest of the `coder_secret` Terraform integration.
+  reserved 7;
 }
 
 // PlanComplete indicates a request to plan completed.
@@ -470,7 +464,8 @@ message PlanComplete {
   bytes plan = 3;
   int32 dailyCost = 4;
   repeated ResourceReplacement resource_replacements = 5;
-  int32 ai_task_count = 6;
+  reserved 6;
+  reserved "ai_task_count";
 }
 
 // ApplyRequest asks the provisioner to apply the changes.  Apply MUST be preceded by a successful plan request/response
@@ -504,13 +499,8 @@ message GraphComplete {
   repeated RichParameter parameters = 4;
   repeated ExternalAuthProviderResource external_auth_providers = 5;
   repeated Preset presets = 6;
-  // Whether a template has any `coder_ai_task` resources defined, even if not planned for creation.
-  // During a template import, a plan is run which may not yield in any `coder_ai_task` resources, but nonetheless we
-  // still need to know that such resources are defined.
-  //
-  // See `hasAITaskResources` in provisioner/terraform/resources.go for more details.
-  bool has_ai_tasks = 7;
-  repeated provisioner.AITask ai_tasks = 8;
+  reserved 7, 8;
+  reserved "has_ai_tasks", "ai_tasks";
   bool has_external_agents = 9;
 }
 

@@ -25,12 +25,13 @@ import (
 )
 
 type ManifestAPI struct {
-	AccessURL                *url.URL
-	AppHostname              string
-	ExternalAuthConfigs      []*externalauth.Config
-	DisableDirectConnections bool
-	DerpForceWebSockets      bool
-	WorkspaceID              uuid.UUID
+	AccessURL                 *url.URL
+	AppHostname               string
+	ExternalAuthConfigs       []*externalauth.Config
+	DisableDirectConnections  bool
+	DerpForceWebSockets       bool
+	DisableUserSecretFilePath bool
+	WorkspaceID               uuid.UUID
 
 	AgentFn   func(ctx context.Context) (database.WorkspaceAgent, error)
 	Database  database.Store
@@ -40,7 +41,7 @@ type ManifestAPI struct {
 func (a *ManifestAPI) GetManifest(ctx context.Context, _ *agentproto.GetManifestRequest) (*agentproto.Manifest, error) {
 	var (
 		dbApps        []database.WorkspaceApp
-		scripts       []database.WorkspaceAgentScript
+		scripts       []database.GetWorkspaceAgentScriptsByAgentIDsRow
 		metadata      []database.WorkspaceAgentMetadatum
 		workspace     database.Workspace
 		devcontainers []database.WorkspaceAgentDevcontainer
@@ -129,6 +130,11 @@ func (a *ManifestAPI) GetManifest(ctx context.Context, _ *agentproto.GetManifest
 		parentID = workspaceAgent.ParentID.UUID[:]
 	}
 
+	secretFilePathPolicy := userSecretFilePathAllowed
+	if a.DisableUserSecretFilePath {
+		secretFilePathPolicy = userSecretFilePathBlocked
+	}
+
 	return &agentproto.Manifest{
 		AgentId:                  workspaceAgent.ID[:],
 		AgentName:                workspaceAgent.Name,
@@ -149,7 +155,7 @@ func (a *ManifestAPI) GetManifest(ctx context.Context, _ *agentproto.GetManifest
 		Apps:          apps,
 		Metadata:      dbAgentMetadataToProtoDescription(metadata),
 		Devcontainers: dbAgentDevcontainersToProto(devcontainers),
-		Secrets:       dbUserSecretsToProto(userSecrets),
+		Secrets:       dbUserSecretsToProto(userSecrets, secretFilePathPolicy),
 	}, nil
 }
 
@@ -184,7 +190,7 @@ func dbAgentMetadatumToProtoDescription(metadatum database.WorkspaceAgentMetadat
 	}
 }
 
-func dbAgentScriptsToProto(scripts []database.WorkspaceAgentScript) []*agentproto.WorkspaceAgentScript {
+func dbAgentScriptsToProto(scripts []database.GetWorkspaceAgentScriptsByAgentIDsRow) []*agentproto.WorkspaceAgentScript {
 	ret := make([]*agentproto.WorkspaceAgentScript, len(scripts))
 	for i, script := range scripts {
 		ret[i] = dbAgentScriptToProto(script)
@@ -192,7 +198,7 @@ func dbAgentScriptsToProto(scripts []database.WorkspaceAgentScript) []*agentprot
 	return ret
 }
 
-func dbAgentScriptToProto(script database.WorkspaceAgentScript) *agentproto.WorkspaceAgentScript {
+func dbAgentScriptToProto(script database.GetWorkspaceAgentScriptsByAgentIDsRow) *agentproto.WorkspaceAgentScript {
 	return &agentproto.WorkspaceAgentScript{
 		Id:               script.ID[:],
 		LogSourceId:      script.LogSourceID[:],
@@ -275,18 +281,35 @@ func dbAgentDevcontainersToProto(devcontainers []database.WorkspaceAgentDevconta
 	return ret
 }
 
-func dbUserSecretsToProto(secrets []database.UserSecret) []*agentproto.WorkspaceSecret {
+// userSecretFilePathPolicy is a named type rather than a bool parameter to
+// satisfy revive's flag-parameter rule.
+type userSecretFilePathPolicy int
+
+const (
+	userSecretFilePathAllowed userSecretFilePathPolicy = iota
+	userSecretFilePathBlocked
+)
+
+func dbUserSecretsToProto(secrets []database.UserSecret, policy userSecretFilePathPolicy) []*agentproto.WorkspaceSecret {
 	ret := make([]*agentproto.WorkspaceSecret, 0, len(secrets))
 	for _, s := range secrets {
-		// Only include secrets that have an environment variable
-		// name or file path set. Secrets with neither are not
-		// injected at runtime.
-		if s.EnvName == "" && s.FilePath == "" {
+		// Skip disabled secrets so they are not injected as env vars or
+		// written to secret files. The API guarantees every enabled
+		// secret has at least one of env_name or file_path set, so we
+		// don't need to filter both-empty rows separately here.
+		if !s.Enabled {
 			continue
+		}
+		filePath := s.FilePath
+		if policy == userSecretFilePathBlocked {
+			if s.EnvName == "" {
+				continue
+			}
+			filePath = ""
 		}
 		ret = append(ret, &agentproto.WorkspaceSecret{
 			EnvName:  s.EnvName,
-			FilePath: s.FilePath,
+			FilePath: filePath,
 			Value:    []byte(s.Value),
 		})
 	}

@@ -1,18 +1,20 @@
-import type { ComponentProps, FC } from "react";
 import { useMutation, useQuery } from "react-query";
 import { toast } from "sonner";
 import { API } from "#/api/api";
 import { authMethods, updatePassword } from "#/api/queries/users";
 import { Loader } from "#/components/Loader/Loader";
+import {
+	SettingsHeader,
+	SettingsHeaderTitle,
+} from "#/components/SettingsHeader/SettingsHeader";
 import { useAuthenticated } from "#/hooks/useAuthenticated";
-import { Section } from "../Section";
 import { SecurityForm } from "./SecurityForm";
 import {
 	SingleSignOnSection,
 	useSingleSignOnSection,
 } from "./SingleSignOnSection";
 
-const SecurityPage: FC = () => {
+const SecurityPage: React.FC = () => {
 	const { user: me } = useAuthenticated();
 	const updatePasswordMutation = useMutation(updatePassword());
 	const authMethodsQuery = useQuery(authMethods());
@@ -56,24 +58,27 @@ const SecurityPage: FC = () => {
 	);
 };
 
-interface SecurityPageViewProps {
+type SecurityPageViewProps = {
 	security: {
-		form: ComponentProps<typeof SecurityForm>;
+		form: React.ComponentProps<typeof SecurityForm>;
 	};
 	oidc?: {
-		section: ComponentProps<typeof SingleSignOnSection>;
+		section: React.ComponentProps<typeof SingleSignOnSection>;
 	};
-}
+};
 
-export const SecurityPageView: FC<SecurityPageViewProps> = ({
+export const SecurityPageView: React.FC<SecurityPageViewProps> = ({
 	security,
 	oidc,
 }) => {
 	return (
 		<div className="flex flex-col gap-12">
-			<Section title="Security" description="Update your account password">
+			<div>
+				<SettingsHeader>
+					<SettingsHeaderTitle>Security</SettingsHeaderTitle>
+				</SettingsHeader>
 				<SecurityForm {...security.form} />
-			</Section>
+			</div>
 			{oidc && <SingleSignOnSection {...oidc.section} />}
 		</div>
 	);
