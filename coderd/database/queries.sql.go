@@ -7951,47 +7951,6 @@ func (q *sqlQuerier) GetChatProjectByIDForUpdate(ctx context.Context, id uuid.UU
 	return i, err
 }
 
-const getChatProjectsByOwnerID = `-- name: GetChatProjectsByOwnerID :many
-SELECT id, organization_id, owner_id, name, description, icon, created_at, updated_at, user_acl, group_acl
-FROM chat_projects
-WHERE owner_id = $1::uuid
-ORDER BY lower(name), id
-`
-
-func (q *sqlQuerier) GetChatProjectsByOwnerID(ctx context.Context, ownerID uuid.UUID) ([]ChatProject, error) {
-	rows, err := q.db.QueryContext(ctx, getChatProjectsByOwnerID, ownerID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []ChatProject
-	for rows.Next() {
-		var i ChatProject
-		if err := rows.Scan(
-			&i.ID,
-			&i.OrganizationID,
-			&i.OwnerID,
-			&i.Name,
-			&i.Description,
-			&i.Icon,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-			&i.UserACL,
-			&i.GroupACL,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const getChatProjectsOwnedOrSharedWithUserID = `-- name: GetChatProjectsOwnedOrSharedWithUserID :many
 SELECT chat_projects.id, chat_projects.organization_id, chat_projects.owner_id, chat_projects.name, chat_projects.description, chat_projects.icon, chat_projects.created_at, chat_projects.updated_at, chat_projects.user_acl, chat_projects.group_acl
 FROM chat_projects
@@ -8102,7 +8061,7 @@ func (q *sqlQuerier) InsertChatProject(ctx context.Context, arg InsertChatProjec
 	return i, err
 }
 
-const isChatProjectAccessibleByUserID = `-- name: IsChatProjectAccessibleByUserID :one
+const isChatProjectUsableByUserID = `-- name: IsChatProjectUsableByUserID :one
 SELECT EXISTS (
     SELECT 1
     FROM chat_projects
@@ -8131,13 +8090,13 @@ SELECT EXISTS (
 )::boolean
 `
 
-type IsChatProjectAccessibleByUserIDParams struct {
+type IsChatProjectUsableByUserIDParams struct {
 	ProjectID uuid.UUID `db:"project_id" json:"project_id"`
 	UserID    uuid.UUID `db:"user_id" json:"user_id"`
 }
 
-func (q *sqlQuerier) IsChatProjectAccessibleByUserID(ctx context.Context, arg IsChatProjectAccessibleByUserIDParams) (bool, error) {
-	row := q.db.QueryRowContext(ctx, isChatProjectAccessibleByUserID, arg.ProjectID, arg.UserID)
+func (q *sqlQuerier) IsChatProjectUsableByUserID(ctx context.Context, arg IsChatProjectUsableByUserIDParams) (bool, error) {
+	row := q.db.QueryRowContext(ctx, isChatProjectUsableByUserID, arg.ProjectID, arg.UserID)
 	var column_1 bool
 	err := row.Scan(&column_1)
 	return column_1, err
@@ -14651,6 +14610,28 @@ func (q *sqlQuerier) UpdateChatPlanModeByID(ctx context.Context, arg UpdateChatP
 		&i.TitleUpdatedAt,
 	)
 	return i, err
+}
+
+const updateChatProjectIDByID = `-- name: UpdateChatProjectIDByID :exec
+UPDATE
+    chats
+SET
+    -- NOTE: updated_at is intentionally NOT touched here to avoid changing list ordering.
+    project_id = $1::uuid
+WHERE
+    id = $2::uuid
+`
+
+type UpdateChatProjectIDByIDParams struct {
+	ProjectID uuid.NullUUID `db:"project_id" json:"project_id"`
+	ID        uuid.UUID     `db:"id" json:"id"`
+}
+
+// Sets the project of one chat. A NULL project_id removes the chat from
+// its project.
+func (q *sqlQuerier) UpdateChatProjectIDByID(ctx context.Context, arg UpdateChatProjectIDByIDParams) error {
+	_, err := q.db.ExecContext(ctx, updateChatProjectIDByID, arg.ProjectID, arg.ID)
+	return err
 }
 
 const updateChatRetryState = `-- name: UpdateChatRetryState :one
